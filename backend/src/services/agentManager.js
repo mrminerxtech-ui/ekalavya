@@ -96,4 +96,33 @@ function sanitize(a) {
   };
 }
 
-module.exports = { registerAgent, unregisterAgent, handleAgentMessage, getAgents, getAgent, sendToAgent };
+// ── Manually remove an agent ──────────────────────────────
+function removeAgent(farmId) {
+  const agent = connectedAgents.get(farmId);
+  if (agent) {
+    try { if (agent.ws) agent.ws.close(); } catch(e) {}
+    connectedAgents.delete(farmId);
+    return true;
+  }
+  return false;
+}
+
+// ── Clean up stale agents (not seen for 90s) ──────────────
+setInterval(() => {
+  const cutoff = Date.now() - 90 * 1000;
+  connectedAgents.forEach((agent, farmId) => {
+    const lastSeen = new Date(agent.last_seen).getTime();
+    const wsDead   = !agent.ws || agent.ws.readyState !== 1;
+    if (lastSeen < cutoff || wsDead) {
+      console.log(`[AGENT] Removing stale agent: ${agent.farm_name} (${farmId})`);
+      connectedAgents.delete(farmId);
+      try {
+        const { broadcast } = require('../websocket');
+        broadcast({ type: 'agent_disconnected', farm_id: farmId });
+      } catch(e) {}
+    }
+  });
+}, 30 * 1000);
+
+module.exports = {
+  removeAgent, registerAgent, unregisterAgent, handleAgentMessage, getAgents, getAgent, sendToAgent };
