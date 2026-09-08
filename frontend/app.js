@@ -76,11 +76,7 @@ function setLTab(tab, el) {
 }
 
 // ── Render functions ──────────────────────────────────────
-function renderAll() {
-  try { renderDash(); } catch(e) { console.error('renderDash:', e); }
-  try { updateNavCount(); } catch(e) {}
-}
-
+function renderAll(){try{renderDash();}catch(e){console.error('renderDash:',e);}try{updateNavCount();}catch(e){}}
 function renderWorkers() {
   const tb = document.getElementById('workersTbody');
   if (!tb) return;
