@@ -1,0 +1,12 @@
+{
+  "name": "ekalavya-monorepo",
+  "version": "1.0.0",
+  "description": "Ekalavya — Professional ASIC Mining Management Platform",
+  "private": true,
+  "scripts": {
+    "start:backend": "cd backend && npm start",
+    "start:agent":   "cd agent && npm start",
+    "install:all":   "cd backend && npm install && cd ../agent && npm install"
+  },
+  "workspaces": ["backend", "agent"]
+}

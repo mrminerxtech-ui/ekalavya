@@ -1,0 +1,1937 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#00c8ff">
+<link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+<title>Ekalavya</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;600;700;900&family=Exo+2:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#060a0f;--s1:#0b1017;--s2:#0f161e;--b1:#1a2a3a;--b2:#213040;--cyan:#00c8ff;--green:#00ff9d;--purple:#7b2fff;--warn:#ffb800;--red:#ff2d55;--gold:#ffd700;--orange:#ff6b35;--txt:#bdd0e0;--mute:#3d5570;--glow:0 0 24px rgba(0,200,255,0.3);}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html,body{height:100%;overflow:hidden;background:var(--bg);}
+body{font-family:"Exo 2",sans-serif;font-size:13px;color:var(--txt);display:flex;flex-direction:column;}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:9999;background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,0,0,0.04) 3px,rgba(0,0,0,0.04) 4px);}
+#ticker{flex-shrink:0;background:var(--s2);border-bottom:1px solid var(--b1);height:32px;overflow:hidden;display:flex;align-items:center;}
+.tick-track{display:flex;animation:ts 50s linear infinite;white-space:nowrap;}
+@keyframes ts{0%{transform:translateX(0);}100%{transform:translateX(-50%);}}
+.tick-item{display:inline-flex;align-items:center;gap:6px;padding:0 18px;border-right:1px solid var(--b1);height:32px;}
+.t-sym{font-family:"Orbitron",sans-serif;font-size:9px;font-weight:700;letter-spacing:1px;}
+.t-price{font-family:"Share Tech Mono",monospace;font-size:11px;}
+.t-chg{font-size:10px;}.up{color:var(--green);}.dn{color:var(--red);}
+#topbar{flex-shrink:0;background:var(--s1);border-bottom:1px solid var(--b1);height:52px;display:flex;align-items:center;padding:0 16px;gap:10px;}
+.logo{font-family:"Orbitron",sans-serif;font-weight:900;font-size:16px;color:var(--cyan);text-shadow:var(--glow);letter-spacing:2px;}
+.logo-badge{background:rgba(0,200,255,0.12);border:1px solid rgba(0,200,255,0.3);border-radius:3px;padding:2px 6px;font-size:9px;letter-spacing:1px;color:var(--cyan);font-family:"Orbitron",sans-serif;}
+.spacer{flex:1;}
+.pill{display:flex;align-items:center;gap:5px;border-radius:12px;padding:3px 10px;}
+.ap{background:rgba(0,255,157,0.06);border:1px solid rgba(0,255,157,0.18);}
+.lp{background:rgba(0,200,255,0.06);border:1px solid rgba(0,200,255,0.18);}
+.dp{width:6px;height:6px;border-radius:50%;animation:blink 1.4s infinite;}
+.dp.g{background:var(--green);box-shadow:0 0 6px var(--green);}
+.dp.c{background:var(--cyan);box-shadow:0 0 6px var(--cyan);}
+@keyframes blink{0%,100%{opacity:1;}50%{opacity:0.2;}}
+.pt2{font-family:"Share Tech Mono",monospace;font-size:10px;}
+.icon-btn{width:34px;height:34px;border-radius:8px;background:var(--s2);border:1px solid var(--b1);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px;transition:all 0.2s;}
+.icon-btn:hover{border-color:var(--cyan);}
+#appBody{flex:1;display:flex;overflow:hidden;}
+#sidebar{width:222px;flex-shrink:0;background:var(--s1);border-right:1px solid var(--b1);display:flex;flex-direction:column;overflow-y:auto;}
+#content{flex:1;overflow-y:auto;overflow-x:hidden;}
+.ssec{padding:10px 10px 4px;font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--mute);font-family:"Orbitron",sans-serif;}
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 14px;cursor:pointer;border-radius:6px;margin:1px 6px;transition:all 0.15s;color:var(--mute);}
+.nav-item:hover{background:rgba(0,200,255,0.05);color:var(--txt);}
+.nav-item.active{background:rgba(0,200,255,0.1);border:1px solid rgba(0,200,255,0.2);color:var(--cyan);}
+.ni{font-size:16px;width:20px;text-align:center;flex-shrink:0;}
+.nl{font-family:"Exo 2",sans-serif;font-weight:600;font-size:12px;}
+.nc{margin-left:auto;border-radius:10px;padding:1px 7px;font-size:9px;font-weight:700;}
+.ncr{background:var(--red);color:#fff;}.ncg{background:var(--green);color:var(--bg);}
+.sfooter{margin-top:auto;padding:14px;border-top:1px solid var(--b1);}
+.user-card{display:flex;align-items:center;gap:10px;padding:10px;background:var(--s2);border:1px solid var(--b1);border-radius:8px;cursor:pointer;}
+.av{border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;flex-shrink:0;}
+.page{display:none;padding:16px;}.page.active{display:block;}
+.page-title{font-family:"Orbitron",sans-serif;font-weight:700;font-size:16px;letter-spacing:2px;color:var(--txt);margin-bottom:16px;display:flex;align-items:center;gap:10px;}
+.page-title span{font-size:12px;color:var(--mute);font-family:"Share Tech Mono",monospace;font-weight:400;}
+.sgrid{display:grid;gap:10px;margin-bottom:16px;}
+.sc{background:var(--s1);border:1px solid var(--b1);border-radius:8px;padding:14px;position:relative;overflow:hidden;}
+.sc::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;background:var(--cyan);}
+.sg::before{background:var(--green);}.sw::before{background:var(--warn);}.sr::before{background:var(--red);}.so::before{background:var(--gold);}.sp::before{background:var(--purple);}
+.sl{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--mute);margin-bottom:5px;}
+.sv{font-family:"Share Tech Mono",monospace;font-size:22px;color:var(--cyan);line-height:1;}
+.sg .sv{color:var(--green);}.sw .sv{color:var(--warn);}.sr .sv{color:var(--red);}.so .sv{color:var(--gold);}.sp .sv{color:var(--purple);}
+.sss{font-size:10px;color:var(--mute);margin-top:2px;font-family:"Share Tech Mono",monospace;}
+.panel{background:var(--s1);border:1px solid var(--b1);border-radius:8px;overflow:hidden;margin-bottom:14px;}
+.ph{padding:11px 16px;border-bottom:1px solid var(--b1);display:flex;align-items:center;gap:8px;background:var(--s2);flex-wrap:wrap;}
+.phd{font-family:"Orbitron",sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;}
+.badge{border-radius:3px;padding:2px 7px;font-family:"Share Tech Mono",monospace;font-size:10px;border:1px solid;}
+.bc{border-color:rgba(0,200,255,.3);color:var(--cyan);background:rgba(0,200,255,.08);}
+.bgn{border-color:rgba(0,255,157,.3);color:var(--green);background:rgba(0,255,157,.08);}
+.bwn{border-color:rgba(255,184,0,.3);color:var(--warn);background:rgba(255,184,0,.08);}
+.brn{border-color:rgba(255,45,85,.3);color:var(--red);background:rgba(255,45,85,.08);}
+.bor{border-color:rgba(255,107,53,.3);color:var(--orange);background:rgba(255,107,53,.08);}
+.bpp{border-color:rgba(123,47,255,.3);color:var(--purple);background:rgba(123,47,255,.08);}
+.pa{margin-left:auto;display:flex;gap:6px;align-items:center;}
+.btn{padding:7px 14px;border-radius:6px;font-family:"Exo 2",sans-serif;font-weight:700;font-size:11px;letter-spacing:1px;text-transform:uppercase;cursor:pointer;border:1px solid var(--cyan);background:transparent;color:var(--cyan);transition:all 0.2s;}
+.btn:hover{background:var(--cyan);color:var(--bg);}.btn:active{transform:scale(.97);}
+.btn-sm{padding:5px 10px;font-size:10px;}
+.btn-r{border-color:var(--red);color:var(--red);}.btn-r:hover{background:var(--red);color:#fff;}
+.btn-g{border-color:var(--green);color:var(--green);}.btn-g:hover{background:var(--green);color:var(--bg);}
+.btn-p{border-color:var(--purple);color:var(--purple);}
+.btn-w{border-color:var(--warn);color:var(--warn);}
+.toolbar{padding:8px 14px;border-bottom:1px solid var(--b1);display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
+.si{background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:6px 10px;color:var(--txt);font-family:"Share Tech Mono",monospace;font-size:11px;outline:none;}
+.si:focus{border-color:var(--cyan);}
+.fbtn{padding:5px 10px;border-radius:4px;font-family:"Exo 2",sans-serif;font-weight:600;font-size:11px;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mute);transition:all 0.15s;}
+.fbtn.active,.fbtn:hover{border-color:var(--cyan);color:var(--cyan);background:rgba(0,200,255,.06);}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+table{width:100%;border-collapse:collapse;min-width:600px;}
+thead{background:var(--s2);}
+th{padding:8px 12px;text-align:left;font-family:"Exo 2",sans-serif;font-weight:700;font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--mute);border-bottom:1px solid var(--b1);white-space:nowrap;}
+td{padding:9px 12px;border-bottom:1px solid rgba(26,42,58,.5);font-family:"Share Tech Mono",monospace;font-size:11px;white-space:nowrap;}
+tr:hover td{background:rgba(0,200,255,.02);}
+tr:last-child td{border-bottom:none;}
+.sdot{width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0;}
+.sdot.on{background:var(--green);box-shadow:0 0 5px var(--green);}
+.sdot.off{background:var(--red);}.sdot.wn{background:var(--warn);box-shadow:0 0 5px var(--warn);}
+.sdot.dis{background:var(--mute);}.sdot.slp{background:var(--purple);}.sdot.rb{background:var(--cyan);animation:blink .6s infinite;}
+.abtn{background:none;border:1px solid var(--b1);color:var(--mute);border-radius:3px;padding:3px 8px;cursor:pointer;font-size:10px;font-family:"Exo 2",sans-serif;transition:all 0.15s;}
+.abtn:hover{border-color:var(--cyan);color:var(--cyan);}
+.card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px;}
+.card{background:var(--s1);border:1px solid var(--b1);border-radius:8px;overflow:hidden;animation:fi .3s ease;}
+@keyframes fi{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
+.card-head{padding:12px 16px;background:var(--s2);border-bottom:1px solid var(--b1);display:flex;align-items:center;gap:10px;}
+.card-body{padding:12px 16px;}
+.card-row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(26,42,58,.3);}
+.card-row:last-child{border-bottom:none;}
+.ck{font-size:10px;color:var(--mute);letter-spacing:1px;text-transform:uppercase;}
+.cv{font-family:"Share Tech Mono",monospace;font-size:12px;color:var(--txt);}
+.cv.g{color:var(--green);}.cv.w{color:var(--warn);}.cv.r{color:var(--red);}
+.card-foot{padding:10px 14px;border-top:1px solid var(--b1);display:flex;gap:6px;flex-wrap:wrap;}
+.tline{height:2px;background:linear-gradient(90deg,var(--cyan),var(--green),var(--cyan));background-size:200%;animation:tun 2s linear infinite;border-radius:2px;margin:6px 0;}
+@keyframes tun{0%{background-position:0%;}100%{background-position:200%;}}
+.tline.off{background:var(--b1);animation:none;}
+.overlay{position:fixed;inset:0;background:rgba(6,10,15,.9);z-index:250;display:none;align-items:flex-end;justify-content:center;}
+.overlay.show{display:flex;}
+.sheet{background:var(--s1);border:1px solid var(--b2);border-radius:14px 14px 0 0;width:100%;max-width:640px;max-height:90vh;overflow-y:auto;animation:su .25s ease;}
+@keyframes su{from{transform:translateY(100%);}to{transform:translateY(0);}}
+.sheet-handle{width:36px;height:4px;background:var(--mute);border-radius:2px;margin:12px auto 8px;}
+.sheet-title{font-family:"Orbitron",sans-serif;font-size:14px;font-weight:700;letter-spacing:2px;padding:12px 20px 16px;color:var(--txt);border-bottom:1px solid var(--b1);}
+.sheet-body{padding:20px;}
+.sheet-foot{padding:14px 20px;border-top:1px solid var(--b1);display:flex;gap:8px;flex-wrap:wrap;}
+.frow{margin-bottom:14px;}
+.frow label{display:block;font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--mute);margin-bottom:5px;}
+.frow input,.frow select,.frow textarea{width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:"Share Tech Mono",monospace;font-size:12px;outline:none;}
+.frow input:focus,.frow select:focus{border-color:var(--cyan);}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;}
+.tw-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(26,42,58,.4);}
+.toggle{position:relative;width:44px;height:24px;flex-shrink:0;}
+.toggle input{opacity:0;width:0;height:0;}
+.tsldr{position:absolute;inset:0;background:var(--b1);border-radius:24px;transition:.3s;cursor:pointer;}
+.tsldr::before{content:"";position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:var(--mute);border-radius:50%;transition:.3s;}
+.toggle input:checked+.tsldr{background:rgba(0,200,255,.25);border:1px solid var(--cyan);}
+.toggle input:checked+.tsldr::before{transform:translateX(20px);background:var(--cyan);}
+.assign-row{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--b1);cursor:pointer;transition:background .15s;}
+.assign-row:hover{background:rgba(0,200,255,.03);}
+.assign-row.assigned{background:rgba(0,255,157,.04);border-left:3px solid var(--green);}
+.scan-hero{background:linear-gradient(135deg,var(--s1),rgba(0,200,255,.04));border:1px solid var(--b2);border-radius:12px;padding:20px;margin-bottom:14px;}
+.scan-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;}
+.sf label{display:block;font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--mute);margin-bottom:4px;}
+.sf input,.sf select{background:var(--bg);border:1px solid var(--b2);border-radius:6px;padding:8px 12px;color:var(--txt);font-family:"Share Tech Mono",monospace;font-size:12px;outline:none;width:100%;}
+.sf input:focus,.sf select:focus{border-color:var(--cyan);}
+.scan-btns{display:flex;gap:10px;flex-wrap:wrap;}
+.scan-btn{flex:1;min-width:120px;padding:11px;border-radius:8px;font-family:"Orbitron",sans-serif;font-weight:700;font-size:12px;letter-spacing:2px;cursor:pointer;border:1px solid var(--cyan);background:rgba(0,200,255,.08);color:var(--cyan);transition:all .2s;display:flex;align-items:center;justify-content:center;gap:6px;}
+.scan-btn:hover{background:var(--cyan);color:var(--bg);}
+.prog-bar{height:4px;background:var(--b1);border-radius:2px;overflow:hidden;margin:10px 0;}
+.prog-fill{height:100%;background:linear-gradient(90deg,var(--cyan),var(--green));border-radius:2px;transition:width .3s;width:0%;}
+.scan-log{background:var(--bg);border:1px solid var(--b1);border-radius:6px;padding:10px;max-height:160px;overflow-y:auto;font-family:"Share Tech Mono",monospace;font-size:11px;line-height:1.8;}
+.ll.found{color:var(--green);}.ll.scan{color:var(--mute);}.ll.err{color:var(--red);}.ll.info{color:var(--cyan);}
+.portal-hero{background:linear-gradient(135deg,var(--s1),rgba(0,200,255,.04));border:1px solid var(--b2);border-radius:12px;padding:20px;margin-bottom:16px;display:flex;align-items:center;gap:16px;}
+#loginScreen{position:fixed;inset:0;background:var(--bg);z-index:300;display:flex;align-items:center;justify-content:center;padding:24px;}
+.login-glow{position:absolute;top:30%;left:50%;transform:translate(-50%,-50%);width:300px;height:300px;background:radial-gradient(circle,rgba(0,200,255,.07) 0%,transparent 70%);pointer-events:none;}
+.login-card{width:100%;max-width:380px;background:var(--s1);border:1px solid var(--b2);border-radius:14px;padding:32px 28px;position:relative;}
+.login-logo{font-family:"Orbitron",sans-serif;font-weight:900;font-size:22px;color:var(--cyan);text-shadow:var(--glow);letter-spacing:3px;text-align:center;margin-bottom:4px;}
+.login-hex{font-size:32px;text-align:center;margin-bottom:8px;}
+.login-sub{text-align:center;font-size:11px;color:var(--mute);letter-spacing:2px;text-transform:uppercase;margin-bottom:24px;}
+.ltabs{display:flex;background:var(--bg);border:1px solid var(--b1);border-radius:7px;padding:3px;gap:2px;margin-bottom:20px;}
+.ltab{flex:1;padding:7px;text-align:center;border-radius:5px;font-family:"Exo 2",sans-serif;font-weight:600;font-size:11px;letter-spacing:1px;text-transform:uppercase;cursor:pointer;color:var(--mute);transition:all .2s;}
+.ltab.active{background:rgba(0,200,255,.12);color:var(--cyan);border:1px solid rgba(0,200,255,.2);}
+.ltab.ctab.active{background:rgba(0,255,157,.08);color:var(--green);border-color:rgba(0,255,157,.3);}
+.lfield{margin-bottom:14px;}
+.lfield label{display:block;font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--mute);margin-bottom:5px;}
+.lfield input{width:100%;background:var(--bg);border:1px solid var(--b2);border-radius:6px;padding:10px 14px;color:var(--txt);font-family:"Share Tech Mono",monospace;font-size:13px;outline:none;}
+.lfield input:focus{border-color:var(--cyan);}
+.login-btn{width:100%;padding:13px;border:none;border-radius:7px;font-family:"Orbitron",sans-serif;font-weight:700;font-size:13px;letter-spacing:2px;cursor:pointer;margin-top:8px;transition:all .2s;}
+.login-btn.admin{background:var(--cyan);color:var(--bg);}.login-btn.customer{background:var(--green);color:var(--bg);}
+.login-hint{text-align:center;font-size:11px;color:var(--mute);margin-top:14px;line-height:1.6;}
+.lerr{color:var(--red);font-size:11px;text-align:center;margin-bottom:8px;display:none;}
+
+/* ═══ MINER CONTROL PANEL ═══ */
+#ctrlPanel{position:fixed;inset:0;background:rgba(6,10,15,.97);z-index:280;display:none;flex-direction:column;}
+#ctrlPanel.show{display:flex;}
+.ctrl-topbar{background:var(--s1);border-bottom:1px solid var(--b1);padding:14px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0;}
+.ctrl-back{width:36px;height:36px;border-radius:8px;background:var(--s2);border:1px solid var(--b1);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:18px;transition:all .2s;}
+.ctrl-back:hover{border-color:var(--cyan);}
+.ctrl-name{font-family:"Orbitron",sans-serif;font-size:15px;font-weight:700;color:var(--txt);}
+.ctrl-ip{font-family:"Share Tech Mono",monospace;font-size:11px;color:var(--mute);}
+.ctrl-body{flex:1;overflow-y:auto;padding:20px;}
+.ctrl-stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-bottom:20px;}
+.cstat{background:var(--s2);border:1px solid var(--b1);border-radius:6px;padding:10px 12px;}
+.cstat-l{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--mute);margin-bottom:3px;}
+.cstat-v{font-family:"Share Tech Mono",monospace;font-size:17px;color:var(--cyan);}
+.cstat-v.g{color:var(--green);}.cstat-v.w{color:var(--warn);}.cstat-v.r{color:var(--red);}
+.ctrl-sec{margin-bottom:20px;}
+.ctrl-sec-title{font-family:"Orbitron",sans-serif;font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--mute);padding-bottom:8px;border-bottom:1px solid var(--b1);margin-bottom:12px;}
+.action-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;}
+.action-btn{background:var(--s2);border:1px solid var(--b1);border-radius:10px;padding:14px 12px;cursor:pointer;transition:all .2s;text-align:center;display:flex;flex-direction:column;align-items:center;gap:6px;}
+.action-btn:hover{transform:translateY(-2px);box-shadow:0 4px 16px rgba(0,0,0,.3);}
+.action-btn:active{transform:scale(.97);}
+.action-icon{font-size:28px;line-height:1;}
+.action-label{font-family:"Exo 2",sans-serif;font-weight:700;font-size:12px;letter-spacing:.5px;}
+.action-desc{font-size:10px;color:var(--mute);line-height:1.3;}
+.act-cyan{border-color:rgba(0,200,255,.3);}.act-cyan .action-label{color:var(--cyan);}
+.act-cyan:hover{background:rgba(0,200,255,.06);border-color:var(--cyan);}
+.act-green{border-color:rgba(0,255,157,.3);}.act-green .action-label{color:var(--green);}
+.act-green:hover{background:rgba(0,255,157,.06);border-color:var(--green);}
+.act-warn{border-color:rgba(255,184,0,.3);}.act-warn .action-label{color:var(--warn);}
+.act-warn:hover{background:rgba(255,184,0,.06);border-color:var(--warn);}
+.act-red{border-color:rgba(255,45,85,.3);}.act-red .action-label{color:var(--red);}
+.act-red:hover{background:rgba(255,45,85,.06);border-color:var(--red);}
+.act-orange{border-color:rgba(255,107,53,.3);}.act-orange .action-label{color:var(--orange);}
+.act-orange:hover{background:rgba(255,107,53,.06);border-color:var(--orange);}
+.act-purple{border-color:rgba(123,47,255,.3);}.act-purple .action-label{color:var(--purple);}
+.act-purple:hover{background:rgba(123,47,255,.06);border-color:var(--purple);}
+.act-mute .action-label{color:var(--mute);}
+.act-mute:hover{background:rgba(61,85,112,.1);}
+.config-panel{background:var(--s2);border:1px solid var(--b1);border-radius:10px;padding:16px;margin-top:10px;display:none;}
+.config-panel.open{display:block;animation:fi .2s ease;}
+.log-viewer{background:#020508;border:1px solid var(--b1);border-radius:6px;font-family:"Share Tech Mono",monospace;font-size:11px;line-height:1.7;padding:12px;max-height:280px;overflow-y:auto;color:var(--green);}
+.log-info{color:var(--cyan);}.log-warn{color:var(--warn);}.log-err{color:var(--red);}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--s1);border-radius:10px;padding:14px 20px;font-family:"Share Tech Mono",monospace;font-size:12px;color:var(--txt);z-index:400;max-width:92vw;white-space:pre-wrap;box-shadow:0 8px 32px rgba(0,0,0,.6);animation:fi .2s ease;border:1px solid var(--b1);}
+#bottomNav{display:none;flex-shrink:0;background:var(--s1);border-top:1px solid var(--b1);}
+.bnav{display:flex;height:56px;}
+.bi{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;cursor:pointer;color:var(--mute);transition:color .2s;position:relative;}
+.bi.active{color:var(--cyan);}.bi-icon{font-size:20px;}.bi-lbl{font-size:9px;font-family:"Exo 2",sans-serif;font-weight:600;}
+.bi-badge{position:absolute;top:4px;right:calc(50% - 18px);width:15px;height:15px;background:var(--red);border-radius:50%;font-size:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;}
+@media(max-width:768px){#sidebar{display:none;}#bottomNav{display:block;}.scan-grid{grid-template-columns:1fr;}.two-col{grid-template-columns:1fr;}.action-grid{grid-template-columns:repeat(2,1fr);}.three-col{grid-template-columns:1fr 1fr;}}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="loginScreen">
+  <div class="login-glow"></div>
+  <div class="login-card">
+    <div class="login-hex">&#x2B21;</div>
+    <div class="login-logo">EKALAVYA</div>
+    <div class="login-sub">Remote ASIC Management</div>
+    <div class="ltabs">
+      <div class="ltab active" onclick="setLTab('admin',this)">Admin</div>
+      <div class="ltab" onclick="setLTab('team',this)">Team</div>
+      <div class="ltab ctab" onclick="setLTab('customer',this)">Customer</div>
+    </div>
+    <div class="lfield"><label>Username / Email</label><input id="lUser" value="admin" placeholder="admin@ekalavya.io"></div>
+    <div class="lfield"><label>Password</label><input id="lPass" type="password" value="admin123" placeholder="..."></div>
+    <div class="lerr" id="lerr"></div>
+    <button class="login-btn admin" id="lBtn" onclick="doLogin()">ACCESS PLATFORM</button>
+    <div class="login-hint" id="lHint">Admin: admin / admin123<br>Customer: ahmad@example.com / ahmad123</div>
+  </div>
+</div>
+
+<!-- TICKER -->
+<div id="ticker" style="display:none"><div class="tick-track" id="tickTrack"></div></div>
+
+<!-- TOPBAR -->
+<nav id="topbar" style="display:none">
+  <div class="logo">EKL</div>
+  <div class="logo-badge" id="topBadge">ADMIN</div>
+  <div class="spacer"></div>
+  <div class="pill ap" id="agentPill">
+    <div class="dp g"></div>
+    <span class="pt2" style="color:var(--green)" id="agentPillTxt">0 Agents</span>
+  </div>
+  <div class="pill lp">
+    <div class="dp c"></div>
+    <span class="pt2" style="color:var(--cyan)">LIVE</span>
+  </div>
+  <div class="icon-btn" onclick="logout()">&#x1F464;</div>
+</nav>
+
+<!-- APP BODY -->
+<div id="appBody" style="display:none">
+  <div id="sidebar">
+    <div id="adminNav">
+      <div class="ssec">Operations</div>
+      <div class="nav-item active" onclick="nav('dashboard',this)"><span class="ni">&#x1F4CA;</span><span class="nl">Dashboard</span></div>
+      <div class="nav-item" onclick="nav('workers',this)"><span class="ni">&#x26CF;&#xFE0F;</span><span class="nl">Workers</span></div>
+      <div class="ssec">Remote Access</div>
+      <div class="nav-item" onclick="nav('agents',this)"><span class="ni">&#x1F4E1;</span><span class="nl">Farm Agents</span><span class="nc ncg" id="agentNavBadge">0</span></div>
+      <div class="nav-item" onclick="nav('scanner',this)"><span class="ni">&#x1F50D;</span><span class="nl">Network Scanner</span></div>
+      <div class="ssec">Business</div>
+      <div class="nav-item" onclick="nav('customers',this)"><span class="ni">&#x1F465;</span><span class="nl">Customers</span></div>
+      <div class="nav-item" onclick="nav('pools',this)"><span class="ni">&#x1F3CA;</span><span class="nl">World Pools</span></div>
+      <div class="nav-item" onclick="nav('profitability',this)"><span class="ni">&#x1F4B0;</span><span class="nl">Profitability</span></div>
+      <div class="ssec">Hydro Systems</div>
+      <div class="nav-item" onclick="nav('scada',this)"><span class="ni">💧</span><span class="nl">SCADA — Hydro</span></div>
+      <div class="ssec">System</div>
+      <div class="nav-item" onclick="nav('team',this)"><span class="ni">&#x1F511;</span><span class="nl">Team Access</span></div>
+      <div class="nav-item" onclick="nav('alerts',this)"><span class="ni">&#x1F514;</span><span class="nl">Alerts</span><span class="nc ncr" id="alertBadge" style="display:none">0</span></div>
+      <div class="nav-item" onclick="nav('settings',this)"><span class="ni">&#x2699;&#xFE0F;</span><span class="nl">Settings</span></div>
+    </div>
+    <div id="custNav" style="display:none">
+      <div class="ssec">My Mining</div>
+      <div class="nav-item active" onclick="nav('portal-home',this)"><span class="ni">&#x1F4CA;</span><span class="nl">My Dashboard</span></div>
+      <div class="nav-item" onclick="nav('portal-miners',this)"><span class="ni">&#x26CF;&#xFE0F;</span><span class="nl">My Miners</span></div>
+      <div class="nav-item" onclick="nav('portal-billing',this)"><span class="ni">&#x1F4B3;</span><span class="nl">My Billing</span></div>
+      <div class="ssec">Info</div>
+      <div class="nav-item" onclick="nav('pools',this)"><span class="ni">&#x1F3CA;</span><span class="nl">Pools</span></div>
+      <div class="nav-item" onclick="nav('profitability',this)"><span class="ni">&#x1F4B0;</span><span class="nl">Profitability</span></div>
+    </div>
+    <div class="sfooter">
+      <div class="user-card" onclick="logout()">
+        <div class="av" id="sideAv" style="background:var(--purple);width:32px;height:32px;font-size:13px">A</div>
+        <div><div style="font-weight:700;font-size:12px;color:var(--txt)" id="sideName">Admin</div><div style="font-size:10px;color:var(--mute)" id="sideRole">Super Admin</div></div>
+      </div>
+    </div>
+  </div>
+  <div id="content">
+
+    <!-- DASHBOARD -->
+    <div id="page-dashboard" class="page active">
+      <!-- Stats Row -->
+      <div class="sgrid" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr))">
+        <div class="sc sg"><div class="sl">Total Hashrate</div><div class="sv" id="dHR">0</div><div class="sss" id="dHRUnit">TH/s</div></div>
+        <div class="sc"><div class="sl">Online</div><div class="sv" id="dW">0</div><div class="sss">of <span id="dWTotal">0</span></div></div>
+        <div class="sc sp"><div class="sl">Farm Agents</div><div class="sv" id="dAgents">0</div></div>
+        <div class="sc sw"><div class="sl">Disabled</div><div class="sv" id="dDis">0</div><div class="sss">for repair</div></div>
+        <div class="sc so"><div class="sl">Models</div><div class="sv" id="dModels">0</div><div class="sss">unique</div></div>
+        <div class="sc sr"><div class="sl">Alerts</div><div class="sv">7</div></div>
+      </div>
+      <!-- Pie chart + farm summary row -->
+      <div style="display:grid;grid-template-columns:200px 1fr;gap:12px;margin-bottom:14px">
+        <div class="panel" style="margin-bottom:0">
+          <div class="ph"><div class="phd">Fleet Status</div></div>
+          <div style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:10px">
+            <svg id="fleetPie" viewBox="0 0 120 120" style="width:110px;height:110px"></svg>
+            <div id="pieLegend" style="font-size:10px;width:100%"></div>
+          </div>
+        </div>
+        <div class="panel" style="margin-bottom:0;overflow:hidden">
+          <div class="ph"><div class="phd">Farms Overview</div></div>
+          <div id="farmCards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;padding:10px"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ph"><div class="phd">Farm Agents</div><span class="badge bgn" id="agentStripBadge">0 Online</span><div class="pa"><button class="btn btn-sm" onclick="nav('agents')">Manage</button></div></div>
+        <div id="agentStrip" style="padding:14px"></div>
+      </div>
+      <!-- Fleet Status per Farm -->
+      <div class="panel">
+        <div class="ph">
+          <div class="phd">Fleet Status by Farm</div>
+          <span class="badge bgn" id="dOnlineBadge">0 Online</span>
+          <span class="badge brn" id="dOfflineBadge">0 Offline</span>
+          <span class="badge bor" id="dDisBadge" style="display:none">0</span>
+          <div class="pa"><button class="btn btn-sm" onclick="nav('workers',null)">View All Workers</button></div>
+        </div>
+        <div id="fleetByFarm" style="padding:12px"></div>
+      </div>
+    </div>
+
+    <!-- WORKERS -->
+    <div id="page-workers" class="page">
+      <div class="page-title">Workers <span id="wcTitle"></span></div>
+      <div class="panel">
+        <div class="ph"><div class="phd">All Machines</div><div class="pa"><button class="btn btn-sm btn-r" onclick="bulkReboot()">&#x27F3; Bulk Reboot</button></div></div>
+        <div class="toolbar">
+          <input class="si" placeholder="Search name/IP/model..." id="wSearch" oninput="renderWorkers()" style="width:180px">
+          <button class="fbtn active" onclick="setWF('all',this)">All</button>
+          <button class="fbtn" onclick="setWF('online',this)">Online</button>
+          <button class="fbtn" onclick="setWF('offline',this)">Offline</button>
+          <button class="fbtn" onclick="setWF('warn',this)">Warning</button>
+          <button class="fbtn" onclick="setWF('disabled',this)">Disabled</button>
+          <button class="fbtn" onclick="setWF('sleeping',this)">Sleep</button>
+        </div>
+        <div class="tw"><table><thead><tr>
+          <th><input type="checkbox" id="selAll" onclick="toggleSelAll()" style="accent-color:var(--cyan)"></th>
+          <th>Worker</th><th>Brand/Model</th><th>IP</th><th>Farm</th><th>Customer</th><th>Hashrate</th><th>Temp</th><th>Fan</th><th>Pool</th><th>Status</th><th>Control</th>
+        </tr></thead><tbody id="workersTbody"></tbody></table></div>
+      </div>
+    </div>
+
+    <!-- AGENTS -->
+    <div id="page-agents" class="page">
+      <div class="page-title">Farm Agents <span>Remote Connections</span></div>
+      <div class="panel">
+        <div class="ph"><div class="phd">Quick Setup</div><span class="badge bc">One command per farm</span></div>
+        <div style="padding:16px">
+          <div style="font-size:12px;color:var(--txt);margin-bottom:12px">Run on any PC inside the farm. Dials <em>outward</em> &mdash; no port forwarding, works through NAT.</div>
+          <div style="background:var(--bg);border:1px solid var(--b1);border-radius:6px;padding:14px;font-family:'Share Tech Mono',monospace;font-size:11px;line-height:2;color:var(--green)">
+            <span style="color:var(--mute)"># Install</span><br>
+            git clone https://github.com/yourrepo/mmx-agent &amp;&amp; cd mmx-agent &amp;&amp; npm install<br>
+            <span style="color:var(--mute)"># Configure .env</span><br>
+            <span style="color:var(--mute)">MMX_SERVER=wss://your-server.com/agent &nbsp; AGENT_KEY=your-secret</span><br>
+            <span style="color:var(--mute)">FARM_NAME="Farm Dubai" &nbsp; LOCAL_SUBNET=192.168.1.0/24</span><br>
+            <span style="color:var(--mute)"># Start (auto-reconnects forever)</span><br>
+            npm start
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ph"><div class="phd">Connected Agents</div><span class="badge bgn" id="agentCountBadge">0 Online</span></div>
+        <div class="card-grid" style="padding:14px" id="agentGrid"></div>
+      </div>
+    </div>
+
+    <!-- SCANNER -->
+    <div id="page-scanner" class="page">
+      <div class="page-title">Network Scanner</div>
+      <div class="scan-hero">
+        <div style="font-family:'Orbitron',sans-serif;font-size:15px;font-weight:900;color:var(--cyan);margin-bottom:4px;letter-spacing:2px">SCAN ANY NETWORK</div>
+        <div style="font-size:12px;color:var(--mute);margin-bottom:16px">Select a farm agent to scan its local network remotely</div>
+        <div class="scan-grid">
+          <div class="sf"><label>Scan via Agent</label><select id="scanVia" class="si" style="background:var(--bg)" onchange="onScanViaChange()"><option value="local">Local / Direct</option></select></div>
+          <div class="sf"><label>IP Range (CIDR)</label><input id="scanRange" value="192.168.1.0/24"></div>
+          <div class="sf"><label>Ports</label><input id="scanPorts" value="4028,80,8080"></div>
+          <div class="sf"><label>Timeout (ms)</label><input id="scanTimeout" type="number" value="2000"></div>
+        </div>
+        <div class="scan-btns">
+          <button class="scan-btn" id="scanBtn" onclick="startScan()">SCAN</button>
+          <button class="scan-btn" onclick="stopScan()" style="flex:0.4;border-color:var(--red);color:var(--red)">STOP</button>
+        </div>
+      </div>
+      <div class="panel" id="scanPanel" style="display:none">
+        <div class="ph"><div class="phd">Scanning</div><span class="badge bwn" id="scanStatus">0%</span></div>
+        <div style="padding:14px">
+          <div style="display:flex;gap:20px;margin-bottom:8px">
+            <div><div class="sl">Scanned</div><div style="font-family:'Share Tech Mono',monospace;font-size:18px;color:var(--cyan)" id="scanCount">0</div></div>
+            <div><div class="sl">Found</div><div style="font-family:'Share Tech Mono',monospace;font-size:18px;color:var(--green)" id="foundCount">0</div></div>
+            <div><div class="sl">Elapsed</div><div style="font-family:'Share Tech Mono',monospace;font-size:18px" id="scanTime">0s</div></div>
+          </div>
+          <div class="prog-bar"><div class="prog-fill" id="progFill"></div></div>
+          <div class="scan-log" id="scanLog"></div>
+        </div>
+      </div>
+      <div id="foundSection" style="display:none">
+        <div style="display:flex;align-items:center;gap:8px;padding:12px 16px;background:var(--s2);border:1px solid var(--b1);border-radius:8px 8px 0 0">
+          <div class="phd" style="font-family:'Orbitron',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase">Discovered Miners</div>
+          <span class="badge bgn" id="discCount">0 Found</span>
+          <div class="pa"><button class="btn btn-sm btn-g" onclick="addAllToFleet()">+ Add All</button></div>
+        </div>
+        <div class="card-grid" id="foundGrid" style="border:1px solid var(--b1);border-top:none;padding:14px;background:var(--s1);border-radius:0 0 8px 8px"></div>
+      </div>
+    </div>
+
+    <!-- CUSTOMERS -->
+    <div id="page-customers" class="page">
+      <div class="page-title">Customers <span>Private Portal Access</span></div>
+      <div class="sgrid" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr))">
+        <div class="sc sg"><div class="sl">Customers</div><div class="sv" id="ctTotal">0</div></div>
+        <div class="sc"><div class="sl">Assigned Miners</div><div class="sv" id="ctMiners">0</div></div>
+        <div class="sc sp"><div class="sl">With Portal</div><div class="sv" id="ctRevenue">0</div></div>
+      </div>
+      <div class="panel">
+        <div class="ph"><div class="phd">All Customers</div><div class="pa"><button class="btn btn-sm btn-g" onclick="openSheet('addCustSheet')">+ Add Customer</button></div></div>
+        <div class="card-grid" style="padding:14px" id="custGrid"></div>
+      </div>
+      <div class="panel">
+        <div class="ph"><div class="phd">Assign Miners to Customer</div></div>
+        <div style="padding:16px">
+          <div class="frow"><label>Select Customer</label><select class="si" style="width:100%;max-width:280px" id="assignSel" onchange="renderAssign()"><option value="">Choose customer...</option></select></div>
+          <div id="assignPanel" style="display:none">
+            <div style="font-size:11px;color:var(--mute);margin-bottom:10px">Check to assign miners. Disabled miners show for visibility.</div>
+            <div style="border:1px solid var(--b1);border-radius:6px;overflow:hidden;max-height:320px;overflow-y:auto" id="assignList"></div>
+            <div style="display:flex;align-items:center;gap:12px;margin-top:12px">
+              <button class="btn btn-sm btn-g" onclick="saveAssign()">Save Assignment</button>
+              <span style="font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--mute)" id="assignCount">0 selected</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- BILLING -->
+    <div id="page-billing" class="page">
+      <div class="page-title">Billing Overview</div>
+      <div class="panel">
+        <div class="ph"><div class="phd">All Customer Bills</div><div class="pa"><button class="btn btn-sm">Export All</button></div></div>
+        <div class="tw"><table><thead><tr><th>Customer</th><th>Plan</th><th>Miners</th><th>Monthly Fee</th><th>Est. Earnings</th><th>Net Profit</th><th>Status</th><th>Action</th></tr></thead><tbody id="billingTbody"></tbody></table></div>
+      </div>
+    </div>
+
+    <!-- POOLS -->
+    <div id="page-pools" class="page">
+      <div class="page-title">World Pools</div>
+      <div class="card-grid" id="poolsGrid"></div>
+    </div>
+
+    <!-- PROFITABILITY -->
+    <div id="page-profitability" class="page">
+      <div class="page-title">Profitability Calculator</div>
+      <div class="panel">
+        <div class="ph"><div class="phd">Miner Models</div>
+          <div class="pa" style="font-size:11px;color:var(--mute)">Electricity: <input class="si" type="number" value="0.06" step="0.01" id="elec" onchange="renderProfit()" style="width:55px"> $/kWh</div>
+        </div>
+        <div class="tw"><table><thead><tr><th>Model</th><th>Algo</th><th>Hashrate</th><th>Power</th><th>Daily Revenue</th><th>Daily Profit</th><th>Monthly</th><th>ROI</th></tr></thead><tbody id="profitTbody"></tbody></table></div>
+      </div>
+    </div>
+
+    <!-- TEAM -->
+    <div id="page-team" class="page">
+      <div class="page-title">Team Access</div>
+      <div class="card-grid" id="teamGrid"></div>
+    </div>
+
+    <!-- ALERTS -->
+    <div id="page-alerts" class="page">
+      <div class="page-title">Alerts</div>
+      <div class="panel">
+        <div class="ph"><div class="phd">All Alerts</div><span class="badge brn">3 Critical</span><div class="pa"><button class="btn btn-sm">Clear All</button></div></div>
+        <div id="allAlerts"></div>
+      </div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div id="page-settings" class="page">
+      <div class="page-title">Settings</div>
+      <div class="panel">
+        <div class="ph"><div class="phd">Backend Connection</div></div>
+        <div style="padding:16px">
+          <div class="frow"><label>API URL</label><input class="si" style="width:100%" id="apiUrl" placeholder="https://your-app.up.railway.app" value="" oninput="">
+          <div style="font-size:10px;color:var(--mute);margin-top:4px">Current: <span style="color:var(--cyan);font-family:'Share Tech Mono',monospace" id="currentApiDisplay"></span></div>
+          <button class="btn btn-sm" style="margin-top:8px" onclick="setApiBase(document.getElementById('apiUrl').value)">Save &amp; Reconnect</button></div>
+          <button class="btn btn-g btn-sm" onclick="testConn()">Test Connection</button>
+        </div>
+      </div>
+      <!-- Sensor Readings — Manual Entry + Webhook -->
+      <div class="panel">
+        <div class="ph">
+          <div class="phd">🌡 Farm Sensor Readings</div>
+          <span class="badge bgn">Live</span>
+        </div>
+        <div style="padding:16px">
+
+          <!-- Per-farm manual entry -->
+          <div style="font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:2px;color:var(--mute);text-transform:uppercase;margin-bottom:12px">Enter readings from eWeLink app</div>
+          <div id="sensorEntryGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;margin-bottom:16px"></div>
+
+          <!-- Webhook setup -->
+          <div style="background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:14px">
+            <div style="font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:2px;color:var(--cyan);margin-bottom:8px">AUTOMATIC — eWeLink Automation Webhook</div>
+            <div style="font-size:11px;color:var(--mute);margin-bottom:10px">Set up eWeLink to push readings automatically. In the eWeLink app: <strong style="color:var(--txt)">Scenes → Add Scene → When sensor changes → Add Action → Webhook</strong></div>
+            <div style="font-size:11px;color:var(--mute);margin-bottom:6px">Your webhook URL:</div>
+            <div style="display:flex;gap:6px">
+              <div id="webhookUrl" style="flex:1;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:8px 12px;font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--cyan);word-break:break-all"></div>
+              <button class="btn btn-sm" onclick="copyWebhook()">Copy</button>
+            </div>
+            <div style="font-size:10px;color:var(--mute);margin-top:8px">POST body: <code style="color:var(--cyan)">{"farm_id":"ghummadh","temp":42.5,"humidity":35}</code></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Fleet Data Backup -->
+      <div class="panel">
+        <div class="ph"><div class="phd">Fleet Data</div><span class="badge bgn">Auto-saved</span></div>
+        <div style="padding:14px">
+          <div style="font-size:11px;color:var(--mute);margin-bottom:12px">
+            Workers and customers auto-save to this device. Use Export to back up or transfer to another device.
+          </div>
+          <div id="fleetStoreStat" style="font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--cyan);margin-bottom:12px"></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-sm btn-g" onclick="exportFleet()">⬇ Export JSON</button>
+            <button class="btn btn-sm" onclick="document.getElementById('importFile').click()">⬆ Import JSON</button>
+            <input type="file" id="importFile" accept=".json" style="display:none" onchange="importFleet(event)">
+            <button class="btn btn-sm btn-r" onclick="if(confirm('Clear ALL workers and customers?')){workers=[];customers=[];saveFleet();renderAll();toast('Fleet cleared','var(--red)');}">✕ Clear All</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="ph"><div class="phd">Notifications</div></div>
+        <div style="padding:14px 16px">
+          <div class="tw-row"><div style="font-weight:600">Push Notifications</div><label class="toggle"><input type="checkbox" checked><span class="tsldr"></span></label></div>
+          <div class="tw-row"><div style="font-weight:600">Offline Miner Alert</div><label class="toggle"><input type="checkbox" checked><span class="tsldr"></span></label></div>
+          <div class="tw-row"><div style="font-weight:600">Temperature Warning</div><label class="toggle"><input type="checkbox" checked><span class="tsldr"></span></label></div>
+          <div class="tw-row"><div style="font-weight:600">Hashrate Drop</div><label class="toggle"><input type="checkbox" checked><span class="tsldr"></span></label></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PORTAL HOME -->
+    <div id="page-portal-home" class="page">
+      <div class="portal-hero">
+        <div class="av" id="portalAv" style="background:var(--purple);width:56px;height:56px;font-size:22px;font-weight:900;border:2px solid var(--cyan)">A</div>
+        <div><div style="font-family:'Orbitron',sans-serif;font-size:18px;font-weight:700;color:var(--cyan)" id="portalGreeting">Welcome!</div><div style="font-size:12px;color:var(--mute);margin-top:4px" id="portalSub">Your mining overview</div></div>
+      </div>
+      <div class="sgrid" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr))">
+        <div class="sc sg"><div class="sl">My Miners</div><div class="sv" id="pTotal">0</div></div>
+        <div class="sc"><div class="sl">Online</div><div class="sv" id="pOnline">0</div></div>
+        <div class="sc sg"><div class="sl">Hashrate</div><div class="sv" id="pHR">0</div><div class="sss">TH/s</div></div>
+        <div class="sc so"><div class="sl">Gross Earnings</div><div class="sv" id="pGross">$0</div><div class="sss">this month</div></div>
+        <div class="sc sw"><div class="sl">Hosting Fee</div><div class="sv" id="pFee">$0</div></div>
+        <div class="sc sg"><div class="sl">Net Profit</div><div class="sv" id="pNet">$0</div></div>
+      </div>
+      <div class="panel">
+        <div class="ph"><div class="phd">My Miners</div><span class="badge bgn" id="portalOnlineBadge">0 Online</span></div>
+        <div class="tw"><table><thead><tr><th></th><th>Machine</th><th>Model</th><th>Hashrate</th><th>Temp</th><th>Fan</th><th>Pool</th><th>Status</th></tr></thead><tbody id="portalTable"></tbody></table></div>
+      </div>
+    </div>
+    <div id="page-portal-miners" class="page"><div class="page-title">My Miners</div><div class="card-grid" id="portalMinersGrid"></div></div>
+    <div id="page-portal-billing" class="page">
+      <div class="page-title">My Billing</div>
+      <div class="panel">
+        <div class="ph"><div class="phd">Current Period</div><span class="badge bc" id="billPeriod"></span></div>
+        <div style="padding:20px">
+          <div style="font-family:'Share Tech Mono',monospace;font-size:36px;color:var(--green)" id="billNet">$0</div>
+          <div style="font-size:11px;color:var(--mute);margin-bottom:20px">Estimated net profit this month</div>
+          <div id="billRows"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- MINER CONTROL PANEL -->
+<div id="ctrlPanel">
+  <div class="ctrl-topbar">
+    <div class="ctrl-back" onclick="closeCtrl()">&#x2190;</div>
+    <div style="flex:1">
+      <div class="ctrl-name" id="ctrlName">Worker</div>
+      <div class="ctrl-ip" id="ctrlIp">192.168.1.x</div>
+    </div>
+    <div id="ctrlBadge"></div>
+  </div>
+  <div class="ctrl-body">
+    <div class="ctrl-stats" id="ctrlStats"></div>
+
+    <div class="ctrl-sec">
+      <div class="ctrl-sec-title" style="color:var(--cyan)">&#x26A1; Operations</div>
+      <div class="action-grid">
+        <div class="action-btn act-cyan" onclick="doAction('restart')"><div class="action-icon">&#x1F504;</div><div class="action-label">Restart</div><div class="action-desc">Restart mining software only &mdash; no hardware reboot</div></div>
+        <div class="action-btn act-warn" onclick="doAction('reboot')"><div class="action-icon">&#x27F3;</div><div class="action-label">Reboot</div><div class="action-desc">Full hardware reboot &mdash; machine offline ~60s</div></div>
+        <div class="action-btn act-purple" onclick="doAction('sleep')"><div class="action-icon">&#x1F634;</div><div class="action-label">Sleep</div><div class="action-desc">Low-power sleep &mdash; halts hashing, stays warm</div></div>
+        <div class="action-btn act-green" onclick="doAction('wake')"><div class="action-icon">&#x26A1;</div><div class="action-label">Wake Up</div><div class="action-desc">Exit sleep mode, resume full hashing</div></div>
+        <div class="action-btn act-cyan" onclick="doAction('led')"><div class="action-icon">&#x1F4A1;</div><div class="action-label">LED Blink</div><div class="action-desc">Blink LEDs to find machine in rack</div></div>
+        <div class="action-btn act-cyan" onclick="doAction('webui')"><div class="action-icon">&#x1F310;</div><div class="action-label">Web Login</div><div class="action-desc">Open miner web UI via agent tunnel</div></div>
+      </div>
+    </div>
+
+    <div class="ctrl-sec">
+      <div class="ctrl-sec-title" style="color:var(--cyan)">&#x2699;&#xFE0F; Configuration</div>
+      <div class="action-grid">
+        <div class="action-btn act-cyan" onclick="toggleCfg('poolCfg')"><div class="action-icon">&#x1F3CA;</div><div class="action-label">Change Pool</div><div class="action-desc">Update pool &mdash; up to 3 failover pools</div></div>
+        <div class="action-btn act-cyan" onclick="toggleCfg('workerCfg')"><div class="action-icon">&#x1F194;</div><div class="action-label">Change Worker ID</div><div class="action-desc">Rename worker in MMX and pool</div></div>
+        <div class="action-btn act-warn" onclick="toggleCfg('powerCfg')"><div class="action-icon">&#x26A1;</div><div class="action-label">Power / OC</div><div class="action-desc">Adjust frequency and power mode</div></div>
+      </div>
+
+      <div class="config-panel" id="poolCfg">
+        <div style="font-family:'Orbitron',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:var(--cyan);margin-bottom:14px">POOL CONFIGURATION</div>
+        <div class="frow"><label>Pool Preset</label>
+          <select class="si" id="poolPreset" onchange="applyPreset()" style="width:100%;margin-bottom:6px">
+            <option value="">Select preset...</option>
+            <option value="stratum+tcp://btc.foundryusa.com:3333">Foundry USA (BTC)</option>
+            <option value="stratum+tcp://ss.antpool.com:3333">Antpool (BTC)</option>
+            <option value="stratum+tcp://btc.f2pool.com:3333">F2Pool (BTC)</option>
+            <option value="stratum+tcp://btc.viabtc.com:3333">ViaBTC (BTC)</option>
+            <option value="stratum+tcp://btc.luxor.tech:3333">Luxor (BTC)</option>
+            <option value="stratum+tcp://pool.k1pool.com:3333">K1Pool (KAS)</option>
+            <option value="stratum+tcp://pool.litecoinpool.org:3333">Litecoinpool (LTC)</option>
+          </select>
+        </div>
+        <div class="frow"><label>Pool URL (Primary)</label><input id="pUrl1" placeholder="stratum+tcp://pool.example.com:3333" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
+        <div class="frow"><label>Worker (wallet.worker_name)</label><input id="pUser1" placeholder="yourwallet.WORKER-001" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
+        <div style="margin-bottom:10px;cursor:pointer;color:var(--mute);font-size:11px" onclick="toggleFb()">+ Add failover pools</div>
+        <div id="fbPools" style="display:none">
+          <div class="frow"><label>Pool 2 (Failover)</label><input id="pUrl2" placeholder="stratum+tcp://..." style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
+          <div class="frow"><label>Pool 3 (Failover)</label><input id="pUrl3" placeholder="stratum+tcp://..." style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
+        </div>
+        <button class="btn btn-g btn-sm" onclick="doAction('setpool')">Apply Pool Change</button>
+      </div>
+
+      <div class="config-panel" id="workerCfg">
+        <div style="font-family:'Orbitron',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:var(--cyan);margin-bottom:14px">WORKER ID</div>
+        <div class="frow"><label>New Worker ID</label><input id="newWid" placeholder="e.g. GUMMADH-001" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
+        <div style="font-size:11px;color:var(--mute);margin-bottom:12px">Updates MMX fleet name and pool worker string (wallet.new_id)</div>
+        <button class="btn btn-g btn-sm" onclick="doAction('setworkerid')">Update Worker ID</button>
+      </div>
+
+      <div class="config-panel" id="powerCfg">
+        <div style="font-family:'Orbitron',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:var(--warn);margin-bottom:14px">POWER / OVERCLOCK</div>
+        <div class="three-col">
+          <div class="frow"><label>Mode</label><select id="powerMode" class="si" style="width:100%"><option value="normal">Normal (100%)</option><option value="low">Low Power (70%)</option><option value="high">High Perf (110%)</option></select></div>
+          <div class="frow"><label>Frequency %</label><input id="freqPct" type="number" value="100" min="50" max="120" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
+          <div class="frow"><label>Fan Speed %</label><input id="fanPct" type="number" value="80" min="20" max="100" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
+        </div>
+        <div style="background:rgba(255,184,0,.06);border:1px solid rgba(255,184,0,.2);border-radius:6px;padding:10px;font-size:11px;color:var(--warn);margin-bottom:12px">Monitor temperatures closely after applying. Overclocking may void warranty.</div>
+        <button class="btn btn-w btn-sm" onclick="doAction('overclock')">Apply Power Settings</button>
+      </div>
+    </div>
+
+    <div class="ctrl-sec">
+      <div class="ctrl-sec-title" style="color:var(--cyan)">&#x1F4CB; Diagnostics</div>
+      <div class="action-grid">
+        <div class="action-btn act-cyan" onclick="doAction('fetchlogs')"><div class="action-icon">&#x1F4CB;</div><div class="action-label">View Logs</div><div class="action-desc">Live log output from the miner</div></div>
+        <div class="action-btn act-cyan" onclick="doAction('downloadlogs')"><div class="action-icon">&#x2B07;&#xFE0F;</div><div class="action-label">Download Logs</div><div class="action-desc">Save full log file to device</div></div>
+        <div class="action-btn act-cyan" onclick="doAction('chiptest')"><div class="action-icon">&#x1F52C;</div><div class="action-label">Chip Test</div><div class="action-desc">Run chip-level diagnostic scan</div></div>
+      </div>
+      <div class="log-viewer" id="logViewer" style="display:none;margin-top:12px"></div>
+    </div>
+
+    <div class="ctrl-sec">
+      <div class="ctrl-sec-title" style="color:var(--orange)">&#x1F527; Maintenance</div>
+      <div class="action-grid">
+        <div class="action-btn act-orange" onclick="doAction('disable')"><div class="action-icon">&#x1F6AB;</div><div class="action-label">Disable</div><div class="action-desc">Take offline for repair &mdash; stays in fleet</div></div>
+        <div class="action-btn act-green" onclick="doAction('enable')"><div class="action-icon">&#x2705;</div><div class="action-label">Re-enable</div><div class="action-desc">Return from repair, resume monitoring</div></div>
+        <div class="action-btn act-warn" onclick="toggleCfg('fwCfg')"><div class="action-icon">&#x1F4E6;</div><div class="action-label">Firmware Upgrade</div><div class="action-desc">Flash new firmware &mdash; 3-5 min, no power off</div></div>
+      </div>
+      <div class="config-panel" id="fwCfg">
+        <div style="font-family:'Orbitron',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:var(--warn);margin-bottom:14px">FIRMWARE UPGRADE</div>
+        <div class="frow"><label>Firmware URL or File Path</label><input id="fwUrl" placeholder="https://... or /path/to/firmware.bin" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
+        <div class="frow"><label>Target Version</label><input id="fwVer" placeholder="e.g. 11.0.1.3" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
+        <div style="background:rgba(255,184,0,.06);border:1px solid rgba(255,184,0,.2);border-radius:6px;padding:10px;font-size:11px;color:var(--warn);margin-bottom:12px">DO NOT disconnect power. Miner will be offline 3-5 minutes. Wrong firmware = brick.</div>
+        <button class="btn btn-w btn-sm" onclick="doAction('firmware')">Start Firmware Upgrade</button>
+      </div>
+    </div>
+
+    <div class="ctrl-sec">
+      <div class="ctrl-sec-title" style="color:var(--red)">&#x26A0; Danger Zone</div>
+      <div class="action-grid">
+        <div class="action-btn act-red" onclick="doAction('factoryreset')"><div class="action-icon">&#x1F4A3;</div><div class="action-label">Factory Reset</div><div class="action-desc">Wipe ALL settings &mdash; full reconfiguration needed</div></div>
+        <div class="action-btn act-red" onclick="doAction('delete')"><div class="action-icon">&#x1F5D1;&#xFE0F;</div><div class="action-label">Delete from Fleet</div><div class="action-desc">Remove permanently from MMX &mdash; cannot undo</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- BOTTOM NAV -->
+<div id="bottomNav">
+  <div class="bnav" id="bnavAdmin">
+    <div class="bi active" onclick="nav('dashboard',null)"><div class="bi-icon">&#x1F4CA;</div><div class="bi-lbl">Dashboard</div></div>
+    <div class="bi" onclick="nav('workers',null)"><div class="bi-icon">&#x26CF;&#xFE0F;</div><div class="bi-lbl">Workers</div></div>
+    <div class="bi" onclick="nav('agents',null)"><div class="bi-icon">&#x1F4E1;</div><div class="bi-lbl">Agents</div></div>
+    <div class="bi" onclick="nav('customers',null)"><div class="bi-icon">&#x1F465;</div><div class="bi-lbl">Customers</div></div>
+    <div class="bi" onclick="nav('alerts',null)"><div class="bi-icon">&#x1F514;</div><div class="bi-lbl">Alerts</div><div class="bi-badge" id="alertBadgeBn" style="display:none">0</div></div>
+    <div class="bi" onclick="nav('scada',null)"><div class="bi-icon">💧</div><div class="bi-lbl">SCADA</div></div>
+  </div>
+  <div class="bnav" id="bnavCust" style="display:none">
+    <div class="bi active" onclick="nav('portal-home',null)"><div class="bi-icon">&#x1F4CA;</div><div class="bi-lbl">Dashboard</div></div>
+    <div class="bi" onclick="nav('portal-miners',null)"><div class="bi-icon">&#x26CF;&#xFE0F;</div><div class="bi-lbl">My Miners</div></div>
+    <div class="bi" onclick="nav('portal-billing',null)"><div class="bi-icon">&#x1F4B3;</div><div class="bi-lbl">Billing</div></div>
+    <div class="bi" onclick="nav('pools',null)"><div class="bi-icon">&#x1F3CA;</div><div class="bi-lbl">Pools</div></div>
+  </div>
+</div>
+
+    <!-- SCADA HYDRO — SP Cloud -->
+    <div id="page-scada" class="page">
+      <div id="scadaLoginPanel">
+        <div style="max-width:420px;margin:40px auto">
+          <div style="background:var(--s1);border:1px solid var(--b2);border-radius:14px;padding:32px 28px">
+            <div style="text-align:center;margin-bottom:24px">
+              <div style="font-size:48px;margin-bottom:8px">💧</div>
+              <div style="font-family:'Orbitron',sans-serif;font-size:20px;font-weight:900;color:var(--cyan);letter-spacing:3px">HYDRO SCADA</div>
+              <div style="font-size:11px;color:var(--txt);margin-top:4px;letter-spacing:2px;font-family:'Exo 2',sans-serif;font-weight:600">WAFRA HYDRO SITE</div>
+              <div style="display:flex;gap:6px;justify-content:center;margin-top:10px;flex-wrap:wrap">
+                <span style="background:rgba(0,200,255,.1);border:1px solid rgba(0,200,255,.3);border-radius:4px;padding:2px 8px;font-size:10px;color:var(--cyan);font-family:'Share Tech Mono',monospace">MY16-542</span>
+                <span style="background:rgba(0,200,255,.1);border:1px solid rgba(0,200,255,.3);border-radius:4px;padding:2px 8px;font-size:10px;color:var(--cyan);font-family:'Share Tech Mono',monospace">1to1-535</span>
+                <span style="background:rgba(0,200,255,.1);border:1px solid rgba(0,200,255,.3);border-radius:4px;padding:2px 8px;font-size:10px;color:var(--cyan);font-family:'Share Tech Mono',monospace">1to1-288</span>
+              </div>
+              <div style="margin-top:10px;background:rgba(123,47,255,.08);border:1px solid rgba(123,47,255,.3);border-radius:6px;padding:6px 12px;font-size:10px;color:var(--purple)">Powered by SP Cloud</div>
+            </div>
+            <div class="frow"><label>Username</label><input id="scadaUser" placeholder="Wafra" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:10px 14px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:13px;outline:none"></div>
+            <div class="frow"><label>Password</label><input id="scadaPass" type="password" placeholder="••••••••" onkeydown="if(event.key==='Enter')scadaLogin()" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:10px 14px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:13px;outline:none"></div>
+            <div id="scadaLoginErr" style="font-size:11px;margin-bottom:8px;display:none;padding:8px;border-radius:5px;background:rgba(255,45,85,.1);border:1px solid rgba(255,45,85,.3);color:var(--red)"></div>
+            <button onclick="scadaLogin()" style="width:100%;padding:13px;border:none;border-radius:7px;font-family:'Orbitron',sans-serif;font-weight:700;font-size:13px;letter-spacing:2px;cursor:pointer;background:linear-gradient(135deg,var(--cyan),#0090cc);color:var(--bg);margin-top:4px">ACCESS SYSTEM</button>
+            <div style="text-align:center;font-size:10px;color:var(--mute);margin-top:14px">&#x1F512; Secured — credentials stored in Railway only</div>
+          </div>
+        </div>
+      </div>
+      <div id="scadaDashboard" style="display:none">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+          <div style="flex:1">
+            <div style="font-family:'Orbitron',sans-serif;font-size:16px;font-weight:900;color:var(--cyan);letter-spacing:2px">&#x1F4A7; WAFRA HYDRO SCADA</div>
+            <div style="font-size:11px;color:var(--mute)">Lanli — MY16-542 · 1to1-535 · 1to1-288 · SP Cloud</div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-sm" onclick="openSpCloud()">&#x1F310; Open SP Cloud</button>
+            <button class="btn btn-sm" onclick="openManualEntry()">&#x270F; Manual Entry</button>
+            <button class="btn btn-sm btn-r" onclick="scadaLogout()">Logout</button>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:16px">
+          <div class="sc sg"><div class="sl">Total Power</div><div class="sv" id="scadaTotalPower">—</div><div class="sss">kW</div></div>
+          <div class="sc"><div class="sl">Rated</div><div class="sv" style="font-size:16px">1.365</div><div class="sss">kW</div></div>
+          <div class="sc sp"><div class="sl">Cabinets</div><div class="sv" id="scadaCabOnline">—</div><div class="sss">online</div></div>
+          <div class="sc so"><div class="sl">Energy Today</div><div class="sv" id="scadaTodayEnergy">—</div><div class="sss">kWh</div></div>
+          <div class="sc sr"><div class="sl">Alarms</div><div class="sv" id="scadaAlarmCount">0</div></div>
+          <div class="sc"><div class="sl">Updated</div><div class="sv" style="font-size:12px" id="scadaLastUpdate">—</div></div>
+        </div>
+        <!-- SP Cloud embed -->
+        <div class="panel" style="margin-bottom:14px">
+          <div class="ph">
+            <div class="phd">&#x1F310; SP Cloud HMI — Live</div>
+            <span class="badge bpp">SCADA Portal</span>
+            <div class="pa">
+              <button class="btn btn-sm" onclick="reloadSpFrame()">&#x21BA; Reload</button>
+              <button class="btn btn-sm" onclick="openSpCloud()">&#x2922; Full Screen</button>
+            </div>
+          </div>
+          <div style="padding:16px">
+
+            <!-- VPN Status checker -->
+            <div id="vpnStatusBar" style="background:rgba(255,184,0,.06);border:1px solid rgba(255,184,0,.3);border-radius:8px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;gap:10px">
+              <div style="font-size:20px">🇳🇱</div>
+              <div style="flex:1">
+                <div style="font-size:12px;font-family:'Exo 2',sans-serif;font-weight:700;color:var(--warn)">VPN Required — Netherlands</div>
+                <div style="font-size:10px;color:var(--mute);margin-top:2px">Connect your VPN to Netherlands before opening iDOSP</div>
+              </div>
+              <div id="vpnDot" style="width:10px;height:10px;border-radius:50%;background:var(--warn);box-shadow:0 0 8px var(--warn)"></div>
+            </div>
+
+            <!-- Main iDOSP launch button -->
+            <div style="background:linear-gradient(135deg,rgba(123,47,255,.12),rgba(0,200,255,.06));border:1px solid rgba(123,47,255,.4);border-radius:12px;padding:24px;text-align:center;margin-bottom:14px">
+              <div style="font-size:36px;margin-bottom:8px">🌐</div>
+              <div style="font-family:'Orbitron',sans-serif;font-size:16px;font-weight:900;color:var(--purple);letter-spacing:2px;margin-bottom:4px">iDOSP SCADA</div>
+              <div style="font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--mute);margin-bottom:6px">www.idosp.net</div>
+              <div style="font-size:11px;color:var(--mute);margin-bottom:18px">MY16-542 &nbsp;·&nbsp; 1to1-535 &nbsp;·&nbsp; 1to1-288</div>
+              <button onclick="openIdospTab()" style="padding:14px 32px;border:none;border-radius:8px;font-family:'Orbitron',sans-serif;font-weight:700;font-size:14px;letter-spacing:2px;cursor:pointer;background:linear-gradient(135deg,var(--purple),#5500cc);color:#fff;width:100%;max-width:280px">
+                &#x2922; OPEN iDOSP
+              </button>
+              <div style="font-size:10px;color:var(--mute);margin-top:10px">Opens in a new tab &nbsp;·&nbsp; Keep VPN active</div>
+            </div>
+
+            <!-- Quick workflow guide -->
+            <div style="background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:14px">
+              <div style="font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:2px;color:var(--mute);text-transform:uppercase;margin-bottom:10px">Quick Access Workflow</div>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <div style="display:flex;align-items:center;gap:10px">
+                  <div style="width:24px;height:24px;border-radius:50%;background:rgba(0,200,255,.15);border:1px solid var(--cyan);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--cyan);flex-shrink:0">1</div>
+                  <div style="font-size:11px;color:var(--txt)">Enable VPN → connect to <strong style="color:var(--cyan)">Netherlands</strong></div>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px">
+                  <div style="width:24px;height:24px;border-radius:50%;background:rgba(123,47,255,.15);border:1px solid var(--purple);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--purple);flex-shrink:0">2</div>
+                  <div style="font-size:11px;color:var(--txt)">Tap <strong style="color:var(--purple)">Open iDOSP</strong> above</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px">
+                  <div style="width:24px;height:24px;border-radius:50%;background:rgba(0,255,157,.15);border:1px solid var(--green);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--green);flex-shrink:0">3</div>
+                  <div style="font-size:11px;color:var(--txt)">Login with <strong style="color:var(--green)">Wafra</strong> credentials on iDOSP</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px">
+                  <div style="width:24px;height:24px;border-radius:50%;background:rgba(255,184,0,.15);border:1px solid var(--warn);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--warn);flex-shrink:0">4</div>
+                  <div style="font-size:11px;color:var(--txt)">View all 3 Lanli cabinet HMIs live</div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+        <!-- Cabinet cards (manual readings) -->
+        <div style="font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:2px;color:var(--mute);text-transform:uppercase;margin-bottom:10px">Manual Readings — 3 Cabinets</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin-bottom:14px" id="cabinetGrid"></div>
+      </div>
+      <!-- Manual Entry Sheet -->
+      <div class="overlay" id="manualEntrySheet">
+        <div class="sheet" style="max-width:560px">
+          <div class="sheet-handle"></div>
+          <div class="sheet-title">&#x270F; MANUAL READING ENTRY</div>
+          <div class="sheet-body">
+            <div class="frow"><label>Cabinet</label>
+              <select id="manualCabSel" class="si" style="width:100%">
+                <option value="cabinet-1">Cabinet 1 — MY16-542</option>
+                <option value="cabinet-2">Cabinet 2 — 1to1-535</option>
+                <option value="cabinet-3">Cabinet 3 — 1to1-288</option>
+              </select>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <div class="frow"><label>Power (kW)</label><input id="m_power" type="number" step="0.001" placeholder="0.535" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:8px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
+              <div class="frow"><label>Voltage (V)</label><input id="m_voltage" type="number" step="0.1" placeholder="220.0" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:8px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
+              <div class="frow"><label>Current (A)</label><input id="m_current" type="number" step="0.1" placeholder="2.4" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:8px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
+              <div class="frow"><label>Frequency (Hz)</label><input id="m_freq" type="number" step="0.01" value="50.00" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:8px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
+              <div class="frow"><label>Temperature (°C)</label><input id="m_temp" type="number" placeholder="45" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:8px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
+              <div class="frow"><label>Turbine RPM</label><input id="m_rpm" type="number" placeholder="1500" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:8px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
+              <div class="frow"><label>Water Flow (m³/h)</label><input id="m_flow" type="number" step="0.1" placeholder="0.8" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:8px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
+              <div class="frow"><label>Water Head (m)</label><input id="m_level" type="number" step="0.1" placeholder="12.5" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:8px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
+            </div>
+            <div class="frow"><label>Notes</label><textarea id="m_notes" rows="2" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:8px 12px;color:var(--txt);font-family:'Exo 2',sans-serif;font-size:12px;outline:none;resize:none"></textarea></div>
+          </div>
+          <div class="sheet-foot">
+            <button class="btn" onclick="closeSheet('manualEntrySheet')">Cancel</button>
+            <button class="btn btn-g" onclick="saveManualReading()">Save Reading</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+<!-- ADD CUSTOMER SHEET -->
+<div class="overlay" id="addCustSheet">
+  <div class="sheet"><div class="sheet-handle"></div><div class="sheet-title">ADD CUSTOMER</div>
+    <div class="sheet-body"><div class="two-col">
+      <div class="frow"><label>Full Name</label><input id="cName" placeholder="Ahmad Al-Farsi"></div>
+      <div class="frow"><label>Email (login)</label><input id="cEmail" type="email" placeholder="customer@email.com"></div>
+      <div class="frow"><label>Temp Password</label><input id="cPass" type="password" placeholder="Temporary password"></div>
+      <div class="frow"><label>Country</label><input id="cCountry" placeholder="Saudi Arabia"></div>
+      <div class="frow"><label>Plan</label><select id="cPlan"><option>Basic</option><option>Pro</option><option>Enterprise</option></select></div>
+      <div class="frow"><label>Rate ($/machine/month)</label><input id="cRate" type="number" value="300"></div>
+    </div>
+    <div style="background:rgba(0,255,157,.04);border:1px solid rgba(0,255,157,.2);border-radius:6px;padding:12px;font-size:11px;color:var(--green);margin-top:4px">Customer sees ONLY their assigned miners.</div>
+    </div>
+    <div class="sheet-foot"><button class="btn" onclick="closeSheet('addCustSheet')">Cancel</button><button class="btn btn-g" onclick="addCustomer()">Create Account</button></div>
+  </div>
+</div>
+<script>
+
+// ============================================================
+// EKALAVYA — API CONFIG
+// Change API_BASE to your Railway backend URL after deployment
+// e.g. 'https://ekalavya-backend-production.up.railway.app'
+// Leave as localhost for local testing
+// ============================================================
+function sanitizeUrl(u){
+  if(!u||!u.trim())return '';
+  u=u.trim().replace(/\/+$/,'');
+  if(!u.startsWith('http://') && !u.startsWith('https://')) u='https://'+u;
+  return u;
+}
+const API_BASE = sanitizeUrl(window.EKL_API_BASE)
+  || sanitizeUrl(localStorage.getItem('ekl_api_base'))
+  || 'http://localhost:3001';
+
+let isCustomer=false,currentUser=null,activeWid=null;
+const coins={BTC:{p:67420,c:2.1,ico:'₿',col:'#f7931a'},ETH:{p:3480,c:-.8,ico:'Ξ',col:'#627eea'},LTC:{p:84.2,c:1.3,ico:'Ł',col:'#bfbbbb'},KAS:{p:.1124,c:8.2,ico:'K',col:'#70c7ba'},DOGE:{p:.1842,c:5.7,ico:'Ð',col:'#c3a634'}};
+const CC=['#e74c3c','#3498db','#2ecc71','#9b59b6','#e67e22','#1abc9c','#f39c12'];
+
+let workers   = [];
+let customers = [];
+
+// ═══════════════════════════════════════════════════════════
+//  FLEET PERSISTENCE — localStorage, dead simple
+// ═══════════════════════════════════════════════════════════
+const STORE_KEY = 'ekl_v2';
+
+function saveFleet() {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify({ w: workers, c: customers, t: Date.now() }));
+  } catch(e) {
+    console.error('[FLEET] Save error:', e.message);
+  }
+}
+
+function loadFleet() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) {
+      // Try old key migration
+      const old = localStorage.getItem('ekl_fleet_v1');
+      if (old) {
+        const d = JSON.parse(old);
+        if (d.workers?.length)   workers   = d.workers;
+        if (d.customers?.length) customers = d.customers;
+        saveFleet(); // migrate to new key
+        console.log('[FLEET] Migrated from old key: ' + workers.length + ' workers');
+      }
+      return;
+    }
+    const d = JSON.parse(raw);
+    if (d.w?.length)   workers   = d.w;
+    if (d.c?.length)   customers = d.c;
+    console.log('[FLEET] Loaded: ' + workers.length + ' workers, ' + customers.length + ' customers');
+  } catch(e) {
+    console.error('[FLEET] Load error:', e.message);
+  }
+}
+
+// Save to backend (fire and forget — never block UI on this)
+function saveFleetToBackend() {
+  try {
+    const token = localStorage.getItem('ekl_token');
+    if (!token) return;
+    const base = (typeof API_BASE !== 'undefined') ? API_BASE : '';
+    if (!base || base.includes('localhost')) return;
+    fetch(base + '/api/fleet/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ workers, customers }),
+    }).catch(() => {});
+  } catch(e) {}
+}
+
+// Load from backend — ADDITIVE ONLY, never removes local data
+function loadFleetFromBackend(cb) {
+  try {
+    const token = localStorage.getItem('ekl_token');
+    const base  = (typeof API_BASE !== 'undefined') ? API_BASE : '';
+    if (!token || !base || base.includes('localhost')) { if (cb) cb(); return; }
+    fetch(base + '/api/fleet/load', { headers: { 'Authorization': 'Bearer ' + token } })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d?.ok && d.workers?.length > 0) {
+          let added = 0;
+          d.workers.forEach(bw => {
+            if (!workers.find(lw => lw.ip === bw.ip)) { workers.push(bw); added++; }
+          });
+          (d.customers || []).forEach(bc => {
+            if (!customers.find(lc => lc.id === bc.id)) customers.push(bc);
+          });
+          if (added > 0) { saveFleet(); console.log('[FLEET] +' + added + ' from backend'); }
+        }
+        loadAgentConfigsFromBackend();
+        if (cb) cb();
+      })
+      .catch(() => { if (cb) cb(); });
+  } catch(e) { if (cb) cb(); }
+}
+
+function loadAgentConfigsFromBackend(){
+  const token=localStorage.getItem('ekl_token');
+  if(!token||!API_BASE||API_BASE.includes('localhost')) return;
+  fetch(API_BASE+'/api/fleet/agent-configs',{headers:{'Authorization':'Bearer '+token}})
+  .then(r=>r.ok?r.json():null)
+  .then(d=>{
+    if(!d?.configs) return;
+    // Merge into localStorage
+    d.configs.forEach(cfg=>{
+      if(cfg.subnets?.length>0){
+        localStorage.setItem('agent_subnets_'+cfg.farm_id, JSON.stringify(cfg.subnets));
+        // Update in-memory agent
+        const a=agents.find(x=>x.id===cfg.farm_id);
+        if(a) a.subnet=cfg.subnets.join(',');
+      }
+    });
+  }).catch(()=>{});
+}
+
+// customers managed in persistence layer above
+
+let agents = []; // loaded from API — real connected farm agents
+
+const pools=[
+  {flag:'🇺🇸',name:'Foundry USA',coins:['BTC'],fee:'0%',hr:'~140 EH/s',luck:'99.2%',lat:'8ms',s:'online'},
+  {flag:'🇨🇳',name:'Antpool',coins:['BTC','LTC'],fee:'0-2.5%',hr:'~95 EH/s',luck:'101%',lat:'12ms',s:'online'},
+  {flag:'🇨🇳',name:'F2Pool',coins:['BTC','ETH','LTC'],fee:'2-3%',hr:'~58 EH/s',luck:'98.5%',lat:'15ms',s:'online'},
+  {flag:'🇺🇸',name:'Luxor',coins:['BTC','KAS'],fee:'0.3%',hr:'~18 EH/s',luck:'100.2%',lat:'10ms',s:'online'},
+  {flag:'🇰🇿',name:'K1Pool',coins:['BTC','KAS'],fee:'0.9%',hr:'~2 EH/s',luck:'98.3%',lat:'35ms',s:'online'},
+  {flag:'🇺🇸',name:'Litecoinpool',coins:['LTC','DOGE'],fee:'0%',hr:'~850 TH/s',luck:'100.5%',lat:'11ms',s:'online'},
+  {flag:'🇩🇪',name:'Ethermine',coins:['ETH'],fee:'1%',hr:'~12 EH/s',luck:'99.0%',lat:'17ms',s:'online'},
+  {flag:'🌍',name:'NiceHash',coins:['BTC'],fee:'2%',hr:'~15 EH/s',luck:'N/A',lat:'20ms',s:'online'},
+];
+
+const profitModels=[
+  {model:'Antminer S21',hr:200,power:3500,algo:'SHA-256'},
+  {model:'Antminer S19 XP',hr:140,power:3010,algo:'SHA-256'},
+  {model:'Antminer S19 Pro',hr:110,power:3250,algo:'SHA-256'},
+  {model:'Whatsminer M50',hr:126,power:3276,algo:'SHA-256'},
+  {model:'Antminer KA3',hr:166000,power:3154,algo:'KHeavyHash'},
+  {model:'Antminer L7',hr:9050,power:3425,algo:'Scrypt'},
+];
+
+const teamData=[{name:'Alex T.',col:'#e74c3c',role:'Admin',email:'alex@ekalavya.io',last:'2 min ago'},{name:'Sam Lee',col:'#3498db',role:'Manager',email:'sam@ekalavya.io',last:'1h ago'},{name:'Jamie R.',col:'#2ecc71',role:'Technician',email:'jamie@ekalavya.io',last:'3h ago'}];
+let alertsData = []; // populated from real miner events
+
+// LOGIN
+let loginTab='admin';
+function setLTab(t,el){loginTab=t;document.querySelectorAll('.ltab').forEach(x=>x.classList.remove('active'));el.classList.add('active');const b=document.getElementById('lBtn'),h=document.getElementById('lHint');if(t==='customer'){b.className='login-btn customer';b.textContent='ENTER CUSTOMER PORTAL';h.textContent='Demo: ahmad@example.com / ahmad123';}else{b.className='login-btn admin';b.textContent='ACCESS PLATFORM';h.innerHTML='Admin: admin / admin123<br>Customer: ahmad@example.com / ahmad123';}}
+function doLogin(){
+  const u=document.getElementById('lUser').value.trim();
+  const p=document.getElementById('lPass').value;
+  const e=document.getElementById('lerr');
+  e.style.display='none';
+  if(!u||!p){e.textContent='Enter credentials';e.style.display='block';return;}
+
+  if(loginTab==='customer'){
+    const c=customers.find(x=>x.email.toLowerCase()===u.toLowerCase());
+    if(!c){e.textContent='Customer not found. Contact your administrator.';e.style.display='block';return;}
+    isCustomer=true;
+    currentUser={...c,role:'customer'};
+  } else {
+    isCustomer=false;
+    currentUser={id:'admin-1',name:u==='admin'?'Admin User':u,role:loginTab==='team'?'technician':'admin'};
+  }
+
+  // Get JWT token from backend (non-blocking)
+  fetch(API_BASE+'/api/auth/login',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({username:u,password:p})
+  }).then(r=>r.json()).then(d=>{
+    if(d.token) localStorage.setItem('ekl_token',d.token);
+  }).catch(()=>{});
+
+  launchApp();
+}
+function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).style.display='none');['ticker','topbar','appBody','bottomNav'].forEach(id=>document.getElementById(id).style.display=id==='appBody'?'flex':id==='bottomNav'?'block':'flex');const ini=currentUser.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();document.getElementById('sideAv').textContent=ini;document.getElementById('sideName').textContent=currentUser.name;document.getElementById('sideRole').textContent=isCustomer?'Customer Portal':currentUser.role==='admin'?'Super Admin':'Team Member';document.getElementById('topBadge').textContent=isCustomer?'PORTAL':'ADMIN';if(isCustomer){document.getElementById('adminNav').style.display='none';document.getElementById('custNav').style.display='block';document.getElementById('agentPill').style.display='none';document.getElementById('bnavAdmin').style.display='none';document.getElementById('bnavCust').style.display='flex';showPage('portal-home');document.getElementById('custNav').querySelector('.nav-item').classList.add('active');renderPortal();}else{populateDropdowns();renderAll();}initTicker();// updateTicker removed — was demo data onlysetInterval(liveUpdate,30000);fetchAgents();setInterval(fetchAgents,30000);
+  // WebSocket for real-time scan results
+  try {
+    const wsUrl = API_BASE.replace('https://','wss://').replace('http://','ws://') + '/ws';
+    const liveWs = new WebSocket(wsUrl);
+    liveWs.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if(msg.type==='scan_found' && msg.miner){
+          scanFound++;
+          _lastScanResults[msg.miner.ip] = {...msg.miner, _farmId: currentScanFarmId, _farmName: currentScanFarmName};
+          document.getElementById('foundCount').textContent=scanFound;
+          addLog('found','[ FOUND ] '+msg.miner.ip+' — '+(msg.miner.brand||'')+' '+(msg.miner.model||'ASIC')+' | '+msg.miner.hr_display+' | '+(msg.miner.temp||'—')+'°C');
+          addFoundCard(msg.miner);
+          document.getElementById('foundSection').style.display='block';
+          document.getElementById('discCount').textContent=scanFound+' Found';
+        }
+        if(msg.type==='scan_progress'){
+          const pct=msg.progress||0;
+          document.getElementById('progFill').style.width=pct+'%';
+          document.getElementById('scanStatus').textContent=pct+'%';
+          document.getElementById('scanCount').textContent=msg.scanned||0;
+          if(msg.done) stopScan();
+        }
+        if(msg.type==='agent_connected') fetchAgents();
+        if(msg.type==='agent_disconnected') fetchAgents();
+      } catch(e) {}
+    };
+    liveWs.onerror = () => {};
+  } catch(e) {}if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+  try { checkApiSetup(); } catch(e){}
+  try { loadFleet(); } catch(e){}
+  try { initSensors(); } catch(e){}
+  try { renderAll(); } catch(e){ console.error('renderAll error:',e); }
+  window.addEventListener('beforeunload', function(){ try{saveFleet();}catch(e){} });
+  setTimeout(function(){
+    try{ loadFleetFromBackend(function(){ try{if(workers.length>0)renderAll();}catch(e){} }); }catch(e){}
+  }, 2000);
+  setInterval(function(){ try{saveFleet();}catch(e){}}, 30000);
+  const d=document.getElementById('currentApiDisplay');if(d)d.textContent=API_BASE;
+  const ai=document.getElementById('apiUrl');if(ai)ai.value=API_BASE;}
+function logout(){location.reload();}
+
+// NAV
+function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));const pg=document.getElementById('page-'+n);if(pg)pg.classList.add('active');if(n==='scada')checkScadaSession();
+  if(n==='settings'){updateFleetStat();renderSensorEntryGrid();}}
+function nav(page,el){showPage(page);document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));if(el)el.classList.add('active');}
+
+// TICKER
+function initTicker(){let h='';Object.entries(coins).forEach(([k,d])=>{const dir=d.c>=0?'up':'dn',s=d.c>=0?'+':'';h+=`<div class="tick-item"><span class="t-sym" style="color:${d.col}">${d.ico} ${k}</span><span class="t-price">$${d.p.toLocaleString()}</span><span class="t-chg ${dir}">${s}${d.c}%</span></div>`;});document.getElementById('tickTrack').innerHTML=h+h;}
+function updateTicker(){Object.keys(coins).forEach(k=>{coins[k].p=parseFloat((coins[k].p*(1+(Math.random()-.5)*.003)).toFixed(k==='BTC'||k==='ETH'?2:4));coins[k].c=parseFloat((coins[k].c+(Math.random()-.5)*.4).toFixed(2));});initTicker();}
+
+// HELPERS
+function sdot(w){return w.disabled||w.status==='disabled'?'dis':w.status==='sleeping'?'slp':w.status==='rebooting'?'rb':w.status==='online'?'on':w.status==='warn'?'wn':'off';}
+function sbadge(w){const m={online:'bgn',warn:'bwn',offline:'brn',disabled:'bor',sleeping:'bpp',rebooting:'bc'};const l={online:'ONLINE',warn:'WARNING',offline:'OFFLINE',disabled:'DISABLED',sleeping:'SLEEPING',rebooting:'REBOOTING'};return `<span class="badge ${m[w.status]||'bc'}">${l[w.status]||w.status.toUpperCase()}</span>`;}
+function getAlgoFromModel(model){
+  const m=(model||'').toLowerCase();
+  // Scrypt — LTC miners: L3, L3+, L5, L7, L9, L11, L15, L19
+  // Match: "l3", "l3+", "l5", "l7", "l9", "l11", "l15", "l19", "antminer l", etc.
+  if(/\bl[0-9]+/.test(m)||m.includes('scrypt')||m.includes('litecoin')||m.includes('ltc')||m.includes(' l3')||m.includes(' l5')||m.includes(' l7')||m.includes(' l9')) return 'Scrypt';
+  // KHeavyHash — KAS miners
+  if(m.includes('ka3')||m.includes('kaspa')||m.includes('kheavy')||m.includes('ika')) return 'KHeavyHash';
+  // X11 — DASH miners
+  if(m.includes('d9')||m.includes('d19')||m.includes('dash')||m.includes('x11')) return 'X11';
+  // Blake2B — Handshake, Sia
+  if(m.includes('hs')||m.includes('blake')||m.includes('handshake')) return 'Blake2B';
+  // Ethash
+  if(m.includes('e9')||m.includes('ethash')) return 'Ethash';
+  return 'SHA-256';
+}
+function hrDisplay(w){
+  if(!w.hashrate||w.hashrate===0) return '<span style="color:var(--mute)">—</span>';
+  // Use agent-provided display string if available and meaningful
+  if(w.hr_display && w.hr_display!=='—' && w.hr_display!=='0.00 TH/s' && w.hr_display!=='0.00 GH/s') return w.hr_display;
+  // Determine unit from stored value or model detection
+  const algo    = w.algo || getAlgoFromModel(w.model||'');
+  const ghAlgos = ['Scrypt','KHeavyHash','X11','Blake2B','Ethash','Equihash'];
+  const isGH    = w.hr_unit==='GH/s' || ghAlgos.includes(algo);
+  const unit    = isGH ? 'GH/s' : 'TH/s';
+  const val     = w.hashrate;
+  // Auto-scale: if SHA-256 miner shows tiny TH value, might be stored as MH
+  if(!isGH && val < 0.1 && val > 0) return (val*1000).toFixed(1)+' GH/s'; // convert TH→GH for display
+  return val.toFixed(2)+' '+unit;
+}
+function toast(msg,col){const t=document.createElement('div');t.className='toast';t.style.borderColor=col||'var(--b1)';t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),5000);}
+
+function renderAll(){renderDash();renderWorkers();renderAgents();renderCustomers();renderBilling();renderPools();renderProfit();renderTeam();renderAlerts();}
+
+// Fetch real agents from backend API
+function fetchAgents(){
+  const url = API_BASE + '/api/agents';
+  fetch(url)
+    .then(r => { if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+    .then(d => {
+      if(d.agents !== undefined){
+        agents = d.agents.map(a => ({
+          id:       a.farm_id,
+          name:     a.farm_name,
+          subnet:   a.subnet,
+          host:     a.hostname      || 'unknown',
+          ver:      a.agent_version || '1.0.0',
+          online:   a.online !== false,
+          count:    a.miner_count   || 0,
+          lastSeen: a.last_seen_ago || 'Just now',
+          lastPoll: a.last_seen_ago || 'Just now',
+        }));
+        updateAgentUI();
+      }
+    })
+    .catch(err => console.warn('[EKL] fetchAgents failed:', err.message));
+}
+
+function updateAgentUI(){
+  const ca = agents.filter(a => a.online).length;
+
+  // Update topbar pill
+  const pill  = document.getElementById('agentPillTxt');
+  const badge = document.getElementById('agentNavBadge');
+  const sbadge= document.getElementById('agentStripBadge');
+  const cbadge= document.getElementById('agentCountBadge');
+  if(pill)   pill.textContent   = ca+' Agent'+(ca!==1?'s':'');
+  if(badge)  badge.textContent  = ca;
+  if(sbadge) sbadge.textContent = ca+' Online';
+  if(cbadge) cbadge.textContent = ca+' Online';
+
+  // Update stat card on dashboard
+  const dAgents = document.getElementById('dAgents');
+  if(dAgents) dAgents.textContent = ca;
+
+  // Update agent strip on dashboard
+  const strip = document.getElementById('agentStrip');
+  if(strip){
+    strip.innerHTML = agents.length === 0
+      ? '<div style="padding:20px;text-align:center;color:var(--mute);font-size:12px">No agents connected. Run SETUP-WINDOWS.bat on each farm PC.</div>'
+      : agents.map(a => `
+        <div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--b1)">
+          <span class="sdot ${a.online?'on':'off'}"></span>
+          <div style="flex:1">
+            <div style="font-family:'Exo 2',sans-serif;font-weight:700;font-size:13px;color:var(--txt)">${a.name}</div>
+            <div style="font-size:10px;color:var(--mute)">${a.subnet} &nbsp;·&nbsp; ${a.count} miners &nbsp;·&nbsp; ${a.lastSeen}</div>
+          </div>
+          <span class="badge ${a.online?'bgn':'brn'}">${a.online?'ONLINE':'OFFLINE'}</span>
+          <button class="abtn" onclick="triggerScan('${a.id}')">Scan</button>
+        </div>`).join('');
+  }
+
+  // Update Farm Agents page grid
+  const grid = document.getElementById('agentGrid');
+  if(grid){
+    grid.innerHTML = agents.length === 0
+      ? '<div style="padding:30px;text-align:center;color:var(--mute)">No agents connected yet.<br>Run SETUP-WINDOWS.bat on each farm PC.</div>'
+      : agents.map(a => `
+        <div class="card">
+          <div class="card-head">
+            <span style="font-size:22px">${a.name.includes('Dubai')||a.name.includes('dubai')?'🇦🇪':a.name.includes('KZ')||a.name.includes('Kazakhstan')?'🇰🇿':a.name.includes('USA')||a.name.includes('Texas')?'🇺🇸':'🏭'}</span>
+            <div style="flex:1">
+              <div style="font-family:'Exo 2',sans-serif;font-weight:700;font-size:14px;color:var(--txt)">${a.name}</div>
+              <div style="font-size:10px;color:var(--mute)">${a.host} &nbsp;·&nbsp; v${a.ver}</div>
+            </div>
+            <span class="badge ${a.online?'bgn':'brn'}">${a.online?'ONLINE':'OFFLINE'}</span>
+          </div>
+          <div style="padding:4px 14px 0"><div class="tline ${a.online?'':'off'}"></div></div>
+          <div class="card-body">
+            <div class="card-row"><span class="ck">Subnet</span><span class="cv">${a.subnet}</span></div>
+            <div class="card-row"><span class="ck">Miners Found</span><span class="cv g">${a.count}</span></div>
+            <div class="card-row"><span class="ck">Last Seen</span><span class="cv ${a.online?'g':'r'}">${a.lastSeen}</span></div>
+            <div class="card-row"><span class="ck">Version</span><span class="cv">v${a.ver}</span></div>
+          </div>
+          <div class="card-foot">
+            <button class="btn btn-sm ${!a.online?'btn-r':''}" onclick="triggerScan('${a.id}')">${a.online?'📡 Scan Network':'✗ Offline'}</button>
+            <button class="btn btn-sm" onclick="alert('Syncing ${a.name}...')">↺ Sync</button>
+          </div>
+        </div>`).join('');
+  }
+
+  // Update scanner dropdown
+  populateDropdowns();
+  // Re-render fleet view
+  if(document.getElementById('fleetByFarm')) renderFleetByFarm();
+}
+
+// DASHBOARD
+function drawPie(online, offline, disabled_) {
+  const total = online + offline + disabled_;
+  if (total === 0) return;
+  const svg = document.getElementById('fleetPie');
+  const leg = document.getElementById('pieLegend');
+  if (!svg || !leg) return;
+
+  const cx = 60, cy = 60, r = 48, inner = 30;
+  const data = [
+    { v: online,    color: 'var(--green)',  label: 'Online'   },
+    { v: offline,   color: 'var(--red)',    label: 'Offline'  },
+    { v: disabled_, color: 'var(--orange)', label: 'Disabled' },
+  ].filter(d => d.v > 0);
+
+  let paths = '', startAngle = -Math.PI / 2;
+  data.forEach(seg => {
+    const angle = (seg.v / total) * 2 * Math.PI;
+    const end   = startAngle + angle;
+    const x1o = cx + r     * Math.cos(startAngle), y1o = cy + r     * Math.sin(startAngle);
+    const x2o = cx + r     * Math.cos(end),         y2o = cy + r     * Math.sin(end);
+    const x1i = cx + inner * Math.cos(end),         y1i = cy + inner * Math.sin(end);
+    const x2i = cx + inner * Math.cos(startAngle),  y2i = cy + inner * Math.sin(startAngle);
+    const large = angle > Math.PI ? 1 : 0;
+    paths += `<path d="M${x1o.toFixed(1)},${y1o.toFixed(1)} A${r},${r} 0 ${large},1 ${x2o.toFixed(1)},${y2o.toFixed(1)} L${x1i.toFixed(1)},${y1i.toFixed(1)} A${inner},${inner} 0 ${large},0 ${x2i.toFixed(1)},${y2i.toFixed(1)} Z" fill="${seg.color}" opacity="0.85"/>`;
+    startAngle = end;
+  });
+
+  // Center text
+  paths += `<text x="60" y="57" text-anchor="middle" font-size="18" font-family="Share Tech Mono" fill="var(--cyan)">${total}</text>`;
+  paths += `<text x="60" y="70" text-anchor="middle" font-size="8" font-family="Exo 2" fill="var(--mute)">MINERS</text>`;
+  svg.innerHTML = paths;
+
+  leg.innerHTML = data.map(d =>
+    `<div style="display:flex;justify-content:space-between;padding:2px 0">
+      <span style="color:${d.color}">● ${d.label}</span>
+      <span style="font-family:'Share Tech Mono',monospace;color:var(--txt)">${d.v}</span>
+    </div>`
+  ).join('');
+}
+
+function renderDash(){
+  const online   = workers.filter(w=>w.status==='online');
+  const offline  = workers.filter(w=>w.status==='offline');
+  const disabled = workers.filter(w=>w.disabled||w.status==='disabled');
+  const warning  = workers.filter(w=>w.status==='warn');
+
+  // Total hashrate — mix of TH and GH, convert all to TH for display
+  const totalTH = online.reduce((a,w)=>{
+    if(!w.hashrate) return a;
+    const unit = w.hr_unit || 'TH/s';
+    return a + (unit==='GH/s' ? w.hashrate/1000 : w.hashrate);
+  }, 0);
+
+  const ca = agents.filter(a=>a.online).length;
+  const uniqueModels = [...new Set(workers.map(w=>w.model).filter(Boolean))].length;
+
+  document.getElementById('dHR').textContent     = totalTH >= 1 ? totalTH.toFixed(1) : (totalTH*1000).toFixed(0);
+  document.getElementById('dHRUnit').textContent  = totalTH >= 1 ? 'TH/s' : 'GH/s';
+  document.getElementById('dW').textContent       = online.length;
+  document.getElementById('dWTotal').textContent  = workers.length;
+  document.getElementById('dAgents').textContent  = ca;
+  document.getElementById('dDis').textContent     = disabled.length;
+  document.getElementById('dModels').textContent  = uniqueModels;
+
+  // Badges
+  const pill  = document.getElementById('agentPillTxt');
+  const badge = document.getElementById('agentNavBadge');
+  const sstrip= document.getElementById('agentStripBadge');
+  if(pill)  pill.textContent  = ca+' Agent'+(ca!==1?'s':'');
+  if(badge) badge.textContent = ca;
+  if(sstrip)sstrip.textContent= ca+' Online';
+  document.getElementById('dOnlineBadge').textContent  = online.length+' Online';
+  document.getElementById('dOfflineBadge').textContent = offline.length+' Offline';
+  const db=document.getElementById('dDisBadge');
+  if(db){if(disabled.length){db.textContent=disabled.length+' Disabled';db.style.display='';}else db.style.display='none';}
+
+  // Pie chart
+  drawPie(online.length, offline.length + warning.length, disabled.length);
+
+  // Farm cards — group workers by farm_id
+  const farmMap = {};
+  // Start from agents (source of truth)
+  agents.forEach(a => {
+    farmMap[a.id] = { id:a.id, name:a.name, workers:[], agent:a };
+  });
+  // Assign workers to correct farms
+  workers.forEach(w => {
+    const fid = w.farm_id || 'unknown';
+    if(farmMap[fid]){
+      farmMap[fid].workers.push(w);
+    } else if(agents.length===1){
+      w.farm_id=agents[0].id; w.farm=agents[0].name;
+      farmMap[agents[0].id].workers.push(w);
+    } else {
+      const orphanName = w.farm || fid;
+      if(!farmMap[fid]) farmMap[fid]={id:fid, name:orphanName, workers:[], agent:null};
+      farmMap[fid].workers.push(w);
+    }
+  });
+
+  const fc = document.getElementById('farmCards');
+  if (fc) {
+    fc.innerHTML = Object.values(farmMap).map(farm => {
+      const fOnline   = farm.workers.filter(w=>w.status==='online').length;
+      const fTotal    = farm.workers.length;
+      const fModels   = [...new Set(farm.workers.map(w=>w.model).filter(Boolean))];
+      const fHR       = farm.workers.filter(w=>w.status==='online').reduce((a,w)=>{
+        const unit = w.hr_unit||'TH/s';
+        return a+(unit==='GH/s'?w.hashrate/1000:w.hashrate||0);
+      },0);
+      const agOnline  = farm.agent?.online;
+      return `<div style="background:var(--s2);border:1px solid var(--b${agOnline?'2':'1'});border-radius:8px;padding:10px;cursor:pointer" onclick="filterByFarm('${farm.id}')">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+          <span class="sdot ${agOnline?'on':'off'}"></span>
+          <span style="font-family:'Exo 2',sans-serif;font-weight:700;font-size:12px;color:var(--txt)">${farm.name}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:10px">
+          <div><div style="color:var(--mute)">Online</div><div style="font-family:'Share Tech Mono',monospace;color:var(--green)">${fOnline}/${fTotal}</div></div>
+          <div><div style="color:var(--mute)">Hashrate</div><div style="font-family:'Share Tech Mono',monospace;color:var(--cyan)">${fHR>=1?fHR.toFixed(1):'<1'} TH</div></div>
+        </div>
+        <div style="margin-top:6px;font-size:9px;color:var(--mute)">${fModels.slice(0,2).join(', ')+(fModels.length>2?' +'+( fModels.length-2)+' more':'')}</div>
+      </div>`;
+    }).join('');
+  }
+
+  // Agent strip
+  const strip = document.getElementById('agentStrip');
+  if(strip){
+    strip.innerHTML = agents.length === 0
+      ? '<div style="padding:20px;text-align:center;color:var(--mute);font-size:12px">No agents connected. Run SETUP-WINDOWS.bat on farm PC.</div>'
+      : agents.map(a=>`<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--b1)">
+          <span class="sdot ${a.online?'on':'off'}"></span>
+          <div style="flex:1">
+            <div style="font-family:'Exo 2',sans-serif;font-weight:700;font-size:13px">${a.name}</div>
+            <div style="font-size:10px;color:var(--mute)">${a.subnet} · ${a.count} miners · ${a.lastSeen}</div>
+          </div>
+          <span class="badge ${a.online?'bgn':'brn'}">${a.online?'ONLINE':'OFFLINE'}</span>
+          <button class="abtn" onclick="triggerScan('${a.id}')">📡 Scan</button>
+        </div>`).join('');
+  }
+
+  // Fleet by farm
+  renderFleetByFarm();
+  if(false){ // disabled — old workers table
+  document.getElementById('dashTbody_disabled').innerHTML = workers.map(w=>{
+    const c  = customers.find(x=>x.id===w.cid);
+    const tc = w.temp>=90?'style="color:var(--red)"':w.temp>=82?'style="color:var(--warn)"':'';
+    return `<tr style="${w.disabled?'opacity:.55':''}">
+      <td><div style="display:flex;align-items:center;gap:6px"><span class="sdot ${sdot(w)}"></span><span style="font-family:'Exo 2',sans-serif;font-weight:600">${w.name}</span></div></td>
+      <td><div style="font-size:11px;font-family:'Exo 2',sans-serif">${w.brand||''} ${w.model}</div><div style="font-size:9px;color:var(--mute)">${w.algo||'SHA-256'}</div></td>
+      <td style="font-size:11px">${w.ip}</td>
+      <td style="font-size:11px">${w.farm||'—'}</td>
+      <td>${c?`<span style="color:var(--cyan);font-size:11px">${c.name}</span>`:'<span style="color:var(--mute)">—</span>'}</td>
+      <td style="color:var(--green)">${hrDisplay(w)}</td>
+      <td ${tc}>${w.temp>0?w.temp+'°C':'—'}</td>
+      <td style="font-size:10px;color:var(--mute)">${w.pool}</td>
+      <td>${sbadge(w)}</td>
+      <td><button class="abtn" onclick="openCtrl('${w.id}')" style="border-color:var(--cyan);color:var(--cyan);font-weight:700">⚙ Control</button></td>
+    </tr>`;
+  }).join('');
+  } // end disabled
+}
+
+let _fleetHash = '';
+function renderFleetByFarm(){
+  const el = document.getElementById('fleetByFarm');
+  if(!el) return;
+  const hash = workers.length+'|'+agents.map(a=>a.id+(a.online?'1':'0')).join('|');
+  if(hash === _fleetHash) return;
+  _fleetHash = hash;
+
+  if(workers.length===0 && agents.length===0){
+    el.innerHTML='<div style="text-align:center;padding:30px;color:var(--mute)">No miners yet. Use Network Scanner to discover miners.</div>';
+    return;
+  }
+
+  const farmMap={};
+  agents.forEach(function(a){ farmMap[a.id]={id:a.id,name:a.name,workers:[],agent:a}; });
+  workers.forEach(function(w){
+    const fid=w.farm_id||'unknown';
+    if(farmMap[fid]) farmMap[fid].workers.push(w);
+    else if(agents.length===1){ w.farm_id=agents[0].id; farmMap[agents[0].id].workers.push(w); }
+    else { if(!farmMap['?']) farmMap['?']={id:'?',name:'Unassigned',workers:[],agent:null}; farmMap['?'].workers.push(w); }
+  });
+
+  let html = '';
+  Object.values(farmMap).forEach(function(farm){
+    const online  = farm.workers.filter(function(w){return w.status==='online';}).length;
+    const offline = farm.workers.filter(function(w){return w.status==='offline'||w.status==='warn';}).length;
+    const repair  = farm.workers.filter(function(w){return w.disabled||w.status==='disabled';}).length;
+    const ag      = farm.agent;
+    const onl     = ag && ag.online;
+    html += '<div class="farm-card-click" data-fid="'+farm.id+'" style="background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:12px;margin-bottom:8px;cursor:pointer">';
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
+    html += '<span class="sdot '+(onl?'on':'off')+'"></span>';
+    html += '<span style="font-family:Orbitron,sans-serif;font-size:13px;font-weight:700;color:var(--txt)">'+farm.name+'</span>';
+    html += '<span class="badge '+(onl?'bgn':'brn')+'" style="margin-left:auto">'+(onl?'ONLINE':'OFFLINE')+'</span>';
+    html += '</div><div style="display:flex;gap:10px;flex-wrap:wrap">';
+    html += '<div style="background:rgba(0,255,157,.06);border:1px solid rgba(0,255,157,.2);border-radius:5px;padding:6px 12px;text-align:center"><div style="font-size:9px;color:var(--mute)">Online</div><div style="font-family:Share Tech Mono,monospace;font-size:20px;color:var(--green)">'+online+'</div></div>';
+    html += '<div style="background:rgba(255,45,85,.06);border:1px solid rgba(255,45,85,.2);border-radius:5px;padding:6px 12px;text-align:center"><div style="font-size:9px;color:var(--mute)">Offline</div><div style="font-family:Share Tech Mono,monospace;font-size:20px;color:var(--red)">'+offline+'</div></div>';
+    if(repair) html += '<div style="background:rgba(255,107,53,.06);border:1px solid rgba(255,107,53,.2);border-radius:5px;padding:6px 12px;text-align:center"><div style="font-size:9px;color:var(--mute)">Repair</div><div style="font-family:Share Tech Mono,monospace;font-size:20px;color:var(--orange)">'+repair+'</div></div>';
+    html += '<div style="background:rgba(0,200,255,.06);border:1px solid rgba(0,200,255,.2);border-radius:5px;padding:6px 12px;text-align:center"><div style="font-size:9px;color:var(--mute)">Total</div><div style="font-family:Share Tech Mono,monospace;font-size:20px;color:var(--cyan)">'+farm.workers.length+'</div></div>';
+    html += '</div></div>';
+  });
+  el.innerHTML = html;
+  // Attach click handlers via event delegation (no inline onclick needed)
+  el.querySelectorAll('.farm-card-click').forEach(function(card){
+    card.addEventListener('click', function(){ openFarmDetail(this.dataset.fid); });
+  });
+}
+
+function openFarmDetail(farmId){
+  currentFarmId = farmId;
+  const farm = agents.find(a=>a.id===farmId) || {name:farmId, subnet:'—', online:false};
+  const farmWorkers = workers.filter(w=>w.farm_id===farmId);
+  const online  = farmWorkers.filter(w=>w.status==='online').length;
+  const total   = farmWorkers.length;
+
+  document.getElementById('farmDetailName').textContent = farm.name;
+  document.getElementById('farmDetailSub').textContent  = `${farm.subnet} · ${online}/${total} online · Agent: ${farm.online?'Connected':'Offline'}`;
+
+  // Miners list
+  const mEl = document.getElementById('farmDetailMiners');
+  if(farmWorkers.length === 0){
+    mEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--mute)">No miners added from this farm yet.<br>Use Network Scanner to discover miners.</div>';
+  } else {
+    mEl.innerHTML = `<table style="width:100%;border-collapse:collapse;font-family:'Share Tech Mono',monospace;font-size:11px">
+      <thead><tr style="background:var(--s2)">
+        <th style="padding:7px 10px;text-align:left;color:var(--mute);font-size:9px;letter-spacing:1px">STATUS</th>
+        <th style="padding:7px 10px;text-align:left;color:var(--mute);font-size:9px;letter-spacing:1px">MACHINE</th>
+        <th style="padding:7px 10px;text-align:left;color:var(--mute);font-size:9px;letter-spacing:1px">MODEL</th>
+        <th style="padding:7px 10px;text-align:left;color:var(--mute);font-size:9px;letter-spacing:1px">HASHRATE</th>
+        <th style="padding:7px 10px;text-align:left;color:var(--mute);font-size:9px;letter-spacing:1px">TEMP</th>
+        <th style="padding:7px 10px;text-align:left;color:var(--mute);font-size:9px;letter-spacing:1px">POOL</th>
+      </tr></thead>
+      <tbody>${farmWorkers.map(w=>{
+        const tc=w.temp>=90?'color:var(--red)':w.temp>=80?'color:var(--warn)':'';
+        return `<tr style="border-bottom:1px solid rgba(26,42,58,.4)">
+          <td style="padding:7px 10px"><span class="sdot ${sdot(w)}"></span></td>
+          <td style="padding:7px 10px"><div style="font-family:'Exo 2',sans-serif;font-weight:600">${w.name}</div><div style="font-size:9px;color:var(--mute)">${w.ip}</div></td>
+          <td style="padding:7px 10px;color:var(--mute)">${w.brand||''} ${w.model}</td>
+          <td style="padding:7px 10px;color:var(--green)">${hrDisplay(w)}</td>
+          <td style="padding:7px 10px;${tc}">${w.temp>0?w.temp+'°C':'—'}</td>
+          <td style="padding:7px 10px;font-size:10px;color:var(--mute)">${w.pool||'—'}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>`;
+  }
+
+  // Fetch sensor readings for this farm
+  loadFarmSensors(farmId);
+
+  document.getElementById('farmDetailOverlay').classList.add('show');
+}
+
+function closeFarmDetail(){
+  document.getElementById('farmDetailOverlay').classList.remove('show');
+  currentFarmId = null;
+  clearInterval(_sensorPollInt);
+  _sensorPollInt = null;
+}
+
+let _sensorPollInt = null;
+
+function loadFarmSensors(farmId){
+  const el = document.getElementById('farmSensors');
+  if(!el) return;
+
+  // Clear old auto-refresh
+  clearInterval(_sensorPollInt);
+
+  // Show local reading instantly
+  const local = getSensorReading(farmId);
+  if(local) renderSensorInPanel(farmId, local);
+  else renderSensorInPanel(farmId, null);
+
+  // Fetch from backend (agent pushes live data here)
+  fetchSensorFromBackend(farmId);
+
+  // No auto-refresh interval — user can tap ↺ Refresh manually
+}
+
+function fetchSensorFromBackend(farmId){
+  if(!farmId || farmId==='null' || farmId==='undefined') return;
+  const token = localStorage.getItem('ekl_token');
+  if(!token || !API_BASE || API_BASE.includes('localhost')) return;
+  fetch(API_BASE+'/api/sensors/farm/'+farmId, {headers:{'Authorization':'Bearer '+token}})
+  .then(r=>r.ok?r.json():null)
+  .then(d=>{
+    if(d?.sensors?.length>0){
+      const s=d.sensors[0];
+      setSensorReading(farmId, s);
+      renderSensorInPanel(farmId, s);
+      const ts=document.getElementById('sensorLastUpdate');
+      if(ts) ts.textContent='Updated '+new Date().toLocaleTimeString();
+    }
+  }).catch(()=>{});
+}
+
+function refreshFarmSensor(){
+  if(currentFarmId) fetchSensorFromBackend(currentFarmId);
+}
+
+function renderSensorInPanel(farmId, r){
+  const el=document.getElementById('farmSensors');
+  if(!el) return;
+  if(!r || (r.temp==null && r.humidity==null)){
+    el.innerHTML=`<div style="background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:20px;text-align:center;color:var(--mute)">
+      <div style="font-size:24px;margin-bottom:8px">🌡</div>
+      <div style="font-size:11px">No sensor reading yet.</div>
+      <div style="font-size:10px;margin-top:6px">Click <strong>Discover</strong> to find Sonoff TH16 sensors on this network.<br>Or enter readings manually in Settings.</div>
+    </div>`;
+    return;
+  }
+  const tc=r.temp>=45?'var(--red)':r.temp>=38?'var(--warn)':'var(--green)';
+  el.innerHTML=`<div style="background:linear-gradient(135deg,var(--s2),rgba(0,200,255,.04));border:1px solid rgba(0,200,255,.2);border-radius:10px;padding:16px">
+    <div style="display:flex;align-items:center;justify-content:center;gap:24px;margin-bottom:10px">
+      <div style="text-align:center">
+        <div style="font-family:'Share Tech Mono',monospace;font-size:48px;font-weight:700;color:${tc};line-height:1;text-shadow:0 0 20px ${tc}55">${r.temp!=null?r.temp:'—'}</div>
+        <div style="font-size:10px;color:var(--mute);text-transform:uppercase;letter-spacing:2px;margin-top:4px">°C Temperature</div>
+      </div>
+      <div style="width:1px;height:60px;background:var(--b1)"></div>
+      <div style="text-align:center">
+        <div style="font-family:'Share Tech Mono',monospace;font-size:48px;font-weight:700;color:var(--cyan);line-height:1;text-shadow:0 0 20px rgba(0,200,255,.3)">${r.humidity!=null?r.humidity:'—'}</div>
+        <div style="font-size:10px;color:var(--mute);text-transform:uppercase;letter-spacing:2px;margin-top:4px">% Humidity</div>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:center;gap:6px;flex-wrap:wrap">
+      ${r.ip?`<span style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--mute);background:var(--bg);border:1px solid var(--b1);border-radius:3px;padding:2px 6px">${r.ip}</span>`:''}
+      <span style="font-size:9px;color:var(--mute)">${r.updated?new Date(r.updated).toLocaleString():''}</span>
+    </div>
+  </div>`;
+}
+
+function discoverSensors(){
+  document.getElementById('sensorDiscoverPanel').style.display='block';
+}
+
+function startSensorDiscover(){
+  const mac=document.getElementById('sensorMacInput')?.value.trim();
+  const ip =document.getElementById('sensorIpInput')?.value.trim();
+  if(!mac&&!ip){alert('Enter a MAC address or IP address');return;}
+  const status=document.getElementById('sensorDiscoverStatus');
+  status.style.color='var(--cyan)';
+
+  const token=localStorage.getItem('ekl_token');
+  if(!token){status.textContent='Not logged in';status.style.color='var(--red)';return;}
+
+  let body, msg;
+  if(mac){
+    // MAC-based (preferred)
+    const macs=mac.split(',').map(m=>m.trim()).filter(Boolean);
+    body={farm_id:currentFarmId, macs};
+    msg=`Resolving MAC ${mac} → finding IP via ARP...`;
+  } else {
+    // IP range
+    const ips=expandIPRange(ip);
+    if(ips.length===0){alert('Invalid IP format');return;}
+    body={farm_id:currentFarmId, ips};
+    msg=`Scanning ${ips.length} IP${ips.length>1?'s':''} for Sonoff sensors...`;
+  }
+
+  status.textContent=msg;
+  fetch(API_BASE+'/api/sensors/discover',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+    body:JSON.stringify(body)
+  })
+  .then(r=>r.json())
+  .then(d=>{
+    if(d.ok){
+      status.textContent=mac
+        ? '✓ Sent to agent — it will resolve the MAC and start reading. Check back in 30s.'
+        : '✓ Scanning started — readings appear when sensors are found.';
+      status.style.color='var(--green)';
+    } else {
+      status.textContent='Error: '+d.error;
+      status.style.color='var(--red)';
+    }
+  })
+  .catch(e=>{status.textContent='Error: '+e.message;status.style.color='var(--red)';});
+}
+
+function expandIPRange(input){
+  if(!input) return [];
+  try {
+    if(input.includes('-')){
+      const [start,end]=input.split('-');
+      const parts=start.split('.');
+      const prefix=parts.slice(0,3).join('.');
+      const s=parseInt(parts[3])||1;
+      const e=Math.min(parseInt(end)||254, 255);
+      return Array.from({length:e-s+1},(_,i)=>`${prefix}.${s+i}`);
+    }
+    if(input.split('.').length===3) return Array.from({length:254},(_,i)=>`${input}.${i+1}`);
+    return [input];
+  } catch(e){ return []; }
+}
+
+function renderSensorCard(farmId, r){
+  const tempColor = r.temp>=45?'var(--red)':r.temp>=38?'var(--warn)':'var(--green)';
+  return `<div style="background:var(--s2);border:1px solid var(--b1);border-radius:10px;padding:16px">
+    <div style="display:flex;gap:16px;justify-content:center;align-items:center;margin-bottom:8px">
+      <div style="text-align:center">
+        <div style="font-family:'Share Tech Mono',monospace;font-size:36px;color:${tempColor};line-height:1">${r.temp!=null?r.temp+'°':'—'}</div>
+        <div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px">Temperature</div>
+      </div>
+      <div style="width:1px;height:50px;background:var(--b1)"></div>
+      <div style="text-align:center">
+        <div style="font-family:'Share Tech Mono',monospace;font-size:36px;color:var(--cyan);line-height:1">${r.humidity!=null?r.humidity+'%':'—'}</div>
+        <div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px">Humidity</div>
+      </div>
+    </div>
+    <div style="font-size:9px;color:var(--mute);text-align:center">${r.name||farmId} · ${r.updated?new Date(r.updated).toLocaleString():''}</div>
+  </div>`;
+}
+
+// ── eWeLink config ─────────────────────────────────────────
+function saveEwelinkConfig(){
+  const cfg = {
+    email:    document.getElementById('ewEmail').value.trim(),
+    password: document.getElementById('ewPass').value,
+    region:   document.getElementById('ewRegion').value,
+  };
+  if(!cfg.email||!cfg.password){alert('Email and password required');return;}
+  document.getElementById('ewStatus').textContent = 'Saving and connecting...';
+  fetch(API_BASE+'/api/sensors/config',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+(localStorage.getItem('ekl_token')||'')},
+    body:JSON.stringify(cfg)
+  })
+  .then(r=>r.json())
+  .then(()=>{
+    return fetch(API_BASE+'/api/sensors/login',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+(localStorage.getItem('ekl_token')||'')},
+      body:JSON.stringify({})
+    });
+  })
+  .then(r=>r.json())
+  .then(d=>{
+    if(d.ok){
+      document.getElementById('ewStatus').innerHTML = '<span style="color:var(--green)">✓ Connected — '+d.devices+' devices found</span>';
+      fetchEwelinkDevices();
+    } else {
+      document.getElementById('ewStatus').innerHTML = '<span style="color:var(--red)">✗ '+d.error+'</span>';
+    }
+  })
+  .catch(e=>{ document.getElementById('ewStatus').innerHTML='<span style="color:var(--red)">✗ '+e.message+'</span>'; });
+}
+
+function fetchEwelinkDevices(){
+  document.getElementById('ewStatus').textContent = 'Fetching devices...';
+  fetch(API_BASE+'/api/sensors/devices',{headers:{'Authorization':'Bearer '+(localStorage.getItem('ekl_token')||'')}})
+  .then(r=>r.json())
+  .then(d=>{
+    if(d.devices){
+      document.getElementById('ewStatus').innerHTML = '<span style="color:var(--green)">✓ '+d.devices.length+' devices</span>';
+      // Show assignable devices
+      const tempDevices = d.devices.filter(dev=>dev.temp!=null||dev.humidity!=null);
+      if(tempDevices.length > 0){
+        document.getElementById('ewDeviceList').innerHTML = '<div style="margin-top:10px"><div style="font-size:10px;color:var(--mute);margin-bottom:8px;text-transform:uppercase;letter-spacing:1px">Assign sensors to farms:</div>'+
+          tempDevices.map(dev=>`
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--b1)">
+              <div style="flex:1"><div style="font-size:12px;font-family:'Exo 2',sans-serif;font-weight:600">${dev.name}</div>
+              <div style="font-size:10px;color:var(--mute)">${dev.temp!=null?dev.temp+'°C':''} ${dev.humidity!=null?dev.humidity+'%':''}</div></div>
+              <select style="background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:4px 8px;color:var(--txt);font-size:11px" id="assign_${dev.id}">
+                <option value="">— No farm —</option>
+                ${agents.map(a=>`<option value="${a.id}">${a.name}</option>`).join('')}
+              </select>
+              <button class="abtn" onclick="assignSensor('${dev.id}')">Assign</button>
+            </div>`
+          ).join('')+'</div>';
+      } else {
+        document.getElementById('ewDeviceList').innerHTML = '<div style="font-size:11px;color:var(--mute);margin-top:8px">No temperature/humidity sensors found. Add them in the eWeLink app first.</div>';
+      }
+    }
+  })
+  .catch(e=>{ document.getElementById('ewStatus').innerHTML='<span style="color:var(--red)">✗ '+e.message+'</span>'; });
+}
+
+function assignSensor(deviceId){
+  const sel = document.getElementById('assign_'+deviceId);
+  const farmId = sel?.value;
+  if(!farmId){toast('Select a farm first','var(--warn)');return;}
+  fetch(API_BASE+'/api/sensors/assign',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+(localStorage.getItem('ekl_token')||'')},
+    body:JSON.stringify({farm_id:farmId, device_ids:[deviceId]})
+  })
+  .then(r=>r.json())
+  .then(d=>{ if(d.ok) toast('✓ Sensor assigned to farm','var(--green)'); })
+  .catch(e=>toast('Error: '+e.message,'var(--red)'));
+}
+function liveUpdate(){if(isCustomer)renderPortal();}
+
+// ════════════════════════════════════════════════════════════
+// SCADA — Lanli Hydro System (SP Cloud Integration)
+// MY16-542 · 1to1-535 · 1to1-288
+// ════════════════════════════════════════════════════════════
+let scadaToken=localStorage.getItem('scada_token')||null;
+let scadaData={};let scadaRefInt=null;
+
+const LANLI={
+  'cabinet-1':{name:'Cabinet 1',model:'MY16-542',type:'Multi-Channel Controller',rated_w:542},
+  'cabinet-2':{name:'Cabinet 2',model:'1to1-535',type:'Micro-Hydro Inverter',rated_w:535},
+  'cabinet-3':{name:'Cabinet 3',model:'1to1-288',type:'Micro-Hydro Inverter',rated_w:288},
+};
+
+// ── SCADA Login ───────────────────────────────────────────
+function scadaLogin(){
+  const u=document.getElementById('scadaUser').value.trim();
+  const p=document.getElementById('scadaPass').value;
+  const e=document.getElementById('scadaLoginErr');
+  e.style.display='none';
+  if(!u||!p){e.textContent='Enter username and password';e.style.display='block';return;}
+  e.style.display='block';e.style.color='var(--cyan)';e.textContent='Authenticating...';
+  // First check if backend is awake
+  fetch(API_BASE+'/health')
+  .then(r=>r.json())
+  .then(()=>{
+    // Backend is up — now try SCADA login
+    return fetch(API_BASE+'/api/scada/login',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({username:u,password:p})
+    });
+  })
+  .then(r=>{
+    const ct=r.headers.get('content-type')||'';
+    if(!ct.includes('json')){
+      throw new Error('Backend returned an error page. Go to Railway dashboard and check the Logs tab for errors.');
+    }
+    return r.json();
+  })
+  .then(d=>{
+    if(d.ok&&d.token){
+      scadaToken=d.token;
+      localStorage.setItem('scada_token',d.token);
+      e.style.display='none';
+      showScadaDashboard();
+    } else {
+      e.style.color='var(--red)';
+      e.textContent=d.error||'Login failed.';
+    }
+  })
+  .catch(err=>{
+    e.style.color='var(--red)';
+    if(err.message.includes('fetch')||err.message.includes('Failed')){
+      e.textContent='Cannot reach server. Check: 1) Railway is running  2) API URL is set in Settings';
+    } else {
+      e.textContent=err.message;
+    }
+  });
+}
+
+function scadaLogout(){
+  scadaToken=null;localStorage.removeItem('scada_token');clearInterval(scadaRefInt);
+  document.getElementById('scadaLoginPanel').style.display='block';
+  document.getElementById('scadaDashboard').style.display='none';
+  document.getElementById('scadaUser').value='';document.getElementById('scadaPass').value='';
+}
+
+function showScadaDashboard(){
+  document.getElementById('scadaLoginPanel').style.display='none';
+  document.getElementById('scadaDashboard').style.display='block';
+  // iDOSP URL is fixed — no need to restore
+  // Load manual readings
+  scadaRefresh();
+  clearInterval(scadaRefInt);scadaRefInt=setInterval(scadaRefresh,30000);
+}
+
+function scadaRefresh(){
+  if(!scadaToken)return;
+  fetch(API_BASE+'/api/scada/overview',{headers:{'x-scada-token':scadaToken}})
+  .then(r=>{if(r.status===401){scadaLogout();return Promise.reject();}return r.json();})
+  .then(d=>{
+    scadaData=d.cabinets||{};
+    renderScadaDashboard();
+    const lu=document.getElementById('scadaLastUpdate');
+    if(lu)lu.textContent=new Date().toLocaleTimeString();
+  }).catch(()=>{});
+}
+
+// ── SP Cloud embed ────────────────────────────────────────
+const IDOSP_URL = 'http://www.idosp.net/idosp/login.html';
+
+// Open iDOSP in new tab — requires VPN (Netherlands) active on device
+function openIdospTab(){
+  window.open(IDOSP_URL, '_blank');
+  toast('Opening iDOSP — make sure VPN (Netherlands) is active &#x1F1F3;&#x1F1F1;', 'var(--purple)');
+}
+
+// Compatibility stubs
+function loadIdosp(){ openIdospTab(); }
+function saveSpUrl(){ openIdospTab(); }
+function loadSpFrame(){ openIdospTab(); }
+function reloadSpFrame(){ openIdospTab(); }
+function openSpCloud(){ openIdospTab(); }
+
+// ── Cabinet cards (manual readings) ──────────────────────
+function renderScadaDashboard(){
+  let tp=0,co=0,te=0,ac=0;
+  const grid=document.getElementById('cabinetGrid');
+  if(!grid)return;
+
+  grid.innerHTML=Object.entries(LANLI).map(([id,cab])=>{
+    const d=scadaData[id]||{};
+    const ok=d.ok!==false&&!d.error;
+    const pw=d.power_kw||0;
+    const pct=Math.min(100,(pw/(cab.rated_w/1000))*100);
+    const ip=getCabIp(id);
+    const sl=d.alarm_count>0?'ALARM':pw>0?'RUNNING':ok?'STANDBY':'OFFLINE';
+    const sc=d.alarm_count>0?'var(--red)':pw>0?'var(--green)':ok?'var(--warn)':'var(--mute)';
+    if(ok&&pw>0){tp+=pw;te+=d.energy_kwh||0;ac+=d.alarm_count||0;co++;}
+
+    let html='<div style="background:var(--s1);border:1px solid '+(ok?'rgba(0,200,255,.2)':'rgba(255,45,85,.2)')+';border-radius:10px;overflow:hidden">';
+    html+='<div style="background:var(--s2);padding:12px 14px;border-bottom:1px solid var(--b1)">';
+    html+='<div style="display:flex;align-items:center;gap:8px">';
+    html+='<div><div style="font-family:Orbitron,sans-serif;font-size:12px;font-weight:700;color:var(--cyan)">'+cab.model+'</div>';
+    html+='<div style="font-size:10px;color:var(--mute)">'+cab.name+' &middot; '+cab.rated_w+'W'+(ip?' &middot; '+ip:'')+'</div></div>';
+    html+='<span style="margin-left:auto;font-family:Share Tech Mono,monospace;font-size:10px;font-weight:700;color:'+sc+';border:1px solid '+sc+';border-radius:3px;padding:2px 7px">'+sl+'</span>';
+    html+='</div>';
+    if(ok&&pw>0) html+='<div style="margin-top:8px"><div style="height:3px;background:var(--b1);border-radius:2px;overflow:hidden"><div style="height:100%;width:'+pct.toFixed(0)+'%;background:linear-gradient(90deg,var(--green),var(--cyan))"></div></div><div style="font-size:9px;color:var(--mute);text-align:right;margin-top:2px">'+pct.toFixed(0)+'% load</div></div>';
+    html+='</div>';
+
+    if(ok&&pw>0){
+      html+='<div style="padding:12px;text-align:center;border-bottom:1px solid var(--b1)">';
+      html+='<div style="font-family:Share Tech Mono,monospace;font-size:40px;color:var(--cyan);line-height:1">'+pw.toFixed(3)+'</div>';
+      html+='<div style="font-size:10px;color:var(--mute)">kW</div></div>';
+      html+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;border-bottom:1px solid var(--b1)">';
+      [['V',(d.voltage_v||0).toFixed(1)],['A',(d.current_a||0).toFixed(2)],['Hz',(d.frequency_hz||0).toFixed(2)]].forEach(([u,v])=>{
+        html+='<div style="padding:9px;text-align:center;border-right:1px solid var(--b1)"><div style="font-size:9px;color:var(--mute)">'+u+'</div><div style="font-family:Share Tech Mono,monospace;font-size:15px;color:var(--txt)">'+v+'</div></div>';
+      });
+      html+='</div>';
+      html+='<div style="padding:8px 12px;display:flex;justify-content:space-between;font-size:10px">';
+      html+='<span style="color:var(--mute)">Flow: <span style="color:var(--cyan)">'+(d.flow_rate>0?d.flow_rate.toFixed(1)+' m³/h':'--')+'</span></span>';
+      html+='<span style="color:var(--mute)">Temp: <span style="color:'+(d.temp_c>=70?'var(--red)':d.temp_c>=55?'var(--warn)':'var(--green)')+'">'+(d.temp_c>0?d.temp_c+'&deg;C':'--')+'</span></span>';
+      html+='<span style="color:'+(d.alarm_count>0?'var(--red)':'var(--green)')+'">'+( d.alarm_count>0?'⚠ '+d.alarm_count+' Alarm':'✓ OK')+'</span>';
+      html+='</div>';
+    } else {
+      html+='<div style="padding:32px;text-align:center;color:var(--mute)">';
+      html+='<div style="font-size:28px;margin-bottom:8px">'+(ip?'📡':'🔌')+'</div>';
+      html+='<div style="font-size:11px">'+(ip?d.error||'Cannot connect':'Configure IP below')+'</div>';
+      html+='<button class="btn btn-sm scada-retry-btn" style="margin-top:10px">↺ Retry</button>';
+      html+='<button class="btn btn-sm" style="margin-top:10px;margin-left:6px">&#x270F; Manual</button>';
+      html+='</div>';
+    }
+    html+='</div>';
+    return html;
+  }).join('');
+
+  // Attach SCADA button handlers
+  if(grid){
+    grid.querySelectorAll('.scada-manual-btn').forEach(function(b){b.addEventListener('click',function(){openManualEntry(this.dataset.cabid);});});
+    grid.querySelectorAll('.scada-retry-btn').forEach(function(b){b.addEventListener('click',function(){scadaRefresh();});});
+  }
+  const s=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
+  s('scadaTotalPower',tp.toFixed(3));s('scadaCabOnline',co);s('scadaTodayEnergy',te.toFixed(2));s('scadaAlarmCount',ac);
+}
+function addFoundCard(m){
+  const g=document.getElementById('foundGrid');
+  if(!g)return;
+  const d=document.createElement('div');
+  d.className='card';
+  const model=m.model||m.type||'ASIC Miner';
+  const brand=m.brand||'';
+  const hr=m.hr_display||(m.hashrate>0?m.hashrate.toFixed(2)+(m.hr_unit||' TH/s'):'—');
+  const farmId=currentScanFarmId||(agents.length>0?agents[0].id:'unknown');
+  const farmName=currentScanFarmName||(agents.find(function(a){return a.id===farmId;})||{name:'Farm'}).name;
+
+  let h='<div class="card-head"><span class="sdot on"></span>';
+  h+='<div style="flex:1"><div style="font-family:Share Tech Mono,monospace;font-size:12px;color:var(--cyan);font-weight:700">'+m.ip+'</div>';
+  h+='<div style="font-size:10px;color:var(--mute)">'+brand+' '+model+' &middot; '+farmName+'</div></div>';
+  h+='<span class="badge bgn">ONLINE</span></div>';
+  h+='<div class="card-body">';
+  h+='<div class="card-row"><span class="ck">Model</span><span class="cv">'+model+'</span></div>';
+  h+='<div class="card-row"><span class="ck">Hashrate</span><span class="cv g">'+hr+'</span></div>';
+  h+='<div class="card-row"><span class="ck">Temp</span><span class="cv">'+( m.temp>0?m.temp+'&deg;C':'—')+'</span></div>';
+  h+='<div class="card-row"><span class="ck">Pool</span><span class="cv" style="font-size:10px">'+(m.pool||'—')+'</span></div>';
+  h+='</div><div class="card-foot">';
+  h+='<button class="btn btn-sm btn-g add-fleet-btn">+ Add to Fleet</button>';
+  h+='</div>';
+  d.innerHTML=h;
+
+  // Attach click handler safely (no inline onclick)
+  const btn=d.querySelector('.add-fleet-btn');
+  const capIp=m.ip, capModel=model, capFarmId=farmId, capFarmName=farmName;
+  btn.addEventListener('click',function(){ addToFleetDirect(capIp,capModel,capFarmId,capFarmName); });
+  g.appendChild(d);
+}
+

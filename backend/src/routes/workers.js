@@ -1,0 +1,11 @@
+const express=require('express'); const router=express.Router();
+const { authMiddleware }=require('../middleware/auth');
+const store=require('../services/store');
+const { pollMiner }=require('../services/poller');
+router.get('/', authMiddleware, (req,res)=>res.json(store.getWorkers()));
+router.get('/fleet/summary', authMiddleware, (req,res)=>res.json(store.getFleetSummary()));
+router.get('/:id', authMiddleware, (req,res)=>{ const w=store.getWorker(req.params.id); if(!w) return res.status(404).json({error:'Not found'}); res.json(w); });
+router.post('/', authMiddleware, (req,res)=>{ const { name,ip,model,pool,network_id }=req.body; if(!ip) return res.status(400).json({error:'IP required'}); const w=store.addWorker({ name:name||`Worker-${ip}`,ip,model,pool,network_id:network_id||'local' }); pollMiner(w).catch(()=>{}); res.status(201).json(w); });
+router.delete('/:id', authMiddleware, (req,res)=>{ store.removeWorker(req.params.id); res.json({ok:true}); });
+router.get('/:id/refresh', authMiddleware, async (req,res)=>{ const w=store.getWorker(req.params.id); if(!w) return res.status(404).json({error:'Not found'}); try { res.json(await pollMiner(w)); } catch(e) { res.status(500).json({error:e.message}); } });
+module.exports=router;
