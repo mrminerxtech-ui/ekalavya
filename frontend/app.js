@@ -6,6 +6,15 @@ const API_BASE = sanitizeUrl(window.EKL_API_BASE)
   || sanitizeUrl(localStorage.getItem('ekl_api_base'))
   || 'http://localhost:3001';
 
+// ── Coin ticker data ─────────────────────────────────────
+const coins = {
+  BTC: {p:67420, c:2.1,  ico:'₿', col:'#f7931a'},
+  ETH: {p:3480,  c:-0.8, ico:'Ξ', col:'#627eea'},
+  LTC: {p:82,    c:1.2,  ico:'Ł', col:'#bfbbbb'},
+  KAS: {p:0.14,  c:3.1,  ico:'⬡', col:'#49dbc0'},
+};
+const CC = ['#e74c3c','#3498db','#2ecc71','#9b59b6','#e67e22','#1abc9c','#f39c12','#34495e'];
+
 // App state
 let isCustomer = false, currentUser = null, activeWid = null;
 let loginTab = 'admin';
