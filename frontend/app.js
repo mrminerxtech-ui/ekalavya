@@ -191,12 +191,16 @@ function renderPortal() {
 // ── Populate scanner dropdowns ────────────────────────────
 function populateDropdowns() {
   const sv = document.getElementById('scanVia');
-  if (sv) {
-    const cur = sv.value;
-    sv.innerHTML = '<option value="local">&#x1F4BB; Local / Direct</option>'
-      + agents.map(a => '<option value="' + a.id + '"' + (cur === a.id ? ' selected' : '') + '>'
-      + (a.online ? '✓' : '✗') + ' ' + a.name + '</option>').join('');
-  }
+  if (!sv) return;
+  const cur = sv.value;
+  var html = '<option value="local">&#x1F4BB; Select a farm agent...</option>';
+  agents.forEach(function(a){
+    html += '<option value="' + a.id + '"' + (cur === a.id ? ' selected' : '') + '>'
+         +  (a.online ? '\u2713 ' : '\u2717 ') + a.name + ' (' + a.id + ')</option>';
+  });
+  sv.innerHTML = html;
+  // Restore selection if it still exists
+  if (cur && agents.find(function(a){ return a.id === cur; })) sv.value = cur;
 }
 
 // ── Scanner log ───────────────────────────────────────────
@@ -339,18 +343,41 @@ function setApiBase(v) {
 function fetchAgents() {
   if (!API_BASE || API_BASE.includes('localhost')) return;
   fetch(API_BASE + '/api/agents')
-    .then(r => r.ok ? r.json() : null)
-    .then(d => { if (d?.agents) { agents = d.agents; updateAgentUI(); } })
-    .catch(() => {});
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if (!d || !d.agents) return;
+      // Deduplicate by farm ID — keep the online one if duplicates exist
+      var seen = {};
+      d.agents.forEach(function(a){
+        if (!seen[a.id] || (a.online && !seen[a.id].online)) seen[a.id] = a;
+      });
+      agents = Object.values(seen);
+      updateAgentUI();
+    })
+    .catch(function(){});
 }
 
 function updateAgentUI() {
-  const pill = document.getElementById('agentPill');
   const pillTxt = document.getElementById('agentPillTxt');
-  const online = agents.filter(a => a.online).length;
+  const online = agents.filter(function(a){ return a.online; }).length;
   if (pillTxt) pillTxt.textContent = online + ' Agent' + (online !== 1 ? 's' : '');
+
+  // Re-match any workers whose farm_id doesn't match a connected agent,
+  // but whose stored farm NAME does — fixes miners appearing as Unassigned
+  var changed = false;
+  workers.forEach(function(w){
+    if (agents.find(function(a){ return a.id === w.farm_id; })) return; // already matched
+    var byName = agents.find(function(a){
+      return a.name && w.farm && a.name.toLowerCase() === w.farm.toLowerCase();
+    });
+    if (byName) { w.farm_id = byName.id; w.farm = byName.name; changed = true; }
+  });
+  if (changed) { saveFleet(); _fleetHash = ''; _workersHash = ''; }
+
   populateDropdowns();
   if (document.getElementById('fleetByFarm')) renderFleetByFarm();
+  if (document.getElementById('workersTbody')) renderWorkers();
+  if (document.getElementById('agentGrid')) renderAgents();
 }
 
 // ── Trigger scan from agents page ────────────────────────
@@ -406,6 +433,9 @@ function scanFromConfig() {
 
 // ── onAgentSelect ─────────────────────────────────────────
 function onAgentSelect(sel) {
+  // Accept element, or fall back to reading the dropdown directly
+  if (!sel || typeof sel.value === 'undefined') sel = document.getElementById('scanVia');
+  if (!sel) return;
   const farmId = sel.value;
   const el = document.getElementById('scanRange');
   if (!farmId || farmId === 'local') { if (el) el.value = ''; return; }
@@ -851,9 +881,15 @@ function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).sty
   try { initSensors(); } catch(e){}
   try { renderAll(); } catch(e){ console.error('renderAll error:',e); }
   window.addEventListener('beforeunload', function(){ try{saveFleet();}catch(e){} });
+
+  // Fetch agents immediately, then re-render so workers match their farms
+  try { fetchAgents(); } catch(e){}
+  setTimeout(function(){ try{ fetchAgents(); }catch(e){} }, 2000);
+  setInterval(function(){ try{ fetchAgents(); }catch(e){} }, 30000);
+
   setTimeout(function(){
-    try{ loadFleetFromBackend(function(){ try{if(workers.length>0)renderAll();}catch(e){} }); }catch(e){}
-  }, 2000);
+    try{ loadFleetFromBackend(function(){ try{ renderAll(); }catch(e){} }); }catch(e){}
+  }, 2500);
   setInterval(function(){ try{saveFleet();}catch(e){}}, 30000);
   const d=document.getElementById('currentApiDisplay');if(d)d.textContent=API_BASE;
   const ai=document.getElementById('apiUrl');if(ai)ai.value=API_BASE;}
@@ -1219,12 +1255,21 @@ function renderFleetByFarm(){
   }
 
   const farmMap={};
+  // Start from connected agents
   agents.forEach(function(a){ farmMap[a.id]={id:a.id,name:a.name,workers:[],agent:a}; });
+  // Place each worker — create a farm entry from the worker's own stored farm name
+  // if the agent isn't connected/loaded yet (prevents everything showing as Unassigned)
   workers.forEach(function(w){
-    const fid=w.farm_id||'unknown';
-    if(farmMap[fid]) farmMap[fid].workers.push(w);
-    else if(agents.length===1){ w.farm_id=agents[0].id; farmMap[agents[0].id].workers.push(w); }
-    else { if(!farmMap['?']) farmMap['?']={id:'?',name:'Unassigned',workers:[],agent:null}; farmMap['?'].workers.push(w); }
+    const fid = w.farm_id || 'unknown';
+    if(!farmMap[fid]){
+      farmMap[fid] = {
+        id:   fid,
+        name: w.farm || fid,
+        workers: [],
+        agent: agents.find(function(a){ return a.id === fid; }) || null
+      };
+    }
+    farmMap[fid].workers.push(w);
   });
 
   let html = '';
@@ -1794,7 +1839,7 @@ function clearScanLog(){
 
 
 // ── Remaining handler stubs ──────────────────────────────
-function onScanViaChange(sel){ onAgentSelect(sel); }
+function onScanViaChange(sel){ onAgentSelect(sel || document.getElementById('scanVia')); }
 function saveAssign(){ applyAssign(); }
 function testConn(){
   fetch(API_BASE + '/health')
