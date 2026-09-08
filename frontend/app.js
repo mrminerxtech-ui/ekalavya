@@ -452,6 +452,7 @@ function renderSensorEntryGrid() {
       + '<button class="btn btn-sm btn-g sensor-save-btn" data-fid="' + f.id + '" data-fname="' + f.name + '">&#x1F4BE; Save</button></div>';
   }).join('');
   el.querySelectorAll('.sensor-save-btn').forEach(function(b){ b.addEventListener('click', function(){ saveSensorEntry(this.dataset.fid, this.dataset.fname); }); });
+  var wh = document.getElementById('webhookUrl');
   if (wh) wh.textContent = (API_BASE || '') + '/api/sensors/push';
 }
 
