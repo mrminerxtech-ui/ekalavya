@@ -1,0 +1,64 @@
+name: CI Checks
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  check-backend:
+    name: Check Backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: backend/package.json
+
+      - name: Install dependencies
+        run: cd backend && npm install
+
+      - name: Check syntax
+        run: |
+          cd backend
+          node --check src/server.js
+          node --check src/websocket.js
+          echo "Backend syntax OK"
+
+  check-agent:
+    name: Check Agent
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: agent/package.json
+
+      - name: Install dependencies
+        run: cd agent && npm install
+
+      - name: Check syntax
+        run: |
+          cd agent
+          node --check agent.js
+          echo "Agent syntax OK"
+
+  check-frontend:
+    name: Check Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check HTML file
+        run: |
+          if [ -f "frontend/index.html" ]; then
+            size=$(wc -c < frontend/index.html)
+            echo "frontend/index.html exists ($size bytes)"
+          else
+            echo "frontend/index.html missing"
+            exit 1
+          fi
