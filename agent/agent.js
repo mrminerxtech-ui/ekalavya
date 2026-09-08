@@ -70,7 +70,10 @@ const SERVER    = process.env.MMX_SERVER   || 'wss://ekalavya-backend-production
 const AGENT_KEY = process.env.AGENT_KEY    || 'ekalavya123';
 const FARM_NAME = process.env.FARM_NAME    || 'My Farm';
 const FARM_ID   = process.env.FARM_ID      || 'farm-' + os.hostname().toLowerCase().replace(/[^a-z0-9]/g,'-');
-const SUBNET    = process.env.LOCAL_SUBNET || '192.168.1.0/24';
+const SUBNET_RAW = process.env.LOCAL_SUBNET || '192.168.1.0/24';
+// Support comma-separated subnets: "192.168.70.1-255,192.168.44.1-255"
+const SUBNETS   = SUBNET_RAW.split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+const SUBNET    = SUBNETS[0];  // first one for display/registration
 const POLL_MS   = parseInt(process.env.POLL_MS || '30000');
 const CGPORT    = parseInt(process.env.CGMINER_PORT || '4028');
 
@@ -488,14 +491,14 @@ function connect() {
   console.log('╠══════════════════════════════════════════╣');
   console.log(`║  Farm   : ${FARM_NAME.padEnd(30)}║`);
   console.log(`║  ID     : ${FARM_ID.padEnd(30)}║`);
-  console.log(`║  Subnet : ${SUBNET.padEnd(30)}║`);
+  console.log(`║  Subnet : ${SUBNETS.join(',').slice(0,30).padEnd(30)}║`);
   console.log('╚══════════════════════════════════════════╝\n');
   console.log(`[INFO] Connecting to ${SERVER}...`);
 
   ws = new WebSocket(SERVER, {
     headers: {
       'x-agent-key': AGENT_KEY, 'x-farm-id': FARM_ID,
-      'x-farm-name': FARM_NAME, 'x-subnet': SUBNET,
+      'x-farm-name': FARM_NAME, 'x-subnet': SUBNETS.join(','),
       'x-hostname': os.hostname(), 'x-agent-version': '1.0.0',
     }
   });
@@ -555,7 +558,7 @@ function connect() {
         // Support multi-subnet: subnets[] array or single subnet string
         const subnetList = Array.isArray(msg.subnets) && msg.subnets.length > 0
           ? msg.subnets
-          : [msg.subnet || SUBNET];
+          : (msg.subnet ? [msg.subnet] : SUBNETS);
         console.log(`[SCAN] ${subnetList.length} subnet(s): ${subnetList.join(', ')}`);
         scanMultipleSubnets(msg.session_id, subnetList, msg.ports, msg.timeout);
       } else if (msg.type === 'fetch_log') {
