@@ -1,12 +1,650 @@
 
-// Global error catcher — shows any JS error on screen
-window.onerror = function(msg, src, line, col, err) {
-  var div = document.createElement('div');
-  div.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#ff2d55;color:#fff;padding:12px 16px;z-index:99999;font-size:12px;font-family:monospace;z-index:99999;';
-  div.textContent = 'JS ERROR: ' + msg + ' (line ' + line + ')';
-  document.body.appendChild(div);
-  return false;
+// ── Missing functions prepended ──────────────────────────
+
+// API and URL setup
+const API_BASE = sanitizeUrl(window.EKL_API_BASE)
+  || sanitizeUrl(localStorage.getItem('ekl_api_base'))
+  || 'http://localhost:3001';
+
+// App state
+let isCustomer = false, currentUser = null, activeWid = null;
+let loginTab = 'admin';
+let agents = [], workers = [], customers = [];
+let sensorReadings = {};
+let alertsData = [];
+const STORE_KEY = 'ekl_v2';
+const SENSOR_KEY = 'ekl_sensors_v1';
+let _fleetHash = '', _workersHash = '';
+let _sensorPollInt = null;
+let currentFarmId = null;
+let scanning = false, scanInt = null, scanTInt = null;
+let scanSecs = 0, scanFound = 0;
+let currentScanSession = null, currentScanFarmId = null, currentScanFarmName = null;
+let _lastScanResults = {};
+let _saveTimer = null;
+let scadaToken = localStorage.getItem('scada_token') || null;
+let scadaData = {}, scadaRefInt = null;
+let _cfgAgentId = null;
+let pendingAssign = [];
+
+const LANLI = {
+  'cabinet-1': {name:'Cabinet 1', model:'MY16-542', type:'Multi-Channel Controller', rated_w:542},
+  'cabinet-2': {name:'Cabinet 2', model:'1to1-535', type:'Micro-Hydro Inverter', rated_w:535},
+  'cabinet-3': {name:'Cabinet 3', model:'1to1-288', type:'Micro-Hydro Inverter', rated_w:288},
 };
+
+const IDOSP_URL = 'http://www.idosp.net/idosp/login.html';
+
+// ── Sector badge helper ───────────────────────────────────
+function sdot(w){ return w.disabled||w.status==='disabled'?'dis':w.status==='offline'?'off':w.status==='warn'?'wrn':'on'; }
+function detectBrand(model){ const m=(model||'').toLowerCase(); if(m.includes('antminer')||m.includes('bitmain')) return 'Bitmain'; if(m.includes('whatsminer')||m.includes('microbt')) return 'MicroBT'; if(m.includes('avalon')) return 'Canaan'; if(m.includes('goldshell')) return 'Goldshell'; return ''; }
+
+// ── Navigation ────────────────────────────────────────────
+function nav(page, el) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const pg = document.getElementById('page-' + page);
+  if (pg) pg.classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  if (el) el.classList.add('active');
+  if (page === 'scanner') populateDropdowns();
+  if (page === 'workers') renderWorkers();
+  if (page === 'agents') renderAgents();
+  if (page === 'customers') renderCustomers();
+  if (page === 'alerts') renderAlerts();
+  if (page === 'pools') renderPools();
+  if (page === 'profitability') renderProfit();
+  if (page === 'billing') renderBilling();
+  if (page === 'scada') checkScadaSession();
+  if (page === 'settings') { updateFleetStat(); renderSensorEntryGrid(); }
+}
+
+function showPage(n) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const pg = document.getElementById('page-' + n);
+  if (pg) pg.classList.add('active');
+  if (n === 'scada') checkScadaSession();
+  if (n === 'settings') { updateFleetStat(); renderSensorEntryGrid(); }
+}
+
+// ── Login tab ─────────────────────────────────────────────
+function setLTab(tab, el) {
+  loginTab = tab;
+  document.querySelectorAll('.ltab').forEach(t => t.classList.remove('active'));
+  if (el) el.classList.add('active');
+  const btn = document.getElementById('lBtn');
+  if (btn) { btn.className = 'login-btn ' + tab; btn.textContent = tab === 'customer' ? 'ACCESS PORTAL' : 'ACCESS PLATFORM'; }
+}
+
+// ── Render functions ──────────────────────────────────────
+function renderAll() {
+  try { renderDash(); } catch(e) { console.error('renderDash:', e); }
+  try { updateNavCount(); } catch(e) {}
+}
+
+function renderWorkers() {
+  const tb = document.getElementById('workersTbody');
+  if (!tb) return;
+  const hash = workers.map(w => w.id + w.status + w.hashrate).join('|');
+  if (hash === _workersHash) return;
+  _workersHash = hash;
+  const A = fid => agents.find(a => a.id === fid) || (agents.length === 1 ? agents[0] : null);
+  const C = id => customers.find(x => x.id === id);
+  tb.innerHTML = workers.map(w => {
+    const ag = A(w.farm_id);
+    const tc = w.temp >= 90 ? 'color:var(--red)' : w.temp >= 80 ? 'color:var(--warn)' : '';
+    return '<tr><td><span class="sdot ' + sdot(w) + '"></span></td>'
+      + '<td><div style="font-family:Exo 2,sans-serif;font-weight:600">' + w.name + '</div><div style="font-size:9px;color:var(--mute)">' + w.ip + '</div></td>'
+      + '<td>' + (w.brand || '') + '</td><td>' + (w.model || '') + '</td><td>' + (w.algo || '') + '</td>'
+      + '<td>' + (w.farm || agents[0]?.name || '—') + '</td>'
+      + '<td>' + hrDisplay(w) + '</td>'
+      + '<td style="' + tc + '">' + (w.temp > 0 ? w.temp + '°C' : '—') + '</td>'
+      + '<td>' + (w.pool || '—') + '</td>'
+      + '<td><span class="badge ' + (w.disabled ? 'bor' : w.status === 'online' ? 'bgn' : 'brn') + '">' + (w.disabled ? 'REPAIR' : w.status.toUpperCase()) + '</span></td>'
+      + '<td><button class="abtn open-ctrl-btn" data-wid="' + w.id + '">Manage</button></td></tr>';
+  }).join('') || '<tr><td colspan="11" style="text-align:center;padding:30px;color:var(--mute)">No miners yet. Scan your network to add them.</td></tr>';
+}
+
+function renderAgents() {
+  const el = document.getElementById('agentGrid');
+  if (!el) return;
+  el.innerHTML = agents.length === 0
+    ? '<div style="text-align:center;padding:40px;color:var(--mute)"><div style="font-size:32px;margin-bottom:12px">📡</div><div>No agents connected.<br>Run the agent on your farm PC to connect.</div></div>'
+    : agents.map(a => '<div class="card"><div class="card-head"><span class="sdot ' + (a.online ? 'on' : 'off') + '"></span>'
+      + '<div><div style="font-family:Exo 2,sans-serif;font-weight:700">' + a.name + '</div><div style="font-size:10px;color:var(--mute)">' + (a.subnet || '') + ' &middot; v' + (a.version || '1.0') + '</div></div>'
+      + '<span class="badge ' + (a.online ? 'bgn' : 'brn') + '" style="margin-left:auto">' + (a.online ? 'ONLINE' : 'OFFLINE') + '</span></div>'
+      + '<div class="card-body"><div class="card-row"><span class="ck">Farm ID</span><span class="cv" style="font-family:Share Tech Mono,monospace">' + a.id + '</span></div>'
+      + '<div class="card-row"><span class="ck">Host</span><span class="cv">' + (a.hostname || '—') + '</span></div>'
+      + '<div class="card-row"><span class="ck">Miners</span><span class="cv g">' + workers.filter(w => w.farm_id === a.id).length + '</span></div></div>'
+      + '<div class="card-foot"><button class="btn btn-sm scan-btn" data-aid="' + a.id + '">&#x25B6; Scan</button>'
+      + '<button class="btn btn-sm cfg-btn" data-aid="' + a.id + '" data-name="' + a.name.replace(/"/g,'') + '" data-subnet="' + (a.subnet||'').replace(/"/g,'') + '">&#x2699; IP Ranges</button></div></div>'
+    ).join('');
+  el.querySelectorAll('.scan-btn').forEach(function(b){ b.addEventListener('click',function(){ triggerScan(this.dataset.aid); }); });
+  el.querySelectorAll('.cfg-btn').forEach(function(b){ b.addEventListener('click',function(){ openAgentConfig(this.dataset.aid,this.dataset.name,this.dataset.subnet); }); });
+}
+
+function renderCustomers() {
+  const el = document.getElementById('custGrid');
+  if (!el) return;
+  const CC = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e'];
+  const tot = customers.reduce((a, c) => a + c.miners.length, 0);
+  const el2 = document.getElementById('ctTotal'); if (el2) el2.textContent = customers.length;
+  const el3 = document.getElementById('ctMiners'); if (el3) el3.textContent = tot;
+  el.innerHTML = customers.length === 0
+    ? '<div style="text-align:center;padding:40px;color:var(--mute)">No customers yet. Add a customer to assign miners.</div>'
+    : customers.map((c, i) => {
+      const col = CC[i % CC.length];
+      const ini = c.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+      const myW = workers.filter(w => c.miners.includes(w.id));
+      const onl = myW.filter(w => w.status === 'online').length;
+      return '<div class="card"><div class="card-head"><div class="av" style="background:' + col + ';width:38px;height:38px;font-size:15px">' + ini + '</div>'
+        + '<div><div style="font-family:Exo 2,sans-serif;font-weight:700;font-size:13px">' + c.name + '</div><div style="font-size:10px;color:var(--mute)">' + (c.country || '') + (c.notes ? ' &middot; ' + c.notes : '') + '</div></div>'
+        + '<span class="badge ' + (c.portal ? 'bc' : 'bwn') + '" style="margin-left:auto">' + (c.portal ? 'PORTAL' : 'NO PORTAL') + '</span></div>'
+        + '<div class="card-body"><div class="card-row"><span class="ck">Miners</span><span class="cv g">' + c.miners.length + '</span></div>'
+        + '<div class="card-row"><span class="ck">Online</span><span class="cv g">' + onl + ' / ' + c.miners.length + '</span></div></div>'
+        + '<div class="card-foot"><button class="btn btn-sm qa-btn" data-cid="' + c.id + '">&#x26CF; Assign Miners</button></div></div>';
+    }).join('');
+}
+
+function renderAlerts() {
+  const el = document.getElementById('allAlerts');
+  if (!el) return;
+  const liveAlerts = [];
+  workers.forEach(w => {
+    if (w.temp >= 90) liveAlerts.push({ico:'🔴', msg: w.name + ': Critical temp ' + w.temp + '°C', time: 'Live'});
+    if (w.status === 'offline') liveAlerts.push({ico:'🔴', msg: w.name + ' (' + w.ip + ') offline', time: 'Live'});
+    if (w.status === 'disabled') liveAlerts.push({ico:'🟠', msg: w.name + ' disabled: ' + (w.disabled_reason || 'Repair'), time: w.disabled_at || '—'});
+  });
+  agents.forEach(a => { if (!a.online) liveAlerts.push({ico:'🟡', msg: 'Agent offline: ' + a.name, time: 'Live'}); });
+  const all = [...liveAlerts, ...alertsData];
+  const badge = document.getElementById('alertBadge'); if (badge) { badge.textContent = all.length; badge.style.display = all.length ? '' : 'none'; }
+  el.innerHTML = all.length === 0
+    ? '<div style="text-align:center;padding:30px;color:var(--mute)">No alerts. All systems normal.</div>'
+    : all.map(a => '<div style="padding:10px 16px;border-bottom:1px solid rgba(26,42,58,.4);display:flex;gap:8px"><span style="font-size:14px">' + a.ico + '</span><div><div style="font-size:12px;color:var(--txt)">' + a.msg + '</div><div style="font-size:10px;color:var(--mute)">' + a.time + '</div></div></div>').join('');
+}
+
+function renderPools() {
+  const el = document.getElementById('poolsGrid');
+  if (!el) return;
+  el.innerHTML = '<div style="text-align:center;padding:30px;color:var(--mute)">Pool data available after connecting miners.</div>';
+}
+
+function renderProfit() {
+  const el = document.getElementById('profitGrid');
+  if (!el) return;
+  el.innerHTML = '<div style="text-align:center;padding:30px;color:var(--mute)">Add miners to see profitability calculations.</div>';
+}
+
+function renderBilling() {
+  const el = document.getElementById('billingTable');
+  if (!el) return;
+}
+
+function renderPortal() {
+  try { renderDash(); } catch(e) {}
+}
+
+// ── Populate scanner dropdowns ────────────────────────────
+function populateDropdowns() {
+  const sv = document.getElementById('scanVia');
+  if (sv) {
+    const cur = sv.value;
+    sv.innerHTML = '<option value="local">&#x1F4BB; Local / Direct</option>'
+      + agents.map(a => '<option value="' + a.id + '"' + (cur === a.id ? ' selected' : '') + '>'
+      + (a.online ? '✓' : '✗') + ' ' + a.name + '</option>').join('');
+  }
+}
+
+// ── Scanner log ───────────────────────────────────────────
+function addLog(type, msg, overwrite) {
+  const el = document.getElementById('scanLog');
+  if (!el) return;
+  const c = type === 'err' ? 'var(--red)' : type === 'ok' ? 'var(--green)' : 'var(--cyan)';
+  const div = '<div id="scanlog-live" style="font-size:11px;color:' + c + ';margin-bottom:2px">' + msg + '</div>';
+  if (overwrite) { const live = el.querySelector('#scanlog-live'); if (live) { live.outerHTML = div; return; } }
+  el.innerHTML += div;
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── Filter workers by farm ────────────────────────────────
+function filterByFarm(farmId) {
+  return farmId === 'all' ? workers : workers.filter(w => w.farm_id === farmId);
+}
+
+// ── Miner control panel ───────────────────────────────────
+function openCtrl(wid) {
+  const w = workers.find(x => x.id === wid);
+  if (!w) return;
+  activeWid = wid;
+  const el = document.getElementById('ctrlPanel');
+  if (!el) return;
+  // Fill in miner details
+  const nm = document.getElementById('ctrlName'); if (nm) nm.textContent = w.name;
+  const ip = document.getElementById('ctrlIp');   if (ip) ip.textContent = w.ip;
+  const md = document.getElementById('ctrlModel');if (md) md.textContent = (w.brand||'') + ' ' + (w.model||'');
+  el.style.display = 'flex';
+}
+function closeCtrl() { const el = document.getElementById('ctrlPanel'); if (el) el.style.display = 'none'; activeWid = null; }
+function refreshCtrl() { if (activeWid) openCtrl(activeWid); }
+
+// ── Quick assign ──────────────────────────────────────────
+function quickAssign(cid) {
+  const sh = document.getElementById('assignSheet');
+  if (sh) { document.getElementById('assignSel').value = cid; renderAssign(); openSheet('assignSheet'); }
+}
+function renderAssign() {
+  const cid = document.getElementById('assignSel')?.value;
+  const p   = document.getElementById('assignPanel');
+  if (!cid || !p) { if (p) p.style.display = 'none'; return; }
+  p.style.display = 'block';
+  const c = customers.find(x => x.id === cid);
+  pendingAssign = [...(c?.miners || [])];
+  redrawAssign(cid);
+}
+function redrawAssign(cid) {
+  const l = document.getElementById('assignList');
+  if (!l) return;
+  l.innerHTML = workers.map(function(w) {
+    var isA  = pendingAssign.includes(w.id);
+    var other = customers.find(function(c){ return c.id !== cid && c.miners.includes(w.id); });
+    return '<div class="assign-row' + (isA ? ' assigned' : '') + '" data-wid="' + w.id + '" data-cid="' + cid + '" data-locked="' + (other?'1':'0') + '">'
+      + '<input type="checkbox" style="accent-color:var(--cyan)" ' + (isA ? 'checked' : '') + (other ? ' disabled' : '') + '/>'
+      + '<span class="sdot ' + sdot(w) + '"></span>'
+      + '<div style="flex:1"><div style="font-size:12px;font-family:Exo 2,sans-serif;font-weight:600">' + w.name + '</div>'
+      + '<div style="font-size:10px;color:var(--mute)">' + w.ip + ' &middot; ' + hrDisplay(w) + '</div></div>'
+      + (other ? '<span class="badge bwn" style="font-size:9px">' + other.name.split(' ')[0] + '</span>' : '') + '</div>';
+  }).join('');
+  l.querySelectorAll('.assign-row').forEach(function(row){
+    if(row.dataset.locked==='1') return;
+    row.addEventListener('click', function(){ toggleAssign(this.dataset.wid, this.dataset.cid); });
+  });
+  var cnt = document.getElementById('assignCount'); if (cnt) cnt.textContent = pendingAssign.length + ' miners selected';
+}
+function toggleAssign(wid, cid) {
+  if (pendingAssign.includes(wid)) pendingAssign = pendingAssign.filter(x => x !== wid);
+  else pendingAssign.push(wid);
+  redrawAssign(cid);
+}
+function applyAssign() {
+  const cid = document.getElementById('assignSel')?.value;
+  const c   = customers.find(x => x.id === cid);
+  if (!c) return;
+  customers.forEach(x => { if (x.id !== cid) x.miners = x.miners.filter(id => !pendingAssign.includes(id)); });
+  c.miners = [...pendingAssign];
+  saveFleet();
+  toast('✓ ' + c.name + ': ' + pendingAssign.length + ' miners assigned', 'var(--green)');
+  renderCustomers(); renderWorkers(); renderDash();
+}
+
+// ── Overlay / sheet helpers ───────────────────────────────
+function openOverlay(id) { const el = document.getElementById(id); if (el) el.classList.add('show'); }
+function closeOverlay()   { document.querySelectorAll('.overlay.show').forEach(el => el.classList.remove('show')); }
+function openSheet(id)    { const el = document.getElementById(id); if (el) el.classList.add('show'); }
+function closeSheet(id)   { const el = document.getElementById(id); if (el) el.classList.remove('show'); }
+
+// ── Toast notification ────────────────────────────────────
+function toast(msg, color) {
+  let t = document.getElementById('toastEl');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'toastEl';
+    t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);padding:10px 18px;border-radius:20px;font-size:12px;font-family:Exo 2,sans-serif;font-weight:600;z-index:9999;transition:opacity .3s;background:var(--s1);border:1px solid var(--b2);color:var(--txt);max-width:90vw;text-align:center;pointer-events:none';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.style.borderColor = color || 'var(--b2)';
+  t.style.color = color || 'var(--txt)';
+  t.style.opacity = '1';
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => { t.style.opacity = '0'; }, 3000);
+}
+
+// ── Nav count badge ───────────────────────────────────────
+function updateNavCount() {
+  const b = document.getElementById('workerNavCount');
+  if (b) b.textContent = workers.length > 0 ? workers.length : '';
+}
+
+// ── checkApiSetup ─────────────────────────────────────────
+function checkApiSetup() {
+  if (API_BASE.includes('localhost')) {
+    const bar = document.createElement('div');
+    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#ff2d55;color:#fff;padding:10px 16px;z-index:9000;display:flex;align-items:center;gap:10px;font-size:12px;font-family:Exo 2,sans-serif';
+    const inp = document.createElement('input');
+    inp.id = 'quickUrl'; inp.placeholder = 'https://ekalavya-backend.up.railway.app';
+    inp.style.cssText = 'flex:1;padding:5px 10px;border-radius:4px;border:none;font-size:11px;';
+    const saveBtn = document.createElement('button');
+    saveBtn.textContent = 'Save';
+    saveBtn.style.cssText = 'padding:5px 12px;border-radius:4px;border:none;background:#060a0f;color:#fff;cursor:pointer;font-weight:700';
+    saveBtn.onclick = function(){ setApiBase(document.getElementById('quickUrl').value); };
+    bar.innerHTML = '\u26a0 <strong>Setup needed:</strong> Enter your Railway URL \u2192 ';
+    bar.appendChild(inp); bar.appendChild(saveBtn);
+    document.body.appendChild(bar);
+  }
+}
+
+function setApiBase(v) {
+  if (v && v.trim()) {
+    v = sanitizeUrl(v.trim());
+    localStorage.setItem('ekl_api_base', v);
+    window.location.reload();
+  }
+}
+
+// ── Fetch agents ──────────────────────────────────────────
+function fetchAgents() {
+  if (!API_BASE || API_BASE.includes('localhost')) return;
+  fetch(API_BASE + '/api/agents')
+    .then(r => r.ok ? r.json() : null)
+    .then(d => { if (d?.agents) { agents = d.agents; updateAgentUI(); } })
+    .catch(() => {});
+}
+
+function updateAgentUI() {
+  const pill = document.getElementById('agentPill');
+  const pillTxt = document.getElementById('agentPillTxt');
+  const online = agents.filter(a => a.online).length;
+  if (pillTxt) pillTxt.textContent = online + ' Agent' + (online !== 1 ? 's' : '');
+  populateDropdowns();
+  if (document.getElementById('fleetByFarm')) renderFleetByFarm();
+}
+
+// ── Trigger scan from agents page ────────────────────────
+function triggerScan(farmId) {
+  const agent = agents.find(a => a.id === farmId);
+  if (!agent) return;
+  nav('scanner', null);
+  setTimeout(() => {
+    const sv = document.getElementById('scanVia');
+    if (sv) { sv.value = farmId; onAgentSelect(sv); }
+  }, 200);
+}
+
+// ── Agent config panel ────────────────────────────────────
+function getAgentSubnets(farmId) { try { return JSON.parse(localStorage.getItem('agent_subnets_' + farmId) || '[]'); } catch { return []; } }
+function setAgentSubnets(farmId, subnets) {
+  localStorage.setItem('agent_subnets_' + farmId, JSON.stringify(subnets));
+  const a = agents.find(x => x.id === farmId); if (a) a.subnet = subnets.join(',');
+  const token = localStorage.getItem('ekl_token');
+  if (token && API_BASE && !API_BASE.includes('localhost')) {
+    fetch(API_BASE + '/api/fleet/agent-config', { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body:JSON.stringify({farm_id:farmId, subnets, name:a?.name||farmId}) }).catch(() => {});
+  }
+}
+function openAgentConfig(farmId, farmName, currentSubnet) {
+  _cfgAgentId = farmId;
+  const t = document.getElementById('cfgAgentTitle'); if (t) t.textContent = '&#x2699; ' + farmName + ' — IP Ranges';
+  const saved = getAgentSubnets(farmId);
+  const display = saved.length > 0 ? saved : (currentSubnet ? currentSubnet.split(',') : []);
+  const el = document.getElementById('cfgSubnets'); if (el) el.value = display.join('\n');
+  const th16El = document.getElementById('cfgTH16'); if (th16El) th16El.value = localStorage.getItem('th16_sensors_' + farmId) || '';
+  const panel = document.getElementById('agentScanConfig'); if (panel) { panel.style.display = 'block'; panel.scrollIntoView({behavior:'smooth'}); }
+}
+function appendCfgSubnet(s) { const el = document.getElementById('cfgSubnets'); if (!el) return; const cur = el.value.trim(); if (!cur.includes(s)) el.value = cur ? (cur + '\n' + s) : s; }
+function saveAgentSubnets() {
+  if (!_cfgAgentId) return;
+  const raw = document.getElementById('cfgSubnets')?.value || '';
+  const subnets = raw.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
+  if (!subnets.length) { alert('Enter at least one IP range'); return; }
+  setAgentSubnets(_cfgAgentId, subnets);
+  const th16 = document.getElementById('cfgTH16')?.value.trim();
+  if (th16) localStorage.setItem('th16_sensors_' + _cfgAgentId, th16);
+  toast('✓ Config saved', 'var(--green)');
+}
+function scanFromConfig() {
+  if (!_cfgAgentId) return;
+  saveAgentSubnets();
+  const subnets = getAgentSubnets(_cfgAgentId);
+  const sr = document.getElementById('scanRange'); if (sr) sr.value = subnets.join('\n');
+  const sv = document.getElementById('scanVia'); if (sv) sv.value = _cfgAgentId;
+  nav('scanner', null);
+  toast('Agent and ranges loaded — click Scan', 'var(--cyan)');
+}
+
+// ── onAgentSelect ─────────────────────────────────────────
+function onAgentSelect(sel) {
+  const farmId = sel.value;
+  const el = document.getElementById('scanRange');
+  if (!farmId || farmId === 'local') { if (el) el.value = ''; return; }
+  if (el) el.value = '';
+  const saved = getAgentSubnets(farmId);
+  const agent = agents.find(a => a.id === farmId);
+  if (saved.length > 0) el.value = saved.join('\n');
+  else if (agent?.subnet && agent.subnet !== '192.168.1.0/24') el.value = agent.subnet.split(',').join('\n');
+  updateScanAgentBanner(farmId, agent);
+}
+function updateScanAgentBanner(farmId, agent) {
+  let b = document.getElementById('scanAgentBanner');
+  if (!b) { b = document.createElement('div'); b.id = 'scanAgentBanner'; b.style.cssText = 'border-radius:6px;padding:8px 12px;font-size:11px;margin-bottom:10px;display:flex;align-items:center;gap:8px'; const ref = document.getElementById('scanRange'); if (ref?.parentElement) ref.parentElement.insertBefore(b, ref); }
+  if (!agent) { b.style.display = 'none'; return; }
+  b.style.display = 'flex';
+  b.style.background = agent.online ? 'rgba(0,255,157,.06)' : 'rgba(255,45,85,.06)';
+  b.style.border = '1px solid ' + (agent.online ? 'rgba(0,255,157,.3)' : 'rgba(255,45,85,.3)');
+  b.innerHTML = '<span class="sdot ' + (agent.online ? 'on' : 'off') + '"></span><span style="font-family:Exo 2,sans-serif;font-weight:700;color:var(--txt)">' + agent.name + '</span><span style="color:var(--mute)">' + (agent.online ? 'Online' : 'OFFLINE') + '</span><span style="font-family:Share Tech Mono,monospace;font-size:10px;color:var(--mute);margin-left:auto">' + (agent.subnet || '') + '</span>';
+}
+
+// ── Sensor reading storage ────────────────────────────────
+function loadSensors() { try { const r = localStorage.getItem(SENSOR_KEY); if (r) sensorReadings = JSON.parse(r); } catch {} }
+function saveSensors() { try { localStorage.setItem(SENSOR_KEY, JSON.stringify(sensorReadings)); } catch {} }
+function getSensorReading(farmId) { return sensorReadings[farmId] || null; }
+function setSensorReading(farmId, data) { sensorReadings[farmId] = {...data, updated: new Date().toISOString()}; saveSensors(); }
+
+function initSensors() { loadSensors(); }
+
+function renderSensorEntryGrid() {
+  const el = document.getElementById('sensorEntryGrid');
+  if (!el) return;
+  const farms = agents.length > 0 ? agents : [{id:'ghummadh',name:'Ghummadh'},{id:'alhayer',name:'Al Hayer'},{id:'hydro',name:'Hydro'}];
+  el.innerHTML = farms.map(f => {
+    const r = getSensorReading(f.id) || {};
+    return '<div style="background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:12px">'
+      + '<div style="font-family:Exo 2,sans-serif;font-weight:700;font-size:12px;color:var(--txt);margin-bottom:10px">📍 ' + f.name + (r.updated ? '<span style="font-size:9px;color:var(--mute);font-weight:400;float:right">' + new Date(r.updated).toLocaleTimeString() + '</span>' : '') + '</div>'
+      + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">'
+      + '<div><div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Temperature (°C)</div>'
+      + '<div style="display:flex;align-items:center;gap:4px"><span style="font-family:Share Tech Mono,monospace;font-size:24px;color:var(--warn)">' + (r.temp != null ? r.temp : '—') + '</span>'
+      + '<input id="st_' + f.id + '" type="number" step="0.1" value="' + (r.temp != null ? r.temp : '') + '" placeholder="42.5" style="width:70px;background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:5px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:12px;outline:none"></div></div>'
+      + '<div><div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Humidity (%)</div>'
+      + '<div style="display:flex;align-items:center;gap:4px"><span style="font-family:Share Tech Mono,monospace;font-size:24px;color:var(--cyan)">' + (r.humidity != null ? r.humidity : '—') + '</span>'
+      + '<input id="sh_' + f.id + '" type="number" step="1" value="' + (r.humidity != null ? r.humidity : '') + '" placeholder="35" style="width:70px;background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:5px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:12px;outline:none"></div></div></div>'
+      + '<button class="btn btn-sm btn-g sensor-save-btn" data-fid="' + f.id + '" data-fname="' + f.name + '">&#x1F4BE; Save</button></div>';
+  }).join('');
+  el.querySelectorAll('.sensor-save-btn').forEach(function(b){ b.addEventListener('click', function(){ saveSensorEntry(this.dataset.fid, this.dataset.fname); }); });
+  if (wh) wh.textContent = (API_BASE || '') + '/api/sensors/push';
+}
+
+function saveSensorEntry(farmId, farmName) {
+  const t = document.getElementById('st_' + farmId)?.value;
+  const h = document.getElementById('sh_' + farmId)?.value;
+  if (t === '' && h === '') { toast('Enter temperature or humidity', 'var(--warn)'); return; }
+  setSensorReading(farmId, {temp: t !== '' ? parseFloat(t) : null, humidity: h !== '' ? parseFloat(h) : null, name: farmName});
+  const token = localStorage.getItem('ekl_token');
+  if (token && API_BASE && !API_BASE.includes('localhost')) {
+    fetch(API_BASE + '/api/sensors/push', { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body:JSON.stringify({farm_id:farmId, farm_name:farmName, temp:parseFloat(t)||null, humidity:parseFloat(h)||null}) }).catch(() => {});
+  }
+  renderSensorEntryGrid();
+  toast('✓ Saved for ' + farmName, 'var(--green)');
+}
+
+function copyWebhook() {
+  const url = (API_BASE || '') + '/api/sensors/push';
+  if (navigator.clipboard) navigator.clipboard.writeText(url).then(() => toast('Webhook URL copied', 'var(--green)')).catch(() => {});
+}
+
+// ── Fleet stat for settings page ─────────────────────────
+function updateFleetStat() {
+  const el = document.getElementById('fleetStoreStat');
+  if (!el) return;
+  el.textContent = workers.length + ' workers · ' + customers.length + ' customers';
+  const token = localStorage.getItem('ekl_token');
+  if (token && API_BASE && !API_BASE.includes('localhost')) {
+    fetch(API_BASE + '/api/fleet/status', {headers:{'Authorization':'Bearer '+token}})
+      .then(r => r.json()).then(d => { if (d.ok) el.innerHTML += ' · <span style="color:var(--green)">✓ ' + d.storage + '</span>'; }).catch(() => {});
+  }
+}
+
+function exportFleet() {
+  const data = JSON.stringify({workers, customers, exported: new Date().toISOString(), v:1}, null, 2);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([data], {type:'application/json'}));
+  a.download = 'ekalavya-fleet-' + new Date().toISOString().slice(0,10) + '.json';
+  a.click();
+  toast('✓ Fleet exported', 'var(--green)');
+}
+
+function importFleet(e) {
+  const file = e.target.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try {
+      const d = JSON.parse(ev.target.result);
+      if (!d.workers) throw new Error('Invalid format');
+      if (!confirm('Import ' + d.workers.length + ' workers and ' + (d.customers?.length||0) + ' customers?')) return;
+      workers = d.workers; customers = d.customers || [];
+      saveFleet(); saveFleetToBackend(); renderAll();
+      toast('✓ Imported ' + workers.length + ' workers', 'var(--green)');
+    } catch(err) { alert('Import failed: ' + err.message); }
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+}
+
+// ── Add customer ──────────────────────────────────────────
+function togglePortalFields() { const el = document.getElementById('portalFields'); if (el) el.style.display = document.getElementById('cPortalToggle')?.checked ? 'block' : 'none'; }
+function addCustomer() {
+  const n = document.getElementById('cName')?.value.trim();
+  if (!n) { alert('Customer name required'); return; }
+  const hasPortal = document.getElementById('cPortalToggle')?.checked;
+  const email = hasPortal ? (document.getElementById('cEmail')?.value.trim() || '') : '';
+  const pass  = hasPortal ? (document.getElementById('cPass')?.value || '') : '';
+  if (hasPortal && !email) { alert('Email required for portal access'); return; }
+  const c = { id:'cust-'+Date.now(), name:n, email, country:document.getElementById('cCountry')?.value||'', notes:document.getElementById('cNotes')?.value||'', plan:'Standard', rate:0, miners:[], active:true, portal:hasPortal };
+  customers.push(c);
+  closeSheet('addCustSheet');
+  ['cName','cEmail','cPass','cCountry','cNotes'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const pt = document.getElementById('cPortalToggle'); if (pt) pt.checked = false;
+  togglePortalFields();
+  saveFleet(); saveFleetToBackend(); renderAll();
+  toast(hasPortal ? '✓ Customer added with portal' : '✓ Customer added', 'var(--green)');
+}
+
+// ── Delete miner ──────────────────────────────────────────
+function deleteMiner(wid) {
+  if (!confirm('Remove this miner from fleet?')) return;
+  workers = workers.filter(x => x.id !== wid);
+  customers.forEach(c => { c.miners = c.miners.filter(x => x !== wid); });
+  saveFleet();
+  closeCtrl();
+  renderWorkers(); renderDash();
+}
+
+// ── Disable / enable ──────────────────────────────────────
+function disableMiner(reason) {
+  if (!activeWid) return;
+  const w = workers.find(x => x.id === activeWid);
+  if (!w) return;
+  w.status = 'disabled'; w.disabled = true; w.disabled_reason = reason; w.hashrate = 0;
+  w.disabled_at = new Date().toISOString().slice(0,10);
+  saveFleet();
+  toast('🚫 ' + w.name + ' disabled', 'var(--orange)');
+  refreshCtrl(); renderWorkers(); renderDash();
+}
+function enableMiner() {
+  if (!activeWid) return;
+  const w = workers.find(x => x.id === activeWid);
+  if (!w) return;
+  w.disabled = false; w.disabled_reason = ''; w.disabled_at = null; w.status = 'online';
+  saveFleet();
+  toast('✅ ' + w.name + ' enabled', 'var(--green)');
+  refreshCtrl(); renderWorkers(); renderDash();
+}
+
+// ── Saved indicator ───────────────────────────────────────
+function showSavedIndicator() {
+  let dot = document.getElementById('savedDot');
+  if (!dot) {
+    dot = document.createElement('div');
+    dot.id = 'savedDot';
+    dot.style.cssText = 'position:fixed;bottom:70px;right:12px;z-index:999;background:rgba(0,255,157,.15);border:1px solid var(--green);border-radius:20px;padding:4px 10px;font-size:10px;color:var(--green);font-family:Share Tech Mono,monospace;pointer-events:none;transition:opacity .5s';
+    document.body.appendChild(dot);
+  }
+  dot.textContent = '✓ Saved (' + workers.length + ' miners)';
+  dot.style.opacity = '1';
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => { dot.style.opacity = '0'; }, 3000);
+}
+
+// ── addAllToFleet ─────────────────────────────────────────
+function addAllToFleet() {
+  const farmId   = currentScanFarmId   || (agents.length > 0 ? agents[0].id : 'unknown');
+  const farmName = currentScanFarmName || agents.find(a => a.id === farmId)?.name || 'Farm';
+  const miners   = Object.values(_lastScanResults);
+  if (!miners.length) { toast('No scan results to add', 'var(--warn)'); return; }
+  miners.forEach(m => {
+    const algo   = m.algo || getAlgoFromModel(m.model || '');
+    const brand  = m.brand || detectBrand(m.model || '');
+    const ghA    = ['Scrypt','KHeavyHash','X11','Blake2B','Ethash','Equihash'];
+    const hrUnit = m.hr_unit || (ghA.includes(algo) ? 'GH/s' : 'TH/s');
+    workers = workers.filter(w => w.ip !== m.ip);
+    workers.push({ id:'w-'+m.ip.replace(/\./g,'-'), name:m.worker?m.worker.split('.').pop():m.ip.replace(/\./g,'-'), model:m.model||'ASIC Miner', brand, algo, ip:m.ip, hashrate:m.hashrate||0, hr_unit:hrUnit, hr_display:m.hr_display||'—', temp:m.temp||0, fan:m.fan||0, power:m.power||0, status:'online', pool:m.pool||'—', pool_url:m.pool||'', pool_user:m.worker||'', uptime:m.uptime||'—', farm:farmName, farm_id:farmId, cid:'', disabled:false, led:false, firmware:m.firmware||'—', accepted:m.accepted||0, rejected:m.rejected||0, hw_errors:m.hw_errors||0, source:'scan', added_at:new Date().toISOString() });
+  });
+  saveFleet(); updateNavCount(); showSavedIndicator(); setTimeout(saveFleetToBackend, 500);
+  try { renderAll(); } catch(e) {}
+  toast('✓ ' + miners.length + ' miners saved to ' + farmName, 'var(--green)');
+}
+
+// ── getCabIp ──────────────────────────────────────────────
+function getCabIp(id) { return localStorage.getItem('scada_ip_' + id) || ''; }
+function saveCabIp(id) {
+  const ip = document.getElementById('cabip_' + id)?.value.trim();
+  if (!ip) { alert('Enter IP'); return; }
+  localStorage.setItem('scada_ip_' + id, ip);
+  fetch(API_BASE + '/api/scada/cabinets/' + id + '/config', { method:'POST', headers:{'Content-Type':'application/json','x-scada-token':scadaToken}, body:JSON.stringify({ip, port:502}) }).then(() => { toast('✓ ' + LANLI[id].model + ' → ' + ip, 'var(--green)'); scadaRefresh(); });
+}
+function renderCabIpConfig() {
+  const el = document.getElementById('cabIpConfig');
+  if (!el) return;
+  el.innerHTML = Object.entries(LANLI).map(([id, cab]) =>
+    '<div style="background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:12px">'
+    + '<div style="font-family:Orbitron,sans-serif;font-size:11px;font-weight:700;color:var(--cyan)">' + cab.model + '</div>'
+    + '<div style="font-size:10px;color:var(--mute);margin-bottom:8px">' + cab.name + ' &middot; ' + cab.rated_w + 'W</div>'
+    + '<div style="display:flex;gap:6px"><input id="cabip_' + id + '" value="' + getCabIp(id) + '" placeholder="192.168.x.x" style="flex:1;background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:7px 10px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none">'
+    + '<button class="btn btn-sm btn-g save-cab-btn" data-cabid="' + id + '">Save</button></div></div>'
+  ).join('');
+  el.querySelectorAll('.save-cab-btn').forEach(function(b){ b.addEventListener('click', function(){ saveCabIp(this.dataset.cabid); }); });
+}
+
+// ── iDOSP ─────────────────────────────────────────────────
+function openIdospTab() { window.open(IDOSP_URL, '_blank'); }
+function loadIdosp() { openIdospTab(); }
+function reloadSpFrame() { openIdospTab(); }
+function openSpCloud() { openIdospTab(); }
+function saveSpUrl() { openIdospTab(); }
+function loadSpFrame() { openIdospTab(); }
+
+// ── Misc ──────────────────────────────────────────────────
+function logout() {
+  isCustomer = false; currentUser = null;
+  localStorage.removeItem('ekl_token');
+  document.getElementById('loginScreen').style.display = 'flex';
+  ['ticker','topbar','appBody','bottomNav'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+}
+
+function stopScan() {
+  scanning = false;
+  clearInterval(scanInt); clearInterval(scanTInt);
+  const btn = document.getElementById('scanBtn'); if (btn) btn.textContent = '▶ Scan Network';
+  const ssl = document.getElementById('scanCurrentSubnet'); if (ssl) { ssl.style.display = 'none'; ssl.textContent = ''; }
+}
+
+function loadAgentConfigsFromBackend() {
+  const token = localStorage.getItem('ekl_token');
+  if (!token || !API_BASE || API_BASE.includes('localhost')) return;
+  fetch(API_BASE + '/api/fleet/agent-configs', {headers:{'Authorization':'Bearer '+token}})
+    .then(r => r.ok ? r.json() : null)
+    .then(d => { if (!d?.configs) return; d.configs.forEach(cfg => { if (cfg.subnets?.length > 0) { localStorage.setItem('agent_subnets_' + cfg.farm_id, JSON.stringify(cfg.subnets)); const a = agents.find(x => x.id === cfg.farm_id); if (a) a.subnet = cfg.subnets.join(','); } }); })
+    .catch(() => {});
+}
+
+// ── Init ──────────────────────────────────────────────────
+
 
 // ============================================================
 // EKALAVYA — API CONFIG
@@ -20,21 +658,10 @@ function sanitizeUrl(u){
   if(!u.startsWith('http://') && !u.startsWith('https://')) u='https://'+u;
   return u;
 }
-const API_BASE = sanitizeUrl(window.EKL_API_BASE)
-  || sanitizeUrl(localStorage.getItem('ekl_api_base'))
-  || 'http://localhost:3001';
-
-let isCustomer=false,currentUser=null,activeWid=null;
-const coins={BTC:{p:67420,c:2.1,ico:'₿',col:'#f7931a'},ETH:{p:3480,c:-.8,ico:'Ξ',col:'#627eea'},LTC:{p:84.2,c:1.3,ico:'Ł',col:'#bfbbbb'},KAS:{p:.1124,c:8.2,ico:'K',col:'#70c7ba'},DOGE:{p:.1842,c:5.7,ico:'Ð',col:'#c3a634'}};
-const CC=['#e74c3c','#3498db','#2ecc71','#9b59b6','#e67e22','#1abc9c','#f39c12'];
-
-let workers   = [];
-let customers = [];
 
 // ═══════════════════════════════════════════════════════════
 //  FLEET PERSISTENCE — localStorage, dead simple
 // ═══════════════════════════════════════════════════════════
-const STORE_KEY = 'ekl_v2';
 
 function saveFleet() {
   try {
@@ -130,7 +757,6 @@ function loadAgentConfigsFromBackend(){
 
 // customers managed in persistence layer above
 
-let agents = []; // loaded from API — real connected farm agents
 
 const pools=[
   {flag:'🇺🇸',name:'Foundry USA',coins:['BTC'],fee:'0%',hr:'~140 EH/s',luck:'99.2%',lat:'8ms',s:'online'},
@@ -153,10 +779,8 @@ const profitModels=[
 ];
 
 const teamData=[{name:'Alex T.',col:'#e74c3c',role:'Admin',email:'alex@ekalavya.io',last:'2 min ago'},{name:'Sam Lee',col:'#3498db',role:'Manager',email:'sam@ekalavya.io',last:'1h ago'},{name:'Jamie R.',col:'#2ecc71',role:'Technician',email:'jamie@ekalavya.io',last:'3h ago'}];
-let alertsData = []; // populated from real miner events
 
 // LOGIN
-let loginTab='admin';
 function setLTab(t,el){loginTab=t;document.querySelectorAll('.ltab').forEach(x=>x.classList.remove('active'));el.classList.add('active');const b=document.getElementById('lBtn'),h=document.getElementById('lHint');if(t==='customer'){b.className='login-btn customer';b.textContent='ENTER CUSTOMER PORTAL';h.textContent='Demo: ahmad@example.com / ahmad123';}else{b.className='login-btn admin';b.textContent='ACCESS PLATFORM';h.innerHTML='Admin: admin / admin123<br>Customer: ahmad@example.com / ahmad123';}}
 function doLogin(){
   const u=document.getElementById('lUser').value.trim();
@@ -531,7 +1155,6 @@ function renderDash(){
   } // end disabled
 }
 
-let _fleetHash = '';
 function renderFleetByFarm(){
   const el = document.getElementById('fleetByFarm');
   if(!el) return;
@@ -630,7 +1253,6 @@ function closeFarmDetail(){
   _sensorPollInt = null;
 }
 
-let _sensorPollInt = null;
 
 function loadFarmSensors(farmId){
   const el = document.getElementById('farmSensors');
@@ -868,14 +1490,6 @@ function liveUpdate(){if(isCustomer)renderPortal();}
 // SCADA — Lanli Hydro System (SP Cloud Integration)
 // MY16-542 · 1to1-535 · 1to1-288
 // ════════════════════════════════════════════════════════════
-let scadaToken=localStorage.getItem('scada_token')||null;
-let scadaData={};let scadaRefInt=null;
-
-const LANLI={
-  'cabinet-1':{name:'Cabinet 1',model:'MY16-542',type:'Multi-Channel Controller',rated_w:542},
-  'cabinet-2':{name:'Cabinet 2',model:'1to1-535',type:'Micro-Hydro Inverter',rated_w:535},
-  'cabinet-3':{name:'Cabinet 3',model:'1to1-288',type:'Micro-Hydro Inverter',rated_w:288},
-};
 
 // ── SCADA Login ───────────────────────────────────────────
 function scadaLogin(){
@@ -953,7 +1567,6 @@ function scadaRefresh(){
 }
 
 // ── SP Cloud embed ────────────────────────────────────────
-const IDOSP_URL = 'http://www.idosp.net/idosp/login.html';
 
 // Open iDOSP in new tab — requires VPN (Netherlands) active on device
 function openIdospTab(){
@@ -1028,6 +1641,38 @@ function renderScadaDashboard(){
   const s=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
   s('scadaTotalPower',tp.toFixed(3));s('scadaCabOnline',co);s('scadaTodayEnergy',te.toFixed(2));s('scadaAlarmCount',ac);
 }
+function addToFleetDirect(ip, model, farmId, farmName){
+  const miner = (_lastScanResults && _lastScanResults[ip]) ? _lastScanResults[ip] : {};
+  workers = workers.filter(function(w){ return w.ip !== ip; });
+  var algo    = miner.algo || getAlgoFromModel(model || miner.model || '');
+  var brand   = miner.brand || detectBrand(miner.model || model);
+  var ghAlgos = ['Scrypt','KHeavyHash','X11','Blake2B','Ethash','Equihash'];
+  var hrUnit  = miner.hr_unit || (ghAlgos.includes(algo) ? 'GH/s' : 'TH/s');
+  var hrDisp  = (miner.hr_display && miner.hr_display !== '—') ? miner.hr_display : (miner.hashrate > 0 ? miner.hashrate.toFixed(2) + ' ' + hrUnit : '—');
+  workers.push({
+    id: 'w-' + ip.replace(/\./g, '-'),
+    name: miner.worker ? miner.worker.split('.').pop() : ip.replace(/\./g, '-'),
+    model: miner.model || model || 'ASIC Miner',
+    brand: brand, algo: algo, ip: ip,
+    hashrate: miner.hashrate || 0, hr_unit: hrUnit, hr_display: hrDisp,
+    temp: miner.temp || 0, fan: miner.fan || 0, power: miner.power || 0,
+    status: 'online', pool: miner.pool || '—', pool_url: miner.pool || '',
+    pool_user: miner.worker || '', uptime: miner.uptime || '—',
+    farm: farmName, farm_id: farmId,
+    cid: '', disabled: false, led: false, firmware: miner.firmware || '—',
+    accepted: miner.accepted || 0, rejected: miner.rejected || 0,
+    hw_errors: miner.hw_errors || 0, source: 'scan',
+    added_at: new Date().toISOString()
+  });
+  saveFleet();
+  updateNavCount();
+  showSavedIndicator();
+  setTimeout(saveFleetToBackend, 500);
+  try { renderWorkers(); } catch(e) {}
+  try { renderDash(); } catch(e) {}
+  toast('✓ ' + ip + ' → ' + farmName, 'var(--green)');
+}
+
 function addFoundCard(m){
   const g=document.getElementById('foundGrid');
   if(!g)return;
