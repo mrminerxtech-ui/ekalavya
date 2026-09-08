@@ -225,14 +225,59 @@ function extractModel(stats, summary) {
   return summary?.SUMMARY?.[0]?.Type || null;
 }
 
+// ── Fetch MAC address + Serial number ─────────────────────
+async function getHardwareIds(ip) {
+  let mac = null, serial = null;
+
+  // Antminer / most Bitmain-based firmware
+  const sysInfo = await httpGet(ip, '/cgi-bin/get_system_info.cgi', 'root:root');
+  if (sysInfo) {
+    mac    = sysInfo.macaddr || sysInfo.mac || sysInfo.MAC || null;
+    serial = sysInfo.minersn || sysInfo.serialno || sysInfo.sn || sysInfo.SerialNo || null;
+  }
+
+  // Whatsminer — different endpoint / field names
+  if (!mac || !serial) {
+    const wmInfo = await httpGet(ip, '/cgi-bin/luci/admin/status/overview', 'root:root');
+    if (wmInfo) {
+      mac    = mac    || wmInfo.mac      || wmInfo.macaddr    || null;
+      serial = serial || wmInfo.sn       || wmInfo.serial_no  || null;
+    }
+  }
+
+  // Avalon — separate info endpoint
+  if (!mac || !serial) {
+    const avaInfo = await httpGet(ip, '/api/v1/info', 'root:root');
+    if (avaInfo) {
+      mac    = mac    || avaInfo.mac        || null;
+      serial = serial || avaInfo.serial_no  || avaInfo.sn || null;
+    }
+  }
+
+  // Fallback: try /cgi-bin/status.cgi (some firmware variants)
+  if (!mac || !serial) {
+    const status = await httpGet(ip, '/cgi-bin/status.cgi', 'root:root');
+    if (status) {
+      mac    = mac    || status.mac    || null;
+      serial = serial || status.serial || status.sn || null;
+    }
+  }
+
+  return {
+    mac:    mac    ? mac.toUpperCase().replace(/[^0-9A-F]/g, '').replace(/(.{2})(?=.)/g, '$1:') : null,
+    serial: serial  || null,
+  };
+}
+
 // ── Full miner info ────────────────────────────────────────
 async function getMinerInfo(ip) {
-  // Parallel API calls via CGMiner TCP
-  const [summary, stats, devs, pools] = await Promise.all([
+  // Parallel API calls via CGMiner TCP + hardware IDs via HTTP
+  const [summary, stats, devs, pools, hwIds] = await Promise.all([
     cgCmd(ip, 'summary'),
     cgCmd(ip, 'stats'),
     cgCmd(ip, 'devs'),
     cgCmd(ip, 'pools'),
+    getHardwareIds(ip),
   ]);
 
   let model = extractModel(stats, summary);
@@ -313,6 +358,8 @@ async function getMinerInfo(ip) {
     worker_id:   fullWorkerId,   // full string exactly as configured on the miner
     pool_status: activePool.Status  || '—',
     pools:       allPools.map(p => ({ url: p.URL, user: p.User, status: p.Status, priority: p.Priority })),
+    mac:         hwIds.mac    || null,   // machine's network MAC address
+    serial:      hwIds.serial || null,   // manufacturer serial number
     accepted, rejected, hw_errors: hwErrors,
     boards,
     status: 'online',
