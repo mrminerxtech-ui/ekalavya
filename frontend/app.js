@@ -896,7 +896,52 @@ function hrDisplay(w){
 }
 function toast(msg,col){const t=document.createElement('div');t.className='toast';t.style.borderColor=col||'var(--b1)';t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),5000);}
 
-function renderAll(){renderDash();renderWorkers();renderAgents();renderCustomers();renderBilling();renderPools();renderProfit();renderTeam();renderAlerts();}
+
+// ── Missing stubs ─────────────────────────────────────────
+function renderTeam() {
+  const el = document.getElementById('page-team');
+  if (el) el.innerHTML = '<div style="padding:30px;color:var(--mute);text-align:center">Team management coming soon.</div>';
+}
+
+function checkScadaSession() {
+  if (!scadaToken) return;
+  fetch(API_BASE + '/api/scada/overview', {headers: {'x-scada-token': scadaToken}})
+    .then(function(r) {
+      if (r.status === 401) { scadaToken = null; localStorage.removeItem('scada_token'); }
+      else showScadaDashboard();
+    }).catch(function() { showScadaDashboard(); });
+}
+
+function openManualEntry(preselect) {
+  var sel = document.getElementById('manualCabSel');
+  if (sel && preselect) sel.value = preselect;
+  openSheet('manualEntrySheet');
+}
+
+function saveManualReading() {
+  var id = document.getElementById('manualCabSel')?.value;
+  if (!id) return;
+  var data = {
+    power_kw:     document.getElementById('m_power')?.value,
+    voltage_v:    document.getElementById('m_voltage')?.value,
+    current_a:    document.getElementById('m_current')?.value,
+    frequency_hz: document.getElementById('m_freq')?.value,
+    temp_c:       document.getElementById('m_temp')?.value,
+    rpm:          document.getElementById('m_rpm')?.value,
+    flow_rate:    document.getElementById('m_flow')?.value,
+    water_level:  document.getElementById('m_level')?.value,
+    notes:        document.getElementById('m_notes')?.value
+  };
+  fetch(API_BASE + '/api/scada/cabinets/' + id + '/manual', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'x-scada-token': scadaToken},
+    body: JSON.stringify(data)
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.ok) { closeSheet('manualEntrySheet'); scadaRefresh(); toast('✓ Reading saved', 'var(--green)'); }
+  }).catch(function(e) { toast('Error: ' + e.message, 'var(--red)'); });
+}
+
+function renderAll(){try{renderDash();}catch(e){} try{updateNavCount();}catch(e){}}
 
 // Fetch real agents from backend API
 function fetchAgents(){
