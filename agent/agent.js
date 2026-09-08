@@ -285,10 +285,16 @@ async function getMinerInfo(ip) {
     .map(k => parseInt(st0[k]||devs?.DEVS?.[0]?.[k]||0)).filter(v=>v>0);
   const fan = fanValues.length ? Math.max(...fanValues) : 0;
 
-  // Pool info
-  const pool = pools?.POOLS?.[0];
+  // Pool info — check all configured pools, prefer the active one
+  const allPools = pools?.POOLS || [];
+  const activePool = allPools.find(p => p.Stratum === true || p['Stratum Active'] === true)
+                   || allPools.find(p => p.Status === 'Alive')
+                   || allPools[0] || {};
   const power = parseInt(st0.power || st0.Power || s.Power || 0);
   const uptime = formatUptime(parseInt(s.Elapsed||0));
+
+  // Full worker ID as configured on the miner — includes wallet/worker suffix
+  const fullWorkerId = activePool.User || allPools.map(p => p.User).find(u => u && u !== '') || '—';
 
   // HW errors and shares
   const accepted  = parseInt(s.Accepted||0);
@@ -302,9 +308,11 @@ async function getMinerInfo(ip) {
     hr_unit:     hr.unit,
     hr_display:  hr.display,
     temp, fan, power, uptime,
-    pool:        pool?.URL     || '—',
-    worker:      pool?.User    || '—',
-    pool_status: pool?.Status  || '—',
+    pool:        activePool.URL     || '—',
+    worker:      fullWorkerId,
+    worker_id:   fullWorkerId,   // full string exactly as configured on the miner
+    pool_status: activePool.Status  || '—',
+    pools:       allPools.map(p => ({ url: p.URL, user: p.User, status: p.Status, priority: p.Priority })),
     accepted, rejected, hw_errors: hwErrors,
     boards,
     status: 'online',
