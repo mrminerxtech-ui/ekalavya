@@ -85,28 +85,62 @@ function setLTab(tab, el) {
 }
 
 // ── Render functions ──────────────────────────────────────
-function renderAll(){try{renderDash();}catch(e){console.error('renderDash:',e);}try{updateNavCount();}catch(e){}}
+function renderAll(){
+  try{ renderDash(); }catch(e){ console.error('renderDash:',e); }
+  try{ renderWorkers(); }catch(e){ console.error('renderWorkers:',e); }
+  try{ renderAgents(); }catch(e){}
+  try{ renderCustomers(); }catch(e){}
+  try{ updateNavCount(); }catch(e){}
+}
 function renderWorkers() {
   const tb = document.getElementById('workersTbody');
   if (!tb) return;
-  const hash = workers.map(w => w.id + w.status + w.hashrate).join('|');
-  if (hash === _workersHash) return;
-  _workersHash = hash;
-  const A = fid => agents.find(a => a.id === fid) || (agents.length === 1 ? agents[0] : null);
-  const C = id => customers.find(x => x.id === id);
-  tb.innerHTML = workers.map(w => {
-    const ag = A(w.farm_id);
-    const tc = w.temp >= 90 ? 'color:var(--red)' : w.temp >= 80 ? 'color:var(--warn)' : '';
-    return '<tr><td><span class="sdot ' + sdot(w) + '"></span></td>'
-      + '<td><div style="font-family:Exo 2,sans-serif;font-weight:600">' + w.name + '</div><div style="font-size:9px;color:var(--mute)">' + w.ip + '</div></td>'
-      + '<td>' + (w.brand || '') + '</td><td>' + (w.model || '') + '</td><td>' + (w.algo || '') + '</td>'
-      + '<td>' + (w.farm || agents[0]?.name || '—') + '</td>'
-      + '<td>' + hrDisplay(w) + '</td>'
-      + '<td style="' + tc + '">' + (w.temp > 0 ? w.temp + '°C' : '—') + '</td>'
-      + '<td>' + (w.pool || '—') + '</td>'
-      + '<td><span class="badge ' + (w.disabled ? 'bor' : w.status === 'online' ? 'bgn' : 'brn') + '">' + (w.disabled ? 'REPAIR' : w.status.toUpperCase()) + '</span></td>'
-      + '<td><button class="abtn open-ctrl-btn" data-wid="' + w.id + '">Manage</button></td></tr>';
-  }).join('') || '<tr><td colspan="11" style="text-align:center;padding:30px;color:var(--mute)">No miners yet. Scan your network to add them.</td></tr>';
+  // Always rebuild — no hash guard (was preventing updates)
+  const A = function(fid){ return agents.find(function(a){ return a.id === fid; }); };
+  const C = function(id){ return customers.find(function(x){ return x.id === id; }); };
+
+  if (workers.length === 0) {
+    tb.innerHTML = '<tr><td colspan="12" style="text-align:center;padding:40px;color:var(--mute)">'
+      + '<div style="font-size:28px;margin-bottom:10px">&#x26CF;</div>'
+      + 'No miners in fleet yet.<br><span style="font-size:11px">Use <strong>Network Scanner</strong> to discover and add miners.</span>'
+      + '</td></tr>';
+    return;
+  }
+
+  tb.innerHTML = workers.map(function(w) {
+    const ag  = A(w.farm_id);
+    const cust= C(w.cid);
+    const tc  = w.temp >= 90 ? 'color:var(--red)' : w.temp >= 80 ? 'color:var(--warn)' : '';
+    const st  = w.disabled ? 'REPAIR' : (w.status || 'unknown').toUpperCase();
+    const sb  = w.disabled ? 'bor' : w.status === 'online' ? 'bgn' : 'brn';
+    return '<tr>'
+      + '<td><input type="checkbox" class="worker-check" data-wid="' + w.id + '" style="accent-color:var(--cyan)"></td>'
+      + '<td><div style="font-family:Exo 2,sans-serif;font-weight:600;font-size:12px">' + (w.name || '—') + '</div>'
+      + '<span class="sdot ' + sdot(w) + '" style="margin-right:4px"></span><span style="font-size:9px;color:var(--mute)">' + (w.algo || '') + '</span></td>'
+      + '<td style="font-size:11px">' + (w.brand || '') + '<br><span style="color:var(--mute);font-size:10px">' + (w.model || '—') + '</span></td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (w.ip || '—') + '</td>'
+      + '<td style="font-size:11px">' + (w.farm || (ag ? ag.name : '—')) + '</td>'
+      + '<td style="font-size:11px">' + (cust ? cust.name : '<span style="color:var(--mute)">—</span>') + '</td>'
+      + '<td style="color:var(--green);font-family:Share Tech Mono,monospace;font-size:11px">' + hrDisplay(w) + '</td>'
+      + '<td style="' + tc + ';font-family:Share Tech Mono,monospace;font-size:11px">' + (w.temp > 0 ? w.temp + '\u00b0C' : '—') + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (w.fan > 0 ? w.fan : '—') + '</td>'
+      + '<td style="font-size:10px;color:var(--mute)">' + (w.pool || '—') + '</td>'
+      + '<td><span class="badge ' + sb + '">' + st + '</span></td>'
+      + '<td><button class="abtn open-ctrl-btn" data-wid="' + w.id + '">Manage</button></td>'
+      + '</tr>';
+  }).join('');
+
+  tb.querySelectorAll('.open-ctrl-btn').forEach(function(b){
+    b.addEventListener('click', function(){ openCtrl(this.dataset.wid); });
+  });
+
+  // Update badge counts
+  const on  = workers.filter(function(w){ return w.status === 'online'; }).length;
+  const off = workers.filter(function(w){ return w.status === 'offline'; }).length;
+  const dis = workers.filter(function(w){ return w.disabled; }).length;
+  const eOn = document.getElementById('wOnlineBadge');  if (eOn) eOn.textContent = on;
+  const eOf = document.getElementById('wOfflineBadge'); if (eOf) eOf.textContent = off;
+  const eDs = document.getElementById('wDisBadge');     if (eDs) { eDs.textContent = dis; eDs.style.display = dis ? '' : 'none'; }
 }
 
 function renderAgents() {
