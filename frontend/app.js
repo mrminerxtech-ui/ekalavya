@@ -1692,6 +1692,152 @@ function renderScadaDashboard(){
   const s=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
   s('scadaTotalPower',tp.toFixed(3));s('scadaCabOnline',co);s('scadaTodayEnergy',te.toFixed(2));s('scadaAlarmCount',ac);
 }
+// ── Network Scanner ───────────────────────────────────────
+function startScan(){
+  if(scanning){ stopScan(); return; }
+  const farmId = document.getElementById('scanVia')?.value;
+  const rawSubnets = document.getElementById('scanRange')?.value || '';
+  if(!farmId || farmId === 'local'){ alert('Select a farm agent from the dropdown first.'); return; }
+
+  const subnets = rawSubnets.split(/[,\n]+/).map(function(s){ return s.trim(); }).filter(Boolean);
+  if(subnets.length === 0){
+    alert('Enter the IP ranges before scanning.\n\nExample:\n192.168.70.1-255\n192.168.44.1-255');
+    return;
+  }
+
+  // Lock farm for this scan session
+  currentScanFarmId   = farmId;
+  currentScanFarmName = (agents.find(function(a){ return a.id === farmId; }) || {}).name || farmId;
+
+  scanning = true; scanFound = 0; scanSecs = 0;
+  _lastScanResults = {};
+  const fg = document.getElementById('foundGrid'); if(fg) fg.innerHTML = '';
+  const sl = document.getElementById('scanLog');   if(sl) sl.innerHTML = '';
+
+  const btn = document.getElementById('scanBtn'); if(btn) btn.textContent = '■ Stop';
+  const ssl = document.getElementById('scanCurrentSubnet'); if(ssl) ssl.style.display = 'block';
+
+  addLog('info','[ AGENT  ] ' + currentScanFarmName + ' (' + currentScanFarmId + ')');
+  subnets.forEach(function(s){ addLog('info','[ TARGET ] ' + s); });
+
+  const token = localStorage.getItem('ekl_token');
+  fetch(API_BASE + '/api/scanner/start', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','Authorization':'Bearer ' + (token || '')},
+    body: JSON.stringify({ farm_id: farmId, subnets: subnets, subnet: subnets[0], ports:[4028,80,8080], timeout: 2000 })
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    if(d.error){ addLog('err','[ ERROR ] ' + d.error); stopScan(); return; }
+    currentScanSession = d.session_id;
+    addLog('ok','[ OK ] Session: ' + d.session_id);
+    scanInt  = setInterval(function(){ pollScanResults(d.session_id); }, 1500);
+    scanTInt = setInterval(function(){
+      scanSecs++;
+      const t = document.getElementById('scanTime');
+      if(t) t.textContent = scanSecs + 's';
+    }, 1000);
+  })
+  .catch(function(e){ addLog('err','[ ERROR ] ' + e.message); stopScan(); });
+}
+
+function pollScanResults(sessionId){
+  const token = localStorage.getItem('ekl_token');
+  fetch(API_BASE + '/api/scanner/results/' + sessionId, {headers:{'Authorization':'Bearer ' + (token || '')}})
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    if(d.found && d.found.length > 0){
+      d.found.forEach(function(m){
+        if(!_lastScanResults[m.ip]){
+          _lastScanResults[m.ip] = m;
+          scanFound++;
+          addFoundCard(m);
+          addLog('ok','[ FOUND ] ' + m.ip + ' — ' + (m.model || 'ASIC'));
+          const fc = document.getElementById('foundCount'); if(fc) fc.textContent = scanFound;
+        }
+      });
+    }
+    if(d.progress !== undefined){
+      const pf = document.getElementById('progFill');   if(pf) pf.style.width = d.progress + '%';
+      const ss = document.getElementById('scanStatus'); if(ss) ss.textContent = d.progress + '%';
+    }
+    if(d.scanned !== undefined){
+      const sc = document.getElementById('scanCount'); if(sc) sc.textContent = d.scanned;
+    }
+    if(d.current_subnet){
+      const cs = document.getElementById('scanCurrentSubnet');
+      if(cs) cs.textContent = 'Scanning: ' + d.current_subnet;
+    }
+    if(d.done && d.progress >= 100){
+      addLog('ok','[ DONE ] ' + scanFound + ' miners found');
+      stopScan();
+    }
+  })
+  .catch(function(){});
+}
+
+function addSubnet(cidr){
+  const el = document.getElementById('scanRange');
+  if(!el) return;
+  const existing = el.value.trim();
+  if(existing.includes(cidr)) return;
+  el.value = existing ? (existing + '\n' + cidr) : cidr;
+}
+
+function clearScanLog(){
+  const sl = document.getElementById('scanLog'); if(sl) sl.innerHTML = '';
+  const fg = document.getElementById('foundGrid'); if(fg) fg.innerHTML = '';
+  _lastScanResults = {};
+  scanFound = 0;
+  const fc = document.getElementById('foundCount'); if(fc) fc.textContent = '0';
+}
+
+
+// ── Remaining handler stubs ──────────────────────────────
+function onScanViaChange(sel){ onAgentSelect(sel); }
+function saveAssign(){ applyAssign(); }
+function testConn(){
+  fetch(API_BASE + '/health')
+    .then(function(r){ return r.json(); })
+    .then(function(d){ alert('✓ Connected!\nServer v' + (d.version||'1.0') + ' · ' + (d.agents||0) + ' agents'); })
+    .catch(function(e){ alert('✗ Cannot reach ' + API_BASE + '\n' + e.message); });
+}
+function toggleCfg(id){ const el = document.getElementById(id); if(el) el.style.display = el.style.display === 'none' ? 'block' : 'none'; }
+function toggleFb(){ const el = document.getElementById('failoverFields'); if(el) el.style.display = el.style.display === 'none' ? 'block' : 'none'; }
+function toggleSelAll(cb){
+  document.querySelectorAll('.worker-check').forEach(function(c){ c.checked = cb.checked; });
+}
+function applyPreset(url, user){
+  const u = document.getElementById('poolUrl'); if(u) u.value = url;
+  const w = document.getElementById('poolUser'); if(w) w.value = user || '';
+}
+function setWF(val){
+  const el = document.getElementById('wfInput'); if(el) el.value = val;
+}
+function bulkReboot(){
+  const checked = Array.from(document.querySelectorAll('.worker-check:checked')).map(function(c){ return c.dataset.wid; });
+  if(checked.length === 0){ alert('Select miners first'); return; }
+  if(!confirm('Reboot ' + checked.length + ' miners?')) return;
+  toast('Reboot command sent to ' + checked.length + ' miners', 'var(--cyan)');
+}
+function doAction(action, wid){
+  const w = workers.find(function(x){ return x.id === (wid || activeWid); });
+  if(!w){ toast('No miner selected', 'var(--warn)'); return; }
+  const token = localStorage.getItem('ekl_token');
+  fetch(API_BASE + '/api/actions/' + action, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','Authorization':'Bearer ' + (token||'')},
+    body: JSON.stringify({ ip: w.ip, farm_id: w.farm_id, worker_id: w.id })
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    if(d.ok) toast('✓ ' + action + ' sent to ' + w.name, 'var(--green)');
+    else toast('✗ ' + (d.error || 'Failed'), 'var(--red)');
+  })
+  .catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
+}
+
+
 function addToFleetDirect(ip, model, farmId, farmName){
   const miner = (_lastScanResults && _lastScanResults[ip]) ? _lastScanResults[ip] : {};
   workers = workers.filter(function(w){ return w.ip !== ip; });
