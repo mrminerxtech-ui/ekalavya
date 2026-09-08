@@ -236,7 +236,7 @@ tr:last-child td{border-bottom:none;}
     <div class="lfield"><label>Username / Email</label><input id="lUser" value="admin" placeholder="admin@ekalavya.io"></div>
     <div class="lfield"><label>Password</label><input id="lPass" type="password" value="admin123" placeholder="..."></div>
     <div class="lerr" id="lerr"></div>
-    <button class="login-btn admin" id="lBtn" onclick="doLogin()">ACCESS PLATFORM</button>
+    <button class="login-btn admin" id="lBtn" onclick="if(typeof doLogin==='function'){doLogin();}else{alert('JavaScript not loaded. Check console for errors.');}">ACCESS PLATFORM</button>
     <div class="login-hint" id="lHint">Admin: admin / admin123<br>Customer: ahmad@example.com / ahmad123</div>
   </div>
 </div>
@@ -882,6 +882,14 @@ tr:last-child td{border-bottom:none;}
   </div>
 </div>
 <script>
+// Global error catcher — shows any JS error on screen
+window.onerror = function(msg, src, line, col, err) {
+  var div = document.createElement('div');
+  div.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#ff2d55;color:#fff;padding:12px 16px;z-index:99999;font-size:12px;font-family:monospace;z-index:99999;';
+  div.textContent = 'JS ERROR: ' + msg + ' (line ' + line + ')';
+  document.body.appendChild(div);
+  return false;
+};
 
 // ============================================================
 // EKALAVYA — API CONFIG
