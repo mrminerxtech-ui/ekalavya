@@ -1,0 +1,40 @@
+name: Deploy Backend → Railway
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy-backend.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Trigger Railway Deployment
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Trigger Railway Deploy
+        run: |
+          # Railway auto-deploys when it detects a push to main.
+          # This step just confirms and logs the deployment.
+          echo "✓ Backend files changed — Railway will auto-deploy from GitHub"
+          echo "  Monitor at: https://railway.app/dashboard"
+          echo "  Commit: ${{ github.sha }}"
+          echo "  Branch: ${{ github.ref_name }}"
+
+      - name: Notify via Railway Webhook (optional)
+        if: ${{ secrets.RAILWAY_WEBHOOK_URL != '' }}
+        run: |
+          curl -X POST "${{ secrets.RAILWAY_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "source": "github-actions",
+              "commit": "${{ github.sha }}",
+              "message": "${{ github.event.head_commit.message }}",
+              "deployed_by": "${{ github.actor }}"
+            }'
+          echo "✓ Railway webhook triggered"
