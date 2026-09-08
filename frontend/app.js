@@ -45,44 +45,16 @@ const LANLI = {
 const IDOSP_URL = 'http://www.idosp.net/idosp/login.html';
 
 // ── Sector badge helper ───────────────────────────────────
-function sdot(w){ return w.disabled||w.status==='disabled'?'dis':w.status==='offline'?'off':w.status==='warn'?'wrn':'on'; }
+// (stub sdot removed — full version defined later)
 function detectBrand(model){ const m=(model||'').toLowerCase(); if(m.includes('antminer')||m.includes('bitmain')) return 'Bitmain'; if(m.includes('whatsminer')||m.includes('microbt')) return 'MicroBT'; if(m.includes('avalon')) return 'Canaan'; if(m.includes('goldshell')) return 'Goldshell'; return ''; }
 
 // ── Navigation ────────────────────────────────────────────
-function nav(page, el) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  const pg = document.getElementById('page-' + page);
-  if (pg) pg.classList.add('active');
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  if (el) el.classList.add('active');
-  if (page === 'scanner') populateDropdowns();
-  if (page === 'workers') renderWorkers();
-  if (page === 'agents') renderAgents();
-  if (page === 'customers') renderCustomers();
-  if (page === 'alerts') renderAlerts();
-  if (page === 'pools') renderPools();
-  if (page === 'profitability') renderProfit();
-  if (page === 'billing') renderBilling();
-  if (page === 'scada') checkScadaSession();
-  if (page === 'settings') { updateFleetStat(); renderSensorEntryGrid(); }
-}
+// (stub nav removed — full version defined later)
 
-function showPage(n) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  const pg = document.getElementById('page-' + n);
-  if (pg) pg.classList.add('active');
-  if (n === 'scada') checkScadaSession();
-  if (n === 'settings') { updateFleetStat(); renderSensorEntryGrid(); }
-}
+// (stub showPage removed — full version defined later)
 
 // ── Login tab ─────────────────────────────────────────────
-function setLTab(tab, el) {
-  loginTab = tab;
-  document.querySelectorAll('.ltab').forEach(t => t.classList.remove('active'));
-  if (el) el.classList.add('active');
-  const btn = document.getElementById('lBtn');
-  if (btn) { btn.className = 'login-btn ' + tab; btn.textContent = tab === 'customer' ? 'ACCESS PORTAL' : 'ACCESS PLATFORM'; }
-}
+// (stub setLTab removed — full version defined later)
 
 // ── Render functions ──────────────────────────────────────
 function renderAll(){
@@ -348,21 +320,7 @@ function openSheet(id)    { const el = document.getElementById(id); if (el) el.c
 function closeSheet(id)   { const el = document.getElementById(id); if (el) el.classList.remove('show'); }
 
 // ── Toast notification ────────────────────────────────────
-function toast(msg, color) {
-  let t = document.getElementById('toastEl');
-  if (!t) {
-    t = document.createElement('div');
-    t.id = 'toastEl';
-    t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);padding:10px 18px;border-radius:20px;font-size:12px;font-family:Exo 2,sans-serif;font-weight:600;z-index:9999;transition:opacity .3s;background:var(--s1);border:1px solid var(--b2);color:var(--txt);max-width:90vw;text-align:center;pointer-events:none';
-    document.body.appendChild(t);
-  }
-  t.textContent = msg;
-  t.style.borderColor = color || 'var(--b2)';
-  t.style.color = color || 'var(--txt)';
-  t.style.opacity = '1';
-  clearTimeout(t._timer);
-  t._timer = setTimeout(() => { t.style.opacity = '0'; }, 3000);
-}
+// (stub toast removed — full version defined later)
 
 // ── Nav count badge ───────────────────────────────────────
 function updateNavCount() {
@@ -397,45 +355,9 @@ function setApiBase(v) {
 }
 
 // ── Fetch agents ──────────────────────────────────────────
-function fetchAgents() {
-  if (!API_BASE || API_BASE.includes('localhost')) return;
-  fetch(API_BASE + '/api/agents')
-    .then(function(r){ return r.ok ? r.json() : null; })
-    .then(function(d){
-      if (!d || !d.agents) return;
-      // Deduplicate by farm ID — keep the online one if duplicates exist
-      var seen = {};
-      d.agents.forEach(function(a){
-        if (!seen[a.id] || (a.online && !seen[a.id].online)) seen[a.id] = a;
-      });
-      agents = Object.values(seen);
-      updateAgentUI();
-    })
-    .catch(function(){});
-}
+// (stub fetchAgents removed — full version defined later)
 
-function updateAgentUI() {
-  const pillTxt = document.getElementById('agentPillTxt');
-  const online = agents.filter(function(a){ return a.online; }).length;
-  if (pillTxt) pillTxt.textContent = online + ' Agent' + (online !== 1 ? 's' : '');
-
-  // Re-match any workers whose farm_id doesn't match a connected agent,
-  // but whose stored farm NAME does — fixes miners appearing as Unassigned
-  var changed = false;
-  workers.forEach(function(w){
-    if (agents.find(function(a){ return a.id === w.farm_id; })) return; // already matched
-    var byName = agents.find(function(a){
-      return a.name && w.farm && a.name.toLowerCase() === w.farm.toLowerCase();
-    });
-    if (byName) { w.farm_id = byName.id; w.farm = byName.name; changed = true; }
-  });
-  if (changed) { saveFleet(); _fleetHash = ''; _workersHash = ''; }
-
-  populateDropdowns();
-  if (document.getElementById('fleetByFarm')) renderFleetByFarm();
-  if (document.getElementById('workersTbody')) renderWorkers();
-  if (document.getElementById('agentGrid')) renderAgents();
-}
+// (stub updateAgentUI removed — full version defined later)
 
 // ── Trigger scan from agents page ────────────────────────
 function triggerScan(farmId) {
@@ -705,20 +627,15 @@ function renderCabIpConfig() {
 }
 
 // ── iDOSP ─────────────────────────────────────────────────
-function openIdospTab() { window.open(IDOSP_URL, '_blank'); }
-function loadIdosp() { openIdospTab(); }
-function reloadSpFrame() { openIdospTab(); }
-function openSpCloud() { openIdospTab(); }
-function saveSpUrl() { openIdospTab(); }
-function loadSpFrame() { openIdospTab(); }
+// (stub openIdospTab removed — full version defined later)
+// (stub loadIdosp removed — full version defined later)
+// (stub reloadSpFrame removed — full version defined later)
+// (stub openSpCloud removed — full version defined later)
+// (stub saveSpUrl removed — full version defined later)
+// (stub loadSpFrame removed — full version defined later)
 
 // ── Misc ──────────────────────────────────────────────────
-function logout() {
-  isCustomer = false; currentUser = null;
-  localStorage.removeItem('ekl_token');
-  document.getElementById('loginScreen').style.display = 'flex';
-  ['ticker','topbar','appBody','bottomNav'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
-}
+// (stub logout removed — full version defined later)
 
 function stopScan() {
   scanning = false;
@@ -727,14 +644,7 @@ function stopScan() {
   const ssl = document.getElementById('scanCurrentSubnet'); if (ssl) { ssl.style.display = 'none'; ssl.textContent = ''; }
 }
 
-function loadAgentConfigsFromBackend() {
-  const token = localStorage.getItem('ekl_token');
-  if (!token || !API_BASE || API_BASE.includes('localhost')) return;
-  fetch(API_BASE + '/api/fleet/agent-configs', {headers:{'Authorization':'Bearer '+token}})
-    .then(r => r.ok ? r.json() : null)
-    .then(d => { if (!d?.configs) return; d.configs.forEach(cfg => { if (cfg.subnets?.length > 0) { localStorage.setItem('agent_subnets_' + cfg.farm_id, JSON.stringify(cfg.subnets)); const a = agents.find(x => x.id === cfg.farm_id); if (a) a.subnet = cfg.subnets.join(','); } }); })
-    .catch(() => {});
-}
+// (stub loadAgentConfigsFromBackend removed — full version defined later)
 
 // ── Init ──────────────────────────────────────────────────
 
@@ -953,8 +863,22 @@ function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).sty
 function logout(){location.reload();}
 
 // NAV
-function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));const pg=document.getElementById('page-'+n);if(pg)pg.classList.add('active');if(n==='scada')checkScadaSession();
-  if(n==='settings'){updateFleetStat();renderSensorEntryGrid();}}
+function showPage(n){
+  document.querySelectorAll('.page').forEach(function(p){ p.classList.remove('active'); });
+  const pg = document.getElementById('page-'+n);
+  if(pg) pg.classList.add('active');
+  // Render the page's content when it opens
+  try {
+    if(n==='dashboard')     { renderDash(); }
+    if(n==='workers')       { renderWorkers(); }
+    if(n==='agents')        { renderAgents(); }
+    if(n==='customers')     { renderCustomers(); }
+    if(n==='alerts')        { renderAlerts(); }
+    if(n==='scanner')       { populateDropdowns(); }
+    if(n==='scada')         { checkScadaSession(); }
+    if(n==='settings')      { updateFleetStat(); renderSensorEntryGrid(); }
+  } catch(e) { console.error('showPage render error:', e); }
+}
 function nav(page,el){showPage(page);document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));if(el)el.classList.add('active');}
 
 // TICKER
@@ -1040,7 +964,7 @@ function saveManualReading() {
   }).catch(function(e) { toast('Error: ' + e.message, 'var(--red)'); });
 }
 
-function renderAll(){try{renderDash();}catch(e){} try{updateNavCount();}catch(e){}}
+// (duplicate renderAll removed)
 
 // Fetch real agents from backend API
 function fetchAgents(){
