@@ -466,6 +466,22 @@ function send(payload) {
 }
 
 // ── Connect ────────────────────────────────────────────────
+// ── Poll Lanli RS485 cabinets ──────────────────────────────
+async function pollLanli() {
+  if (!lanli) return;
+  try {
+    const readings = await lanli.readAllCabinets();
+    if (readings) {
+      console.log('[LANLI] Poll complete:', Object.keys(readings).length, 'cabinets');
+      send({ type: 'lanli_data', readings, farm_id: FARM_ID, timestamp: new Date().toISOString() });
+      await postJson(restUrl('/api/scada/rtu-data'), { farm_id: FARM_ID, readings }).catch(() => {});
+    }
+  } catch(e) {
+    console.error('[LANLI] Poll error:', e.message);
+  }
+}
+
+// ── Connect to server ──────────────────────────────────────
 function connect() {
   console.log('\n╔══════════════════════════════════════════╗');
   console.log('║     EKALAVYA — FARM AGENT v1.0.0        ║');
