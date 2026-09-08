@@ -32,4 +32,12 @@ router.post('/:farmId/command', authMiddleware, (req, res) => {
   res.json({ ok: true, message: 'Command sent' });
 });
 
+// DELETE /api/agents/:farmId — remove a stale agent
+router.delete('/:farmId', (req, res) => {
+  const agentMgr = require('../services/agentManager');
+  const removed = agentMgr.removeAgent(req.params.farmId);
+  console.log(`[AGENT] Manually removed: ${req.params.farmId}`);
+  res.json({ ok: true, removed });
+});
+
 module.exports = router;
