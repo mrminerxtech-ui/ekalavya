@@ -842,7 +842,10 @@ function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).sty
       } catch(e) {}
     };
     liveWs.onerror = () => {};
-  } catch(e) {}if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+  } catch(e) {}
+} // end launchApp
+
+if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
   try { checkApiSetup(); } catch(e){}
   try { loadFleet(); } catch(e){}
   try { initSensors(); } catch(e){}
@@ -859,7 +862,7 @@ function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).sty
   }, 2500);
   setInterval(function(){ try{saveFleet();}catch(e){}}, 30000);
   const d=document.getElementById('currentApiDisplay');if(d)d.textContent=API_BASE;
-  const ai=document.getElementById('apiUrl');if(ai)ai.value=API_BASE;}
+  const ai=document.getElementById('apiUrl');if(ai)ai.value=API_BASE;
 function logout(){location.reload();}
 
 // NAV
