@@ -91,6 +91,10 @@ function renderWorkers() {
       + '<span class="sdot ' + sdot(w) + '" style="margin-right:4px"></span><span style="font-size:9px;color:var(--mute)">' + (w.algo || '') + '</span>'
       + (w.worker_id && w.worker_id !== '—' && w.worker_id !== w.name ? '<div style="font-size:9px;color:var(--cyan);font-family:Share Tech Mono,monospace">' + w.worker_id + '</div>' : '')
       + '</td>'
+      + '<td title="MAC: ' + (w.mac || 'unknown') + '" style="font-family:Share Tech Mono,monospace;font-size:10px">'
+      +   (w.serial || '<span style="color:var(--mute)">—</span>')
+      +   (w.mac ? '<div style="font-size:9px;color:var(--mute)">' + w.mac + '</div>' : '')
+      + '</td>'
       + '<td style="font-size:11px">' + (w.brand || '') + '<br><span style="color:var(--mute);font-size:10px">' + (w.model || '—') + '</span></td>'
       + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (w.ip || '—') + '</td>'
       + '<td style="font-size:11px">' + (w.farm || (ag ? ag.name : '—')) + '</td>'
@@ -261,7 +265,14 @@ function openCtrl(wid) {
   const nm = document.getElementById('ctrlName'); if (nm) nm.textContent = w.name;
   const ip = document.getElementById('ctrlIp');   if (ip) ip.textContent = w.ip;
   const md = document.getElementById('ctrlModel');if (md) md.textContent = (w.brand||'') + ' ' + (w.model||'');
-  const wi = document.getElementById('ctrlWorkerId'); if (wi) wi.textContent = w.worker_id && w.worker_id !== '—' ? ('Worker ID: ' + w.worker_id) : '';
+  const wi = document.getElementById('ctrlWorkerId');
+  if (wi) {
+    var parts = [];
+    if (w.worker_id && w.worker_id !== '—') parts.push('Worker: ' + w.worker_id);
+    if (w.serial) parts.push('S/N: ' + w.serial);
+    if (w.mac) parts.push('MAC: ' + w.mac);
+    wi.innerHTML = parts.join('<br>');
+  }
   el.style.display = 'flex';
 }
 function closeCtrl() { const el = document.getElementById('ctrlPanel'); if (el) el.style.display = 'none'; activeWid = null; }
@@ -1882,6 +1893,8 @@ function addToFleetDirect(ip, model, farmId, farmName){
     id: 'w-' + ip.replace(/\./g, '-'),
     name: miner.worker ? miner.worker.split('.').pop() : ip.replace(/\./g, '-'),
     worker_id: miner.worker_id || miner.worker || '—',   // full wallet.worker string
+    mac: miner.mac || null,
+    serial: miner.serial || null,
     model: miner.model || model || 'ASIC Miner',
     brand: brand, algo: algo, ip: ip,
     hashrate: miner.hashrate || 0, hr_unit: hrUnit, hr_display: hrDisp,
