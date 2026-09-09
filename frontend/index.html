@@ -506,15 +506,49 @@ tr:last-child td{border-bottom:none;}
           <button class="btn btn-g btn-sm" onclick="testConn()">Test Connection</button>
         </div>
       </div>
-      <!-- Sensor Readings — Direct LAN Scan by MAC -->
+      <!-- eWeLink Cloud Connection -->
+      <div class="panel">
+        <div class="ph">
+          <div class="phd">☁️ eWeLink Cloud Connection</div>
+          <span class="badge" id="ewConnBadge" style="background:rgba(61,85,112,.2);color:var(--mute)">Not connected</span>
+        </div>
+        <div style="padding:16px">
+          <div style="background:rgba(0,200,255,.05);border:1px solid rgba(0,200,255,.2);border-radius:6px;padding:10px 12px;margin-bottom:14px;font-size:11px;color:var(--mute)">
+            Use this when a sensor is on a different network than the farm agent (e.g. a separate subnet or router). Requires a free <strong style="color:var(--txt)">dev.ewelink.cc</strong> developer account — the free tier covers periodic polling with no cost.
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+            <div class="frow"><label>eWeLink Email</label><input class="si" style="width:100%" id="ewEmail" placeholder="your@email.com"></div>
+            <div class="frow"><label>Password</label><input class="si" style="width:100%" id="ewPass" type="password" placeholder="eWeLink app password"></div>
+            <div class="frow"><label>App ID <span style="color:var(--mute);font-size:9px">(dev.ewelink.cc → Create App)</span></label><input class="si" style="width:100%" id="ewAppId" placeholder="App ID"></div>
+            <div class="frow"><label>App Secret</label><input class="si" style="width:100%" id="ewSecret" type="password" placeholder="App Secret"></div>
+            <div class="frow"><label>Region</label>
+              <select class="si" style="width:100%" id="ewRegion">
+                <option value="eu">Europe (eu)</option>
+                <option value="us">Americas (us)</option>
+                <option value="as">Asia (as)</option>
+                <option value="cn">China (cn)</option>
+              </select>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-g btn-sm" onclick="saveEwelinkConfig()">Save &amp; Connect</button>
+            <button class="btn btn-sm" onclick="fetchEwelinkDevices()">&#x21BA; Fetch My Sensors</button>
+          </div>
+          <div id="ewStatus" style="margin-top:10px;font-size:11px;color:var(--mute)"></div>
+          <div id="ewDeviceList" style="margin-top:12px"></div>
+        </div>
+      </div>
+
+      <!-- Sensor Readings — LAN Scan or eWeLink assignment, per farm -->
       <div class="panel">
         <div class="ph">
           <div class="phd">🌡 Farm Sensor Readings</div>
-          <span class="badge bgn">Direct LAN</span>
+          <span class="badge bgn">Live</span>
         </div>
         <div style="padding:16px">
           <div style="background:rgba(0,255,157,.05);border:1px solid rgba(0,255,157,.2);border-radius:6px;padding:10px 12px;margin-bottom:14px;font-size:11px;color:var(--mute)">
-            No cloud, no subscription. The farm agent finds each sensor on the local network using its MAC address and reads temperature/humidity directly.
+            <strong style="color:var(--txt)">Same network as agent?</strong> Enter the sensor's MAC address below — free, no cloud needed.<br>
+            <strong style="color:var(--txt)">Different network?</strong> Connect eWeLink above, then assign the sensor to a farm below.
           </div>
 
           <!-- Per-farm MAC configuration + live readings -->
@@ -531,9 +565,9 @@ tr:last-child td{border-bottom:none;}
           </div>
           <div id="fleetStoreStat" style="font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--cyan);margin-bottom:12px"></div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-sm btn-g" onclick="exportFleet()">⬇ Export JSON</button>
-            <button class="btn btn-sm" onclick="document.getElementById('importFile').click()">⬆ Import JSON</button>
-            <input type="file" id="importFile" accept=".json" style="display:none" onchange="importFleet(event)">
+            <button class="btn btn-sm btn-g" onclick="exportFleet()">⬇ Export CSV</button>
+            <button class="btn btn-sm" onclick="document.getElementById('importFile').click()">⬆ Import CSV</button>
+            <input type="file" id="importFile" accept=".csv" style="display:none" onchange="importFleet(event)">
             <button class="btn btn-sm btn-r" onclick="if(confirm('Clear ALL workers and customers?')){workers=[];customers=[];saveFleet();renderAll();toast('Fleet cleared','var(--red)');}">✕ Clear All</button>
           </div>
         </div>
