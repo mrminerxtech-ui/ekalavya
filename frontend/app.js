@@ -473,44 +473,98 @@ function setSensorReading(farmId, data) { sensorReadings[farmId] = {...data, upd
 
 function initSensors() { loadSensors(); }
 
-function renderSensorEntryGrid() {
-  const el = document.getElementById('sensorEntryGrid');
-  if (!el) return;
-  const farms = agents.length > 0 ? agents : [{id:'ghummadh',name:'Ghummadh'},{id:'alhayer',name:'Al Hayer'},{id:'hydro',name:'Hydro'}];
-  el.innerHTML = farms.map(f => {
-    const r = getSensorReading(f.id) || {};
-    return '<div style="background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:12px">'
-      + '<div style="font-family:Exo 2,sans-serif;font-weight:700;font-size:12px;color:var(--txt);margin-bottom:10px">📍 ' + f.name + (r.updated ? '<span style="font-size:9px;color:var(--mute);font-weight:400;float:right">' + new Date(r.updated).toLocaleTimeString() + '</span>' : '') + '</div>'
-      + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">'
-      + '<div><div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Temperature (°C)</div>'
-      + '<div style="display:flex;align-items:center;gap:4px"><span style="font-family:Share Tech Mono,monospace;font-size:24px;color:var(--warn)">' + (r.temp != null ? r.temp : '—') + '</span>'
-      + '<input id="st_' + f.id + '" type="number" step="0.1" value="' + (r.temp != null ? r.temp : '') + '" placeholder="42.5" style="width:70px;background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:5px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:12px;outline:none"></div></div>'
-      + '<div><div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Humidity (%)</div>'
-      + '<div style="display:flex;align-items:center;gap:4px"><span style="font-family:Share Tech Mono,monospace;font-size:24px;color:var(--cyan)">' + (r.humidity != null ? r.humidity : '—') + '</span>'
-      + '<input id="sh_' + f.id + '" type="number" step="1" value="' + (r.humidity != null ? r.humidity : '') + '" placeholder="35" style="width:70px;background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:5px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:12px;outline:none"></div></div></div>'
-      + '<button class="btn btn-sm btn-g sensor-save-btn" data-fid="' + f.id + '" data-fname="' + f.name + '">&#x1F4BE; Save</button></div>';
-  }).join('');
-  el.querySelectorAll('.sensor-save-btn').forEach(function(b){ b.addEventListener('click', function(){ saveSensorEntry(this.dataset.fid, this.dataset.fname); }); });
-  var wh = document.getElementById('webhookUrl');
-  if (wh) wh.textContent = (API_BASE || '') + '/api/sensors/push';
+// ── Sensor MAC config (per farm) ─────────────────────────
+function getSensorMacs(farmId){
+  try { return JSON.parse(localStorage.getItem('sensor_macs_' + farmId) || '[]'); } catch { return []; }
 }
-
-function saveSensorEntry(farmId, farmName) {
-  const t = document.getElementById('st_' + farmId)?.value;
-  const h = document.getElementById('sh_' + farmId)?.value;
-  if (t === '' && h === '') { toast('Enter temperature or humidity', 'var(--warn)'); return; }
-  setSensorReading(farmId, {temp: t !== '' ? parseFloat(t) : null, humidity: h !== '' ? parseFloat(h) : null, name: farmName});
+function setSensorMacs(farmId, macs){
+  localStorage.setItem('sensor_macs_' + farmId, JSON.stringify(macs));
   const token = localStorage.getItem('ekl_token');
   if (token && API_BASE && !API_BASE.includes('localhost')) {
-    fetch(API_BASE + '/api/sensors/push', { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body:JSON.stringify({farm_id:farmId, farm_name:farmName, temp:parseFloat(t)||null, humidity:parseFloat(h)||null}) }).catch(() => {});
+    fetch(API_BASE + '/api/sensors/agent-config', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body: JSON.stringify({ farm_id: farmId, macs: macs })
+    }).catch(function(){});
   }
-  renderSensorEntryGrid();
-  toast('✓ Saved for ' + farmName, 'var(--green)');
 }
 
-function copyWebhook() {
-  const url = (API_BASE || '') + '/api/sensors/push';
-  if (navigator.clipboard) navigator.clipboard.writeText(url).then(() => toast('Webhook URL copied', 'var(--green)')).catch(() => {});
+function renderSensorEntryGrid() {
+  const el = document.getElementById('sensorMacGrid');
+  if (!el) return;
+  const farms = agents.length > 0 ? agents : [{id:'ghummadh',name:'Ghummadh'},{id:'alhayer',name:'Al Hayer'},{id:'hydro',name:'Hydro'}];
+
+  el.innerHTML = farms.map(function(f) {
+    const r = getSensorReading(f.id) || {};
+    const macs = getSensorMacs(f.id);
+    const online = agents.find(function(a){ return a.id === f.id; });
+    return '<div style="background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:12px">'
+      + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px">'
+      +   '<span class="sdot ' + (online && online.online ? 'on' : 'off') + '"></span>'
+      +   '<span style="font-family:Exo 2,sans-serif;font-weight:700;font-size:12px;color:var(--txt)">' + f.name + '</span>'
+      +   (r.updated ? '<span style="font-size:9px;color:var(--mute);font-weight:400;margin-left:auto">' + new Date(r.updated).toLocaleTimeString() + '</span>' : '')
+      + '</div>'
+
+      // Live readings display
+      + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;text-align:center">'
+      +   '<div><div style="font-family:Share Tech Mono,monospace;font-size:26px;color:var(--warn)">' + (r.temp != null ? r.temp : '—') + '</div>'
+      +   '<div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px">°C Temp</div></div>'
+      +   '<div><div style="font-family:Share Tech Mono,monospace;font-size:26px;color:var(--cyan)">' + (r.humidity != null ? r.humidity : '—') + '</div>'
+      +   '<div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px">% Humidity</div></div>'
+      + '</div>'
+
+      // MAC address input
+      + '<div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Sensor MAC Address' + (macs.length > 1 ? 'es' : '') + '</div>'
+      + '<textarea id="mac_' + f.id + '" rows="2" placeholder="a4:cf:12:ab:cd:ef" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:6px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none;resize:vertical;margin-bottom:8px">' + macs.join('\n') + '</textarea>'
+
+      + '<div style="display:flex;gap:6px">'
+      +   '<button class="btn btn-sm btn-g sensor-save-btn" data-fid="' + f.id + '" data-fname="' + f.name + '">&#x1F4BE; Save</button>'
+      +   '<button class="btn btn-sm sensor-scan-btn" data-fid="' + f.id + '" data-fname="' + f.name + '">&#x1F50D; Scan Now</button>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+
+  el.querySelectorAll('.sensor-save-btn').forEach(function(b){
+    b.addEventListener('click', function(){ saveSensorMacs(this.dataset.fid, this.dataset.fname); });
+  });
+  el.querySelectorAll('.sensor-scan-btn').forEach(function(b){
+    b.addEventListener('click', function(){ scanSensorNow(this.dataset.fid, this.dataset.fname); });
+  });
+}
+
+function saveSensorMacs(farmId, farmName){
+  const raw = document.getElementById('mac_' + farmId)?.value || '';
+  const macs = raw.split(/[,\n]+/).map(function(s){ return s.trim(); }).filter(Boolean);
+  setSensorMacs(farmId, macs);
+  toast('✓ Sensor MAC saved for ' + farmName, 'var(--green)');
+}
+
+function scanSensorNow(farmId, farmName){
+  const raw = document.getElementById('mac_' + farmId)?.value || '';
+  const macs = raw.split(/[,\n]+/).map(function(s){ return s.trim(); }).filter(Boolean);
+  if (macs.length === 0) { toast('Enter at least one MAC address first', 'var(--warn)'); return; }
+  saveSensorMacs(farmId, farmName);
+
+  const token = localStorage.getItem('ekl_token');
+  if (!token) { toast('Not logged in', 'var(--red)'); return; }
+  toast('Scanning ' + farmName + ' for sensor(s)...', 'var(--cyan)');
+
+  fetch(API_BASE + '/api/sensors/discover', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','Authorization':'Bearer '+token},
+    body: JSON.stringify({ farm_id: farmId, macs: macs })
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    if (d.ok) {
+      toast('✓ Sent to agent — reading in ~5s', 'var(--green)');
+      setTimeout(function(){ fetchSensorFromBackend(farmId); }, 5000);
+      setTimeout(function(){ fetchSensorFromBackend(farmId); renderSensorEntryGrid(); }, 8000);
+    } else {
+      toast('✗ ' + (d.error || 'Failed'), 'var(--red)');
+    }
+  })
+  .catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
 }
 
 // ── Fleet stat for settings page ─────────────────────────
