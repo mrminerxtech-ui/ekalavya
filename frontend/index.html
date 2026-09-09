@@ -506,29 +506,19 @@ tr:last-child td{border-bottom:none;}
           <button class="btn btn-g btn-sm" onclick="testConn()">Test Connection</button>
         </div>
       </div>
-      <!-- Sensor Readings — Manual Entry + Webhook -->
+      <!-- Sensor Readings — Direct LAN Scan by MAC -->
       <div class="panel">
         <div class="ph">
           <div class="phd">🌡 Farm Sensor Readings</div>
-          <span class="badge bgn">Live</span>
+          <span class="badge bgn">Direct LAN</span>
         </div>
         <div style="padding:16px">
-
-          <!-- Per-farm manual entry -->
-          <div style="font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:2px;color:var(--mute);text-transform:uppercase;margin-bottom:12px">Enter readings from eWeLink app</div>
-          <div id="sensorEntryGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;margin-bottom:16px"></div>
-
-          <!-- Webhook setup -->
-          <div style="background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:14px">
-            <div style="font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:2px;color:var(--cyan);margin-bottom:8px">AUTOMATIC — eWeLink Automation Webhook</div>
-            <div style="font-size:11px;color:var(--mute);margin-bottom:10px">Set up eWeLink to push readings automatically. In the eWeLink app: <strong style="color:var(--txt)">Scenes → Add Scene → When sensor changes → Add Action → Webhook</strong></div>
-            <div style="font-size:11px;color:var(--mute);margin-bottom:6px">Your webhook URL:</div>
-            <div style="display:flex;gap:6px">
-              <div id="webhookUrl" style="flex:1;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:8px 12px;font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--cyan);word-break:break-all"></div>
-              <button class="btn btn-sm" onclick="copyWebhook()">Copy</button>
-            </div>
-            <div style="font-size:10px;color:var(--mute);margin-top:8px">POST body: <code style="color:var(--cyan)">{"farm_id":"ghummadh","temp":42.5,"humidity":35}</code></div>
+          <div style="background:rgba(0,255,157,.05);border:1px solid rgba(0,255,157,.2);border-radius:6px;padding:10px 12px;margin-bottom:14px;font-size:11px;color:var(--mute)">
+            No cloud, no subscription. The farm agent finds each sensor on the local network using its MAC address and reads temperature/humidity directly.
           </div>
+
+          <!-- Per-farm MAC configuration + live readings -->
+          <div id="sensorMacGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px"></div>
         </div>
       </div>
 
