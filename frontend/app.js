@@ -579,27 +579,90 @@ function updateFleetStat() {
   }
 }
 
-function exportFleet() {
-  const data = JSON.stringify({workers, customers, exported: new Date().toISOString(), v:1}, null, 2);
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([data], {type:'application/json'}));
-  a.download = 'ekalavya-fleet-' + new Date().toISOString().slice(0,10) + '.json';
-  a.click();
-  toast('✓ Fleet exported', 'var(--green)');
+// ── CSV helpers ────────────────────────────────────────────
+const CSV_COLUMNS = [
+  'id','name','worker_id','model','brand','algo','ip','mac','serial',
+  'hashrate','hr_unit','hr_display','temp','fan','power','status',
+  'pool','pool_user','uptime','farm','farm_id','cid','disabled',
+  'disabled_reason','disabled_at','led','firmware','accepted',
+  'rejected','hw_errors','source','added_at'
+];
+
+function csvEscape(val){
+  if (val === null || val === undefined) return '';
+  const s = String(val);
+  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
 }
 
+function csvParseLine(line){
+  const out = []; let cur = ''; let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inQuotes) {
+      if (c === '"' && line[i+1] === '"') { cur += '"'; i++; }
+      else if (c === '"') { inQuotes = false; }
+      else { cur += c; }
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ',') { out.push(cur); cur = ''; }
+      else cur += c;
+    }
+  }
+  out.push(cur);
+  return out;
+}
+
+// ── Export fleet as CSV ────────────────────────────────────
+function exportFleet() {
+  if (workers.length === 0) { toast('No workers to export', 'var(--warn)'); return; }
+  const rows = [CSV_COLUMNS.join(',')];
+  workers.forEach(function(w){
+    rows.push(CSV_COLUMNS.map(function(col){ return csvEscape(w[col]); }).join(','));
+  });
+  const csv = rows.join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], {type:'text/csv;charset=utf-8;'}));
+  a.download = 'ekalavya-fleet-' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+  toast('✓ Fleet exported (' + workers.length + ' workers)', 'var(--green)');
+}
+
+// ── Import fleet from CSV ──────────────────────────────────
 function importFleet(e) {
   const file = e.target.files[0]; if (!file) return;
   const reader = new FileReader();
-  reader.onload = ev => {
+  reader.onload = function(ev){
     try {
-      const d = JSON.parse(ev.target.result);
-      if (!d.workers) throw new Error('Invalid format');
-      if (!confirm('Import ' + d.workers.length + ' workers and ' + (d.customers?.length||0) + ' customers?')) return;
-      workers = d.workers; customers = d.customers || [];
+      const text = ev.target.result;
+      const lines = text.split(/\r?\n/).filter(function(l){ return l.trim() !== ''; });
+      if (lines.length < 2) throw new Error('CSV has no data rows');
+
+      const header = csvParseLine(lines[0]).map(function(h){ return h.trim(); });
+      const imported = [];
+      for (let i = 1; i < lines.length; i++) {
+        const vals = csvParseLine(lines[i]);
+        const row = {};
+        header.forEach(function(col, idx){ row[col] = vals[idx] !== undefined ? vals[idx] : ''; });
+        // Restore correct types
+        ['hashrate','temp','fan','power','accepted','rejected','hw_errors'].forEach(function(n){
+          row[n] = row[n] !== '' ? parseFloat(row[n]) : 0;
+        });
+        row.disabled = row.disabled === 'true' || row.disabled === true;
+        if (!row.id || !row.ip) continue; // skip malformed rows
+        imported.push(row);
+      }
+      if (imported.length === 0) throw new Error('No valid worker rows found');
+      if (!confirm('Import ' + imported.length + ' workers from CSV? This replaces your current fleet.')) return;
+
+      workers = imported;
       saveFleet(); saveFleetToBackend(); renderAll();
-      toast('✓ Imported ' + workers.length + ' workers', 'var(--green)');
-    } catch(err) { alert('Import failed: ' + err.message); }
+      toast('✓ Imported ' + workers.length + ' workers from CSV', 'var(--green)');
+    } catch(err) {
+      alert('Import failed: ' + err.message);
+    }
   };
   reader.readAsText(file);
   e.target.value = '';
@@ -1592,9 +1655,12 @@ function saveEwelinkConfig(){
   const cfg = {
     email:    document.getElementById('ewEmail').value.trim(),
     password: document.getElementById('ewPass').value,
+    appid:    document.getElementById('ewAppId')?.value.trim() || '',
+    secret:   document.getElementById('ewSecret')?.value.trim() || '',
     region:   document.getElementById('ewRegion').value,
   };
   if(!cfg.email||!cfg.password){alert('Email and password required');return;}
+  if(!cfg.appid||!cfg.secret){alert('App ID and App Secret required.\n\nGet them free from dev.ewelink.cc:\n1. Sign in with your eWeLink email\n2. Create App (Type: OAuth2.0, Role: Standard)\n3. Copy App ID and Secret here');return;}
   document.getElementById('ewStatus').textContent = 'Saving and connecting...';
   fetch(API_BASE+'/api/sensors/config',{
     method:'POST',
@@ -1613,6 +1679,8 @@ function saveEwelinkConfig(){
   .then(d=>{
     if(d.ok){
       document.getElementById('ewStatus').innerHTML = '<span style="color:var(--green)">✓ Connected — '+d.devices+' devices found</span>';
+      const badge = document.getElementById('ewConnBadge');
+      if(badge){ badge.textContent='Connected'; badge.style.background='rgba(0,255,157,.15)'; badge.style.color='var(--green)'; }
       fetchEwelinkDevices();
     } else {
       document.getElementById('ewStatus').innerHTML = '<span style="color:var(--red)">✗ '+d.error+'</span>';
