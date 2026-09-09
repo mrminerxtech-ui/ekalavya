@@ -62,17 +62,39 @@ router.get('/map', authMiddleware, (req, res) => {
 });
 
 // POST /api/sensors/discover — send discover command to farm agent
+// Accepts EITHER macs[] (preferred — ARP lookup) OR ips[] (subnet scan)
 router.post('/discover', authMiddleware, (req, res) => {
-  const { farm_id, ips } = req.body;
-  if (!farm_id || !ips?.length) return res.status(400).json({ error: 'farm_id and ips required' });
+  const { farm_id, macs, ips } = req.body;
+  if (!farm_id || (!macs?.length && !ips?.length)) {
+    return res.status(400).json({ error: 'farm_id and macs[] or ips[] required' });
+  }
   const agentMgr = require('../services/agentManager');
-  const sent = agentMgr.sendToAgent(farm_id, { type: 'sensor_discover', ips, session_id: 'sd-'+Date.now() });
+  const sent = agentMgr.sendToAgent(farm_id, {
+    type: 'sensor_discover',
+    macs: macs || [],
+    ips: ips || [],
+    session_id: 'sd-' + Date.now(),
+  });
   if (sent) {
-    console.log(`[SENSOR] Discover sent to ${farm_id}: ${ips.length} IPs`);
+    console.log(`[SENSOR] Discover sent to ${farm_id}: ${macs?.length || 0} MAC(s), ${ips?.length || 0} IP(s)`);
     res.json({ ok: true });
   } else {
     res.status(404).json({ error: `Agent "${farm_id}" not connected` });
   }
+});
+
+// POST /api/sensors/agent-config — save which MACs belong to a farm (persisted)
+const sensorConfigStore = {}; // farm_id → { macs: [] }
+router.post('/agent-config', authMiddleware, (req, res) => {
+  const { farm_id, macs } = req.body;
+  if (!farm_id) return res.status(400).json({ error: 'farm_id required' });
+  sensorConfigStore[farm_id] = { macs: macs || [] };
+  console.log(`[SENSOR] Config saved for ${farm_id}: ${macs?.length || 0} MAC(s)`);
+  res.json({ ok: true });
+});
+
+router.get('/agent-config/:farmId', authMiddleware, (req, res) => {
+  res.json({ ok: true, config: sensorConfigStore[req.params.farmId] || { macs: [] } });
 });
 
 // POST /api/sensors/push — webhook from eWeLink automation OR manual entry
