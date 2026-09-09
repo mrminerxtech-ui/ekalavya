@@ -1148,7 +1148,8 @@ function drawPie(online, offline, disabled_) {
 }
 
 function renderDash(){
-  updateAlertBadges();
+  const alertList = updateAlertBadges();
+  const dAl = document.getElementById('dAlerts'); if (dAl) dAl.textContent = alertList.length;
   const online   = workers.filter(w=>w.status==='online');
   const offline  = workers.filter(w=>w.status==='offline');
   const disabled = workers.filter(w=>w.disabled||w.status==='disabled');
