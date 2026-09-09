@@ -185,21 +185,37 @@ function renderCustomers() {
     }).join('');
 }
 
-function renderAlerts() {
-  const el = document.getElementById('allAlerts');
-  if (!el) return;
+// Build the current live alert list — used by both the badge and the Alerts page
+function computeAlerts() {
   const liveAlerts = [];
-  workers.forEach(w => {
+  workers.forEach(function(w) {
     if (w.temp >= 90) liveAlerts.push({ico:'🔴', msg: w.name + ': Critical temp ' + w.temp + '°C', time: 'Live'});
-    if (w.status === 'offline') liveAlerts.push({ico:'🔴', msg: w.name + ' (' + w.ip + ') offline', time: 'Live'});
-    if (w.status === 'disabled') liveAlerts.push({ico:'🟠', msg: w.name + ' disabled: ' + (w.disabled_reason || 'Repair'), time: w.disabled_at || '—'});
+    if (w.status === 'offline' && !w.disabled) liveAlerts.push({ico:'🔴', msg: w.name + ' (' + w.ip + ') offline', time: 'Live'});
+    if (w.disabled) liveAlerts.push({ico:'🟠', msg: w.name + ' disabled: ' + (w.disabled_reason || 'Repair'), time: w.disabled_at || '—'});
   });
-  agents.forEach(a => { if (!a.online) liveAlerts.push({ico:'🟡', msg: 'Agent offline: ' + a.name, time: 'Live'}); });
-  const all = [...liveAlerts, ...alertsData];
-  const badge = document.getElementById('alertBadge'); if (badge) { badge.textContent = all.length; badge.style.display = all.length ? '' : 'none'; }
+  agents.forEach(function(a) { if (!a.online) liveAlerts.push({ico:'🟡', msg: 'Agent offline: ' + a.name, time: 'Live'}); });
+  return liveAlerts.concat(alertsData);
+}
+
+// Update both badges (sidebar + bottom nav) — safe to call from anywhere, anytime
+function updateAlertBadges() {
+  const all = computeAlerts();
+  const badge = document.getElementById('alertBadge');
+  if (badge) { badge.textContent = all.length; badge.style.display = all.length ? '' : 'none'; }
+  const badgeBn = document.getElementById('alertBadgeBn');
+  if (badgeBn) { badgeBn.textContent = all.length; badgeBn.style.display = all.length ? '' : 'none'; }
+  return all;
+}
+
+function renderAlerts() {
+  const all = updateAlertBadges();
+  const el = document.getElementById('allAlerts');
+  if (!el) return; // Alerts page not open — badges are already updated above
   el.innerHTML = all.length === 0
     ? '<div style="text-align:center;padding:30px;color:var(--mute)">No alerts. All systems normal.</div>'
-    : all.map(a => '<div style="padding:10px 16px;border-bottom:1px solid rgba(26,42,58,.4);display:flex;gap:8px"><span style="font-size:14px">' + a.ico + '</span><div><div style="font-size:12px;color:var(--txt)">' + a.msg + '</div><div style="font-size:10px;color:var(--mute)">' + a.time + '</div></div></div>').join('');
+    : all.map(function(a) {
+        return '<div style="padding:10px 16px;border-bottom:1px solid rgba(26,42,58,.4);display:flex;gap:8px"><span style="font-size:14px">' + a.ico + '</span><div><div style="font-size:12px;color:var(--txt)">' + a.msg + '</div><div style="font-size:10px;color:var(--mute)">' + a.time + '</div></div></div>';
+      }).join('');
 }
 
 function renderPools() {
@@ -1132,6 +1148,7 @@ function drawPie(online, offline, disabled_) {
 }
 
 function renderDash(){
+  updateAlertBadges();
   const online   = workers.filter(w=>w.status==='online');
   const offline  = workers.filter(w=>w.status==='offline');
   const disabled = workers.filter(w=>w.disabled||w.status==='disabled');
