@@ -87,9 +87,9 @@ function renderWorkers() {
     const sb  = w.disabled ? 'bor' : w.status === 'online' ? 'bgn' : 'brn';
     return '<tr>'
       + '<td><input type="checkbox" class="worker-check" data-wid="' + w.id + '" style="accent-color:var(--cyan)"></td>'
-      + '<td title="' + (w.worker_id || '') + '"><div style="font-family:Exo 2,sans-serif;font-weight:600;font-size:12px">' + (w.name || '—') + '</div>'
+      + '<td><div style="font-family:Exo 2,sans-serif;font-weight:600;font-size:12px">' + (w.name || '—') + '</div>'
       + '<span class="sdot ' + sdot(w) + '" style="margin-right:4px"></span><span style="font-size:9px;color:var(--mute)">' + (w.algo || '') + '</span>'
-      + (w.worker_id && w.worker_id !== '—' && w.worker_id !== w.name ? '<div style="font-size:9px;color:var(--cyan);font-family:Share Tech Mono,monospace">' + w.worker_id + '</div>' : '')
+      + '<div style="font-size:10px;color:var(--cyan);font-family:Share Tech Mono,monospace;font-weight:700;margin-top:2px">' + (w.worker_id && w.worker_id !== '—' ? w.worker_id : '<span style="color:var(--mute);font-weight:400">no worker id</span>') + '</div>'
       + '</td>'
       + '<td title="MAC: ' + (w.mac || 'unknown') + '" style="font-family:Share Tech Mono,monospace;font-size:10px">'
       +   (w.serial || '<span style="color:var(--mute)">—</span>')
@@ -1086,35 +1086,49 @@ function drawPie(online, offline, disabled_) {
 
   const cx = 60, cy = 60, r = 48, inner = 30;
   const data = [
-    { v: online,    color: 'var(--green)',  label: 'Online'   },
-    { v: offline,   color: 'var(--red)',    label: 'Offline'  },
-    { v: disabled_, color: 'var(--orange)', label: 'Disabled' },
+    { v: online,    color: '#00ff9d', label: 'Online'   },
+    { v: offline,   color: '#ff2d55', label: 'Offline'  },
+    { v: disabled_, color: '#ff6b35', label: 'Disabled' },
   ].filter(d => d.v > 0);
 
   let paths = '', startAngle = -Math.PI / 2;
-  data.forEach(seg => {
-    const angle = (seg.v / total) * 2 * Math.PI;
-    const end   = startAngle + angle;
-    const x1o = cx + r     * Math.cos(startAngle), y1o = cy + r     * Math.sin(startAngle);
-    const x2o = cx + r     * Math.cos(end),         y2o = cy + r     * Math.sin(end);
-    const x1i = cx + inner * Math.cos(end),         y1i = cy + inner * Math.sin(end);
-    const x2i = cx + inner * Math.cos(startAngle),  y2i = cy + inner * Math.sin(startAngle);
-    const large = angle > Math.PI ? 1 : 0;
-    paths += `<path d="M${x1o.toFixed(1)},${y1o.toFixed(1)} A${r},${r} 0 ${large},1 ${x2o.toFixed(1)},${y2o.toFixed(1)} L${x1i.toFixed(1)},${y1i.toFixed(1)} A${inner},${inner} 0 ${large},0 ${x2i.toFixed(1)},${y2i.toFixed(1)} Z" fill="${seg.color}" opacity="0.85"/>`;
-    startAngle = end;
-  });
+  // Special case: a single segment covering 100% — draw as two half-circle arcs
+  // (a full-circle arc with identical start/end points renders as nothing in SVG)
+  if (data.length === 1) {
+    const seg = data[0];
+    const midAngle = startAngle + Math.PI;
+    const p = (a, radius) => [ (cx + radius*Math.cos(a)).toFixed(1), (cy + radius*Math.sin(a)).toFixed(1) ];
+    const [ox1,oy1] = p(startAngle, r), [ox2,oy2] = p(midAngle, r), [ox3,oy3] = p(startAngle + 2*Math.PI, r);
+    const [ix1,iy1] = p(startAngle, inner), [ix2,iy2] = p(midAngle, inner), [ix3,iy3] = p(startAngle + 2*Math.PI, inner);
+    paths += '<path d="M'+ox1+','+oy1+' A'+r+','+r+' 0 1,1 '+ox2+','+oy2+' A'+r+','+r+' 0 1,1 '+ox3+','+oy3
+           + ' L'+ix3+','+iy3+' A'+inner+','+inner+' 0 1,0 '+ix2+','+iy2+' A'+inner+','+inner+' 0 1,0 '+ix1+','+iy1
+           + ' Z" style="fill:'+seg.color+'" opacity="0.85"/>';
+  } else {
+    data.forEach(seg => {
+      const angle = (seg.v / total) * 2 * Math.PI;
+      const end   = startAngle + angle;
+      const x1o = cx + r     * Math.cos(startAngle), y1o = cy + r     * Math.sin(startAngle);
+      const x2o = cx + r     * Math.cos(end),         y2o = cy + r     * Math.sin(end);
+      const x1i = cx + inner * Math.cos(end),         y1i = cy + inner * Math.sin(end);
+      const x2i = cx + inner * Math.cos(startAngle),  y2i = cy + inner * Math.sin(startAngle);
+      const large = angle > Math.PI ? 1 : 0;
+      paths += `<path d="M${x1o.toFixed(1)},${y1o.toFixed(1)} A${r},${r} 0 ${large},1 ${x2o.toFixed(1)},${y2o.toFixed(1)} L${x1i.toFixed(1)},${y1i.toFixed(1)} A${inner},${inner} 0 ${large},0 ${x2i.toFixed(1)},${y2i.toFixed(1)} Z" style="fill:${seg.color}" opacity="0.85"/>`;
+      startAngle = end;
+    });
+  }
 
   // Center text
-  paths += `<text x="60" y="57" text-anchor="middle" font-size="18" font-family="Share Tech Mono" fill="var(--cyan)">${total}</text>`;
-  paths += `<text x="60" y="70" text-anchor="middle" font-size="8" font-family="Exo 2" fill="var(--mute)">MINERS</text>`;
+  paths += `<text x="60" y="57" text-anchor="middle" font-size="18" font-family="Share Tech Mono" style="fill:#00c8ff">${total}</text>`;
+  paths += `<text x="60" y="70" text-anchor="middle" font-size="8" font-family="Exo 2" style="fill:#3d5570">MINERS</text>`;
   svg.innerHTML = paths;
 
   leg.innerHTML = data.map(d =>
-    `<div style="display:flex;justify-content:space-between;padding:2px 0">
-      <span style="color:${d.color}">● ${d.label}</span>
-      <span style="font-family:'Share Tech Mono',monospace;color:var(--txt)">${d.v}</span>
-    </div>`
+    '<div style="display:flex;justify-content:space-between;padding:2px 0">'
+    + '<span style="color:' + d.color + '">&#9679; ' + d.label + '</span>'
+    + '<span style="font-family:Share Tech Mono,monospace;color:#bdd0e0">' + d.v + '</span>'
+    + '</div>'
   ).join('');
+  if (data.length === 0) leg.innerHTML = '<div style="color:#3d5570;text-align:center">No data</div>';
 }
 
 function renderDash(){
