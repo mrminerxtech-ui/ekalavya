@@ -263,6 +263,7 @@ function getBrand(model) {
   if (m.includes('innosilicon')) return 'Innosilicon';
   if (m.includes('jasminer'))    return 'Jasminer';
   if (m.includes('iceriver'))    return 'IceRiver';
+  if (m.includes('elphapex') || m.includes('dg1') || m.includes('dg-1')) return 'ElphaPEX';
   return 'Unknown';
 }
 
@@ -365,21 +366,34 @@ async function getMinerInfo(ip) {
   ]);
 
   let model = extractModel(stats, summary);
-  
+
+  // A valid model name is short plaintext — reject HTML error pages,
+  // connection error strings, or anything that isn't a real model string
+  function isValidModel(m) {
+    if (!m || typeof m !== 'string') return false;
+    const s = m.trim();
+    if (s.length < 3 || s.length > 60) return false;
+    if (/<[a-z]|not found|error|refused|forbidden|unauthorized|timeout|http\//i.test(s)) return false;
+    return true;
+  }
+
   // Fallback: try Antminer HTTP for model
-  if (!model) {
+  if (!isValidModel(model)) {
     const typeData = await httpGet(ip, '/cgi-bin/type.cgi', 'root:root');
-    if (typeof typeData === 'string') model = typeData.trim();
-    else if (typeData?.type) model = typeData.type;
-    
+    let candidate = null;
+    if (typeof typeData === 'string') candidate = typeData.trim();
+    else if (typeData?.type) candidate = typeData.type;
+    if (isValidModel(candidate)) model = candidate;
+
     // Avalon HTTP fallback
-    if (!model) {
+    if (!isValidModel(model)) {
       const avaInfo = await httpGet(ip, '/api/v1/info', 'root:root');
-      if (avaInfo?.system_hw_version) model = 'AvalonMiner ' + avaInfo.system_hw_version;
+      const avaCandidate = avaInfo?.system_hw_version ? 'AvalonMiner ' + avaInfo.system_hw_version : null;
+      if (isValidModel(avaCandidate)) model = avaCandidate;
     }
   }
 
-  if (!model || model.length < 3) model = 'ASIC Miner';
+  if (!isValidModel(model)) model = 'Unknown';
   
   const algo  = getAlgo(model);
   const brand = getBrand(model);
