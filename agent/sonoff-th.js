@@ -4,12 +4,44 @@
 // ============================================================
 const http   = require('http');
 const net    = require('net');
+const os     = require('os');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
 
 // ── ARP lookup — MAC → IP ─────────────────────────────────
 function normaliseMac(mac) {
   return mac.toLowerCase().replace(/[^a-f0-9]/g, '');
+}
+
+// Ping the broadcast address of every local /24 network this PC is on.
+// This forces devices to reply and populates the OS ARP cache with
+// entries that wouldn't otherwise be there yet (e.g. a sensor that was
+// just moved onto the subnet and hasn't talked to this PC before).
+function pingLocalBroadcasts() {
+  return new Promise(resolve => {
+    const ifaces = os.networkInterfaces();
+    const targets = [];
+    Object.values(ifaces).forEach(list => {
+      (list || []).forEach(info => {
+        if (info.family === 'IPv4' && !info.internal) {
+          const parts = info.address.split('.');
+          targets.push(parts.slice(0, 3).join('.') + '.255'); // assume /24
+        }
+      });
+    });
+    if (targets.length === 0) return resolve();
+
+    let remaining = targets.length;
+    const done = () => { remaining--; if (remaining <= 0) resolve(); };
+    targets.forEach(bcast => {
+      const args = process.platform === 'win32'
+        ? ['-n', '1', '-w', '800', bcast]
+        : ['-c', '1', '-W', '1', bcast];
+      execFile('ping', args, { timeout: 1500 }, () => done());
+    });
+    // Safety net in case any ping callback never fires
+    setTimeout(resolve, 2500);
+  });
 }
 
 function runArp() {
@@ -37,11 +69,22 @@ function parseArpOutput(output, targetMac) {
 
 async function resolveMAC(mac) {
   try {
-    const target  = normaliseMac(mac);
-    const output  = await runArp();
-    const ip      = parseArpOutput(output, target);
-    if (ip) { console.log(`[TH16] MAC ${mac} → ${ip}`); return ip; }
-    console.warn(`[TH16] MAC ${mac} not found in ARP table`);
+    const target = normaliseMac(mac);
+
+    // 1. Check the existing ARP cache first — instant if already known
+    let output = await runArp();
+    let ip = parseArpOutput(output, target);
+    if (ip) { console.log(`[TH16] MAC ${mac} → ${ip} (cached)`); return ip; }
+
+    // 2. Not cached — ping local broadcasts to make devices announce themselves,
+    //    then check the ARP cache again
+    console.log(`[TH16] MAC ${mac} not in ARP cache — pinging local subnet(s)...`);
+    await pingLocalBroadcasts();
+    output = await runArp();
+    ip = parseArpOutput(output, target);
+    if (ip) { console.log(`[TH16] MAC ${mac} → ${ip} (after ping)`); return ip; }
+
+    console.warn(`[TH16] MAC ${mac} not found — check it's powered on and on the same subnet as this PC`);
     return null;
   } catch(e) {
     console.error('[TH16] ARP error:', e.message);
@@ -109,10 +152,15 @@ async function discoverByMAC(macs) {
   const found = [];
   const map   = await resolveMACsToIPs(macs);
   for (const [mac, ip] of Object.entries(map)) {
-    if (!ip) continue;
+    if (!ip) { console.warn(`[TH16] Skipping ${mac} — no IP resolved`); continue; }
     const r = await readTH16(ip, '', '');
+    if (r) {
+      console.log(`[TH16] ${mac} @ ${ip} → ${r.temp}°C, ${r.humidity}% (firmware: ${r.firmware})`);
+      addSensor(ip, '', '', ip);
+    } else {
+      console.warn(`[TH16] ${mac} @ ${ip} → found via ARP but sensor didn't respond on port 80/8081. Check it's actually a Sonoff TH16 and powered on.`);
+    }
     found.push({ mac, ip, ...(r || { temp: null, humidity: null }), type: 'sonoff-th' });
-    if (r) addSensor(ip, '', '', ip);
   }
   return found;
 }
