@@ -2152,4 +2152,3 @@ function addFoundCard(m){
   btn.addEventListener('click',function(){ addToFleetDirect(capIp,capModel,capFarmId,capFarmName); });
   g.appendChild(d);
 }
-
