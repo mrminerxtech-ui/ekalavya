@@ -121,6 +121,9 @@ agentWss.on('connection', (ws, req) => {
   }
   console.log(`[AGENT] ✓ Connected — ${farmName} (${farmId})`);
 
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+
   agentMgr.registerAgent(ws, { farm_id: farmId, farm_name: farmName, subnet, hostname, agent_version: version });
 
   ws.on('message', raw => {
@@ -130,6 +133,16 @@ agentWss.on('connection', (ws, req) => {
   ws.on('close', () => agentMgr.unregisterAgent(farmId));
   ws.on('error', err => console.error(`[AGENT][${farmId}]`, err.message));
 });
+
+// ── Server-side keepalive: ping every 20s, drop anyone that
+// doesn't answer (catches agents that vanished without a clean close) ──
+setInterval(() => {
+  agentWss.clients.forEach(ws => {
+    if (ws.isAlive === false) { console.log('[AGENT] No pong — terminating dead connection'); return ws.terminate(); }
+    ws.isAlive = false;
+    try { ws.ping(); } catch(e) {}
+  });
+}, 20000);
 
 // ── Start ──────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
