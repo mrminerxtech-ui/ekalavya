@@ -96,7 +96,7 @@ function renderWorkers() {
       +   (w.serial || '<span style="color:var(--mute)">—</span>')
       +   (w.mac ? '<div style="font-size:9px;color:var(--mute)">' + w.mac + '</div>' : '')
       + '</td>'
-      + '<td style="font-size:11px">' + (w.brand || '') + '<br><span style="color:var(--mute);font-size:10px">' + (w.model || '—') + '</span></td>'
+      + '<td style="font-size:11px;max-width:90px;width:90px;white-space:normal;word-break:break-word;overflow-wrap:break-word">' + (w.brand || '') + '<br><span style="color:var(--mute);font-size:10px">' + (w.model || '—') + '</span></td>'
       + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (w.ip || '—') + '</td>'
       + '<td style="font-size:11px">' + (w.farm || (ag ? ag.name : '—')) + '</td>'
       + '<td style="font-size:11px">' + (cust ? cust.name : '<span style="color:var(--mute)">—</span>') + '</td>'
