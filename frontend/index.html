@@ -916,5 +916,54 @@ window.onerror = function(msg, src, line, col, err) {
 };
 </script>
 <script src="app.js"></script>
+
+<!-- FARM DETAIL OVERLAY -->
+<div class="overlay" id="farmDetailOverlay">
+  <div class="sheet" style="max-width:600px">
+    <div class="sheet-handle"></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+      <div style="flex:1">
+        <div class="sheet-title" id="farmDetailName" style="margin-bottom:2px">Farm</div>
+        <div style="font-size:11px;color:var(--mute)" id="farmDetailSub">—</div>
+      </div>
+      <button class="btn btn-sm" onclick="closeFarmDetail()">&#x2715; Close</button>
+    </div>
+
+    <div class="sheet-body">
+      <!-- Sensor readings -->
+      <div style="margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <div style="font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:2px;color:var(--mute);text-transform:uppercase">&#x1F321; Environment</div>
+          <button class="abtn" onclick="discoverSensors()">&#x1F50D; Find Sensor</button>
+          <span style="font-size:9px;color:var(--mute)" id="sensorLastUpdate"></span>
+        </div>
+        <div id="farmSensors"></div>
+
+        <!-- Sensor discover mini-panel -->
+        <div id="sensorDiscoverPanel" style="display:none;margin-top:10px;background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:12px">
+          <div class="frow" style="margin-bottom:8px">
+            <label>MAC Address <span style="color:var(--green);font-size:9px">(recommended)</span></label>
+            <input id="sensorMacInput" placeholder="a4:cf:12:ab:cd:ef" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:7px 10px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:11px;outline:none">
+          </div>
+          <div class="frow" style="margin-bottom:8px">
+            <label>or IP Address / Range</label>
+            <input id="sensorIpInput" placeholder="192.168.1.50 or 192.168.1.1-255" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:7px 10px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:11px;outline:none">
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-sm btn-g" onclick="startSensorDiscover()">&#x1F50D; Find</button>
+            <button class="btn btn-sm" onclick="document.getElementById('sensorDiscoverPanel').style.display='none'">Close</button>
+          </div>
+          <div id="sensorDiscoverStatus" style="font-size:11px;color:var(--mute);margin-top:8px"></div>
+        </div>
+      </div>
+
+      <!-- Miners list -->
+      <div>
+        <div style="font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:2px;color:var(--mute);text-transform:uppercase;margin-bottom:8px">&#x26CF; Miners</div>
+        <div id="farmDetailMiners"></div>
+      </div>
+    </div>
+  </div>
+</div>
 </body>
 </html>
