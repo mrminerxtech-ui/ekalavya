@@ -89,9 +89,8 @@ function renderWorkers() {
     const sb   = w.disabled ? 'bor' : eSt === 'online' ? 'bgn' : 'brn';
     return '<tr>'
       + '<td><input type="checkbox" class="worker-check" data-wid="' + w.id + '" style="accent-color:var(--cyan)"></td>'
-      + '<td><div style="font-family:Exo 2,sans-serif;font-weight:600;font-size:12px">' + (w.name || '—') + '</div>'
+      + '<td><div style="font-family:Share Tech Mono,monospace;font-weight:700;font-size:12px;color:var(--cyan)">' + (w.name || '—') + '</div>'
       + '<span class="sdot ' + sdot(w) + '" style="margin-right:4px"></span><span style="font-size:9px;color:var(--mute)">' + (w.algo || '') + '</span>'
-      + '<div style="font-size:10px;color:var(--cyan);font-family:Share Tech Mono,monospace;font-weight:700;margin-top:2px">' + (w.worker_id && w.worker_id !== '—' ? w.worker_id : '<span style="color:var(--mute);font-weight:400">no worker id</span>') + '</div>'
       + '</td>'
       + '<td title="MAC: ' + (w.mac || 'unknown') + '" style="font-family:Share Tech Mono,monospace;font-size:10px">'
       +   (w.serial || '<span style="color:var(--mute)">—</span>')
@@ -747,7 +746,7 @@ function addAllToFleet() {
     const ghA    = ['Scrypt','KHeavyHash','X11','Blake2B','Ethash','Equihash'];
     const hrUnit = m.hr_unit || (ghA.includes(algo) ? 'GH/s' : 'TH/s');
     workers = workers.filter(w => w.ip !== m.ip);
-    workers.push({ id:'w-'+m.ip.replace(/\./g,'-'), name:m.worker?m.worker.split('.').pop():m.ip.replace(/\./g,'-'), model:m.model||'ASIC Miner', brand, algo, ip:m.ip, hashrate:m.hashrate||0, hr_unit:hrUnit, hr_display:m.hr_display||'—', temp:m.temp||0, fan:m.fan||0, power:m.power||0, status:'online', pool:m.pool||'—', pool_url:m.pool||'', pool_user:m.worker||'', uptime:m.uptime||'—', farm:farmName, farm_id:farmId, cid:'', disabled:false, led:false, firmware:m.firmware||'—', accepted:m.accepted||0, rejected:m.rejected||0, hw_errors:m.hw_errors||0, source:'scan', added_at:new Date().toISOString() });
+    workers.push({ id:'w-'+m.ip.replace(/\./g,'-'), name:m.worker||m.ip.replace(/\./g,'-'), model:m.model||'ASIC Miner', brand, algo, ip:m.ip, hashrate:m.hashrate||0, hr_unit:hrUnit, hr_display:m.hr_display||'—', temp:m.temp||0, fan:m.fan||0, power:m.power||0, status:'online', pool:m.pool||'—', pool_url:m.pool||'', pool_user:m.worker||'', uptime:m.uptime||'—', farm:farmName, farm_id:farmId, cid:'', disabled:false, led:false, firmware:m.firmware||'—', accepted:m.accepted||0, rejected:m.rejected||0, hw_errors:m.hw_errors||0, source:'scan', added_at:new Date().toISOString() });
   });
   saveFleet(); updateNavCount(); showSavedIndicator(); setTimeout(saveFleetToBackend, 500);
   try { renderAll(); } catch(e) {}
@@ -2067,7 +2066,7 @@ function addToFleetDirect(ip, model, farmId, farmName){
   var hrDisp  = (miner.hr_display && miner.hr_display !== '—') ? miner.hr_display : (miner.hashrate > 0 ? miner.hashrate.toFixed(2) + ' ' + hrUnit : '—');
   workers.push({
     id: 'w-' + ip.replace(/\./g, '-'),
-    name: miner.worker ? miner.worker.split('.').pop() : ip.replace(/\./g, '-'),
+    name: miner.worker || ip.replace(/\./g, '-'),
     worker_id: miner.worker_id || miner.worker || '—',   // full wallet.worker string
     mac: miner.mac || null,
     serial: miner.serial || null,
