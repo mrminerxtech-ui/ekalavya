@@ -96,7 +96,7 @@ function renderWorkers() {
       +   (w.serial || '<span style="color:var(--mute)">—</span>')
       +   (w.mac ? '<div style="font-size:9px;color:var(--mute)">' + w.mac + '</div>' : '')
       + '</td>'
-      + '<td style="font-size:11px;max-width:90px;width:90px;white-space:normal;word-break:break-word;overflow-wrap:break-word">' + (w.brand || '') + '<br><span style="color:var(--mute);font-size:10px">' + (w.model || '—') + '</span></td>'
+      + '<td style="font-size:11px;max-width:90px;width:90px;white-space:normal;word-break:break-word;overflow-wrap:break-word">' + cleanBrandModel(w.brand) + '<br><span style="color:var(--mute);font-size:10px">' + cleanBrandModel(w.model) + '</span></td>'
       + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (w.ip || '—') + '</td>'
       + '<td style="font-size:11px">' + (w.farm || (ag ? ag.name : '—')) + '</td>'
       + '<td style="font-size:11px">' + (cust ? cust.name : '<span style="color:var(--mute)">—</span>') + '</td>'
@@ -281,7 +281,7 @@ function openCtrl(wid) {
   // Fill in miner details
   const nm = document.getElementById('ctrlName'); if (nm) nm.textContent = w.name;
   const ip = document.getElementById('ctrlIp');   if (ip) ip.textContent = w.ip;
-  const md = document.getElementById('ctrlModel');if (md) md.textContent = (w.brand||'') + ' ' + (w.model||'');
+  const md = document.getElementById('ctrlModel');if (md) md.textContent = cleanBrandModel(w.brand) + ' ' + cleanBrandModel(w.model);
   const wi = document.getElementById('ctrlWorkerId');
   if (wi) {
     var parts = [];
@@ -1056,6 +1056,18 @@ function updateTicker(){Object.keys(coins).forEach(k=>{coins[k].p=parseFloat((co
 
 // HELPERS
 // Is this worker's farm agent currently connected?
+// Guards against bad/garbage text ever landing in the Brand/Model
+// column (HTML error pages, connection errors saved from old scans, etc.)
+function cleanBrandModel(val){
+  if (!val || typeof val !== 'string') return '—';
+  const s = val.trim();
+  if (s.length === 0) return '—';
+  if (s.length > 40 || /<[a-z]|not found|error|refused|forbidden|unauthorized|timeout|http\/|request for url/i.test(s)) {
+    return 'Unknown';
+  }
+  return s;
+}
+
 function isAgentOnline(farmId){
   const a = agents.find(function(x){ return x.id === farmId; });
   return !!(a && a.online);
@@ -2140,3 +2152,4 @@ function addFoundCard(m){
   btn.addEventListener('click',function(){ addToFleetDirect(capIp,capModel,capFarmId,capFarmName); });
   g.appendChild(d);
 }
+
