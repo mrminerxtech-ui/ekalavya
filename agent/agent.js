@@ -1,5 +1,6 @@
 require('dotenv').config();
 const WebSocket = require('ws');
+const crypto = require('crypto');
 const net       = require('net');
 const http      = require('http');
 const https     = require('https');
@@ -80,17 +81,76 @@ const CGPORT    = parseInt(process.env.CGMINER_PORT || '4028');
 let ws = null, reconnectMs = 3000, pollTimer = null;
 
 // ── HTTP helper ────────────────────────────────────────────
-function httpGet(ip, path, auth) {
+// ── Parse WWW-Authenticate header for Digest auth ──────────
+function parseDigestHeader(header) {
+  const params = {};
+  const regex = /(\w+)=("[^"]*"|[^,]*)/g;
+  let m;
+  while ((m = regex.exec(header)) !== null) {
+    params[m[1]] = m[2].replace(/^"|"$/g, '');
+  }
+  return params;
+}
+
+// ── Build Digest Authorization header ──────────────────────
+function buildDigestAuth(user, pass, method, path, digestParams) {
+  const realm  = digestParams.realm || '';
+  const nonce  = digestParams.nonce || '';
+  const qop    = digestParams.qop || '';
+  const opaque = digestParams.opaque;
+  const nc     = '00000001';
+  const cnonce = crypto.randomBytes(8).toString('hex');
+
+  const ha1 = crypto.createHash('md5').update(user + ':' + realm + ':' + pass).digest('hex');
+  const ha2 = crypto.createHash('md5').update(method + ':' + path).digest('hex');
+
+  let response;
+  if (qop) {
+    response = crypto.createHash('md5').update(ha1 + ':' + nonce + ':' + nc + ':' + cnonce + ':' + qop + ':' + ha2).digest('hex');
+  } else {
+    response = crypto.createHash('md5').update(ha1 + ':' + nonce + ':' + ha2).digest('hex');
+  }
+
+  let header = 'Digest username="' + user + '", realm="' + realm + '", nonce="' + nonce + '", uri="' + path + '", response="' + response + '"';
+  if (qop) header += ', qop=' + qop + ', nc=' + nc + ', cnonce="' + cnonce + '"';
+  if (opaque) header += ', opaque="' + opaque + '"';
+  return header;
+}
+
+// ── HTTP GET with auto Basic → Digest fallback ─────────────
+function httpGet(ip, path, auth, debug) {
+  const [user, pass] = (auth || '').split(':');
   return new Promise(resolve => {
-    const headers = auth ? { 'Authorization': 'Basic ' + Buffer.from(auth).toString('base64') } : {};
-    const req = http.request({ hostname:ip, port:80, path, method:'GET', headers, timeout:4000 }, res => {
-      let d = '';
-      res.on('data', c => d += c);
-      res.on('end', () => { try { resolve(JSON.parse(d)); } catch(e) { resolve(d||null); } });
-    });
-    req.on('error',   () => resolve(null));
-    req.on('timeout', () => { req.destroy(); resolve(null); });
-    req.end();
+    function attempt(authHeader, isRetry) {
+      const headers = authHeader ? { 'Authorization': authHeader } : {};
+      const req = http.request({ hostname: ip, port: 80, path, method: 'GET', headers, timeout: 4000 }, res => {
+        // 401 on first try — check if server wants Digest auth
+        if (res.statusCode === 401 && !isRetry && res.headers['www-authenticate']) {
+          const wa = res.headers['www-authenticate'];
+          if (debug) console.log('[HTTP] ' + ip + path + ' → 401, retrying with Digest (' + wa.split(' ')[0] + ')');
+          res.resume(); // drain response
+          if (wa.toLowerCase().startsWith('digest') && user && pass) {
+            const params = parseDigestHeader(wa);
+            const digestHeader = buildDigestAuth(user, pass, 'GET', path, params);
+            attempt(digestHeader, true);
+          } else {
+            resolve(null);
+          }
+          return;
+        }
+        let d = '';
+        res.on('data', c => d += c);
+        res.on('end', () => {
+          if (debug) console.log('[HTTP] ' + ip + path + ' → status ' + res.statusCode + ' | body: ' + d.slice(0,200));
+          try { resolve(JSON.parse(d)); } catch(e) { resolve(d || null); }
+        });
+      });
+      req.on('error',   e => { if (debug) console.log('[HTTP] ' + ip + path + ' → ERROR: ' + e.message); resolve(null); });
+      req.on('timeout', () => { if (debug) console.log('[HTTP] ' + ip + path + ' → TIMEOUT'); req.destroy(); resolve(null); });
+      req.end();
+    }
+    const basicAuth = auth ? 'Basic ' + Buffer.from(auth).toString('base64') : null;
+    attempt(basicAuth, false);
   });
 }
 
@@ -229,11 +289,36 @@ function extractModel(stats, summary) {
 async function getHardwareIds(ip) {
   let mac = null, serial = null;
 
-  // Antminer / most Bitmain-based firmware
+  // Antminer / most Bitmain-based firmware — get_system_info.cgi has the MAC
   const sysInfo = await httpGet(ip, '/cgi-bin/get_system_info.cgi', 'root:root');
-  if (sysInfo) {
+  if (sysInfo && typeof sysInfo === 'object') {
     mac    = sysInfo.macaddr || sysInfo.mac || sysInfo.MAC || null;
-    serial = sysInfo.minersn || sysInfo.serialno || sysInfo.sn || sysInfo.SerialNo || null;
+    serial = sysInfo.minersn || sysInfo.serialno || sysInfo.sn || sysInfo.SerialNo
+           || sysInfo.serial_number || sysInfo.miner_sn || null;
+  }
+
+  // Serial number is often on get_miner_conf.cgi or the stats page instead
+  if (!serial) {
+    const conf = await httpGet(ip, '/cgi-bin/get_miner_conf.cgi', 'root:root', true);
+    console.log('[SN-DEBUG] ' + ip + ' get_miner_conf.cgi →', JSON.stringify(conf).slice(0, 400));
+    if (conf && typeof conf === 'object') {
+      serial = conf.minersn || conf.serialno || conf.sn || null;
+    }
+  }
+
+  // Try get_network_info.cgi — some Bitmain firmware exposes serial here
+  if (!serial) {
+    const netInfo = await httpGet(ip, '/cgi-bin/get_network_info.cgi', 'root:root', true);
+    console.log('[SN-DEBUG] ' + ip + ' get_network_info.cgi →', JSON.stringify(netInfo).slice(0, 400));
+    if (netInfo && typeof netInfo === 'object') {
+      serial = netInfo.minersn || netInfo.serialno || netInfo.sn || null;
+    }
+  }
+
+  // Try get_blink_status.cgi — sometimes bundles hardware info
+  if (!serial) {
+    const blink = await httpGet(ip, '/cgi-bin/get_blink_status.cgi', 'root:root', true);
+    console.log('[SN-DEBUG] ' + ip + ' get_blink_status.cgi →', JSON.stringify(blink).slice(0, 400));
   }
 
   // Whatsminer — different endpoint / field names
@@ -263,10 +348,9 @@ async function getHardwareIds(ip) {
     }
   }
 
-  return {
-    mac:    mac    ? mac.toUpperCase().replace(/[^0-9A-F]/g, '').replace(/(.{2})(?=.)/g, '$1:') : null,
-    serial: serial  || null,
-  };
+  const cleanMac = mac ? mac.toUpperCase().replace(/[^0-9A-F]/g, '').replace(/(.{2})(?=.)/g, '$1:') : null;
+  console.log('[HWID] ' + ip + ' → MAC: ' + (cleanMac || 'not found') + ' | Serial: ' + (serial || 'not found'));
+  return { mac: cleanMac, serial: serial || null };
 }
 
 // ── Full miner info ────────────────────────────────────────
@@ -340,6 +424,7 @@ async function getMinerInfo(ip) {
 
   // Full worker ID as configured on the miner — includes wallet/worker suffix
   const fullWorkerId = activePool.User || allPools.map(p => p.User).find(u => u && u !== '') || '—';
+
 
   // HW errors and shares
   const accepted  = parseInt(s.Accepted||0);
@@ -558,11 +643,30 @@ function connect() {
     }
   });
 
+  let pongTimeout = null;
+  let pingInterval = null;
+
+  // ── Keepalive: detect a dead connection even when no close/error
+  // event ever arrives (common after a server-side restart/redeploy) ──
+  function heartbeatPing() {
+    clearTimeout(pongTimeout);
+    try { ws.ping(); } catch(e) {}
+    // If no pong arrives within 10s, treat the connection as dead
+    pongTimeout = setTimeout(() => {
+      console.log('[WARN] No pong from server in 10s — forcing reconnect');
+      try { ws.terminate(); } catch(e) {}
+    }, 10000);
+  }
+
+  ws.on('pong', () => { clearTimeout(pongTimeout); });
+
   ws.on('open', () => {
     reconnectMs = 3000;
     console.log(`[INFO] ✓ Connected | Farm: ${FARM_NAME}`);
     pollTimer = setInterval(pollMiners, POLL_MS);
     setInterval(() => send({ type:'heartbeat', farm_id:FARM_ID }), 20000);
+    // Ping the server every 15s; if it doesn't answer within 10s, reconnect
+    pingInterval = setInterval(heartbeatPing, 15000);
     setTimeout(pollMiners, 5000);
     // Start Lanli RS485 polling if enabled
     if (LANLI_ENABLED && lanli) {
@@ -631,6 +735,8 @@ function connect() {
 
   ws.on('close', code => {
     clearInterval(pollTimer);
+    clearInterval(pingInterval);
+    clearTimeout(pongTimeout);
     console.log(`[WARN] Disconnected (${code}) — retry in ${reconnectMs/1000}s`);
     setTimeout(connect, reconnectMs);
     reconnectMs = Math.min(reconnectMs * 1.5, 30000);
