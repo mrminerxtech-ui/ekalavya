@@ -46,7 +46,7 @@ const IDOSP_URL = 'http://www.idosp.net/idosp/login.html';
 
 // ── Sector badge helper ───────────────────────────────────
 // (stub sdot removed — full version defined later)
-function detectBrand(model){ const m=(model||'').toLowerCase(); if(m.includes('antminer')||m.includes('bitmain')) return 'Bitmain'; if(m.includes('whatsminer')||m.includes('microbt')) return 'MicroBT'; if(m.includes('avalon')) return 'Canaan'; if(m.includes('goldshell')) return 'Goldshell'; return ''; }
+function detectBrand(model){ const m=(model||'').toLowerCase(); if(m.includes('antminer')||m.includes('bitmain')) return 'Bitmain'; if(m.includes('whatsminer')||m.includes('microbt')) return 'MicroBT'; if(m.includes('avalon')) return 'Canaan'; if(m.includes('goldshell')) return 'Goldshell'; if(m.includes('elphapex')||m.includes('dg1')||m.includes('dg-1')) return 'ElphaPEX'; return ''; }
 
 // ── Navigation ────────────────────────────────────────────
 // (stub nav removed — full version defined later)
@@ -1079,7 +1079,7 @@ function getAlgoFromModel(model){
   const m=(model||'').toLowerCase();
   // Scrypt — LTC miners: L3, L3+, L5, L7, L9, L11, L15, L19
   // Match: "l3", "l3+", "l5", "l7", "l9", "l11", "l15", "l19", "antminer l", etc.
-  if(/\bl[0-9]+/.test(m)||m.includes('scrypt')||m.includes('litecoin')||m.includes('ltc')||m.includes(' l3')||m.includes(' l5')||m.includes(' l7')||m.includes(' l9')) return 'Scrypt';
+  if(/\bl[0-9]+/.test(m)||m.includes('scrypt')||m.includes('litecoin')||m.includes('ltc')||m.includes(' l3')||m.includes(' l5')||m.includes(' l7')||m.includes(' l9')||m.includes('elphapex')||m.includes('dg1')||m.includes('dg-1')) return 'Scrypt';
   // KHeavyHash — KAS miners
   if(m.includes('ka3')||m.includes('kaspa')||m.includes('kheavy')||m.includes('ika')) return 'KHeavyHash';
   // X11 — DASH miners
