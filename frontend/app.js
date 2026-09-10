@@ -617,6 +617,24 @@ function csvParseLine(line){
 }
 
 // ── Export fleet as CSV ────────────────────────────────────
+function clearAllFleetData(){
+  if(!confirm('Clear ALL workers and customers? This also deletes them from the server — this cannot be undone.')) return;
+  workers = [];
+  customers = [];
+  saveFleet();
+  // Also clear on the backend, or a page refresh will merge the old data straight back in
+  const token = localStorage.getItem('ekl_token');
+  if (token && API_BASE && !API_BASE.includes('localhost')) {
+    fetch(API_BASE + '/api/fleet/save', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body: JSON.stringify({ workers: [], customers: [] })
+    }).catch(function(){});
+  }
+  renderAll();
+  toast('Fleet cleared — local and server', 'var(--red)');
+}
+
 function exportFleet() {
   if (workers.length === 0) { toast('No workers to export', 'var(--warn)'); return; }
   const rows = [CSV_COLUMNS.join(',')];
