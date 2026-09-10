@@ -82,9 +82,11 @@ function renderWorkers() {
   tb.innerHTML = workers.map(function(w) {
     const ag  = A(w.farm_id);
     const cust= C(w.cid);
-    const tc  = w.temp >= 90 ? 'color:var(--red)' : w.temp >= 80 ? 'color:var(--warn)' : '';
-    const st  = w.disabled ? 'REPAIR' : (w.status || 'unknown').toUpperCase();
-    const sb  = w.disabled ? 'bor' : w.status === 'online' ? 'bgn' : 'brn';
+    const tc   = w.temp >= 90 ? 'color:var(--red)' : w.temp >= 80 ? 'color:var(--warn)' : '';
+    const eSt  = effectiveStatus(w);
+    const agentDown = w.farm_id && !isAgentOnline(w.farm_id) && !w.disabled;
+    const st   = w.disabled ? 'REPAIR' : agentDown ? 'AGENT OFFLINE' : eSt.toUpperCase();
+    const sb   = w.disabled ? 'bor' : eSt === 'online' ? 'bgn' : 'brn';
     return '<tr>'
       + '<td><input type="checkbox" class="worker-check" data-wid="' + w.id + '" style="accent-color:var(--cyan)"></td>'
       + '<td><div style="font-family:Exo 2,sans-serif;font-weight:600;font-size:12px">' + (w.name || '—') + '</div>'
@@ -112,9 +114,9 @@ function renderWorkers() {
     b.addEventListener('click', function(){ openCtrl(this.dataset.wid); });
   });
 
-  // Update badge counts
-  const on  = workers.filter(function(w){ return w.status === 'online'; }).length;
-  const off = workers.filter(function(w){ return w.status === 'offline'; }).length;
+  // Update badge counts (accounts for agent connectivity)
+  const on  = workers.filter(function(w){ return effectiveStatus(w) === 'online'; }).length;
+  const off = workers.filter(function(w){ return effectiveStatus(w) !== 'online' && !w.disabled; }).length;
   const dis = workers.filter(function(w){ return w.disabled; }).length;
   const eOn = document.getElementById('wOnlineBadge');  if (eOn) eOn.textContent = on;
   const eOf = document.getElementById('wOfflineBadge'); if (eOf) eOf.textContent = off;
@@ -1036,7 +1038,25 @@ function initTicker(){let h='';Object.entries(coins).forEach(([k,d])=>{const dir
 function updateTicker(){Object.keys(coins).forEach(k=>{coins[k].p=parseFloat((coins[k].p*(1+(Math.random()-.5)*.003)).toFixed(k==='BTC'||k==='ETH'?2:4));coins[k].c=parseFloat((coins[k].c+(Math.random()-.5)*.4).toFixed(2));});initTicker();}
 
 // HELPERS
-function sdot(w){return w.disabled||w.status==='disabled'?'dis':w.status==='sleeping'?'slp':w.status==='rebooting'?'rb':w.status==='online'?'on':w.status==='warn'?'wn':'off';}
+// Is this worker's farm agent currently connected?
+function isAgentOnline(farmId){
+  const a = agents.find(function(x){ return x.id === farmId; });
+  return !!(a && a.online);
+}
+
+// The worker's REAL status right now — if its agent is offline,
+// the worker can't actually be confirmed online no matter what its
+// last reported status was, so it's shown as offline too.
+function effectiveStatus(w){
+  if (w.disabled) return 'disabled';
+  if (w.farm_id && !isAgentOnline(w.farm_id)) return 'offline';
+  return w.status || 'offline';
+}
+
+function sdot(w){
+  const s = effectiveStatus(w);
+  return s==='disabled'?'dis':s==='sleeping'?'slp':s==='rebooting'?'rb':s==='online'?'on':s==='warn'?'wn':'off';
+}
 function sbadge(w){const m={online:'bgn',warn:'bwn',offline:'brn',disabled:'bor',sleeping:'bpp',rebooting:'bc'};const l={online:'ONLINE',warn:'WARNING',offline:'OFFLINE',disabled:'DISABLED',sleeping:'SLEEPING',rebooting:'REBOOTING'};return `<span class="badge ${m[w.status]||'bc'}">${l[w.status]||w.status.toUpperCase()}</span>`;}
 function getAlgoFromModel(model){
   const m=(model||'').toLowerCase();
@@ -1267,10 +1287,10 @@ function drawPie(online, offline, disabled_) {
 function renderDash(){
   const alertList = updateAlertBadges();
   const dAl = document.getElementById('dAlerts'); if (dAl) dAl.textContent = alertList.length;
-  const online   = workers.filter(w=>w.status==='online');
-  const offline  = workers.filter(w=>w.status==='offline');
-  const disabled = workers.filter(w=>w.disabled||w.status==='disabled');
-  const warning  = workers.filter(w=>w.status==='warn');
+  const disabled = workers.filter(w=>w.disabled);
+  const online   = workers.filter(w=>!w.disabled && effectiveStatus(w)==='online');
+  const offline  = workers.filter(w=>!w.disabled && effectiveStatus(w)!=='online');
+  const warning  = workers.filter(w=>!w.disabled && w.status==='warn' && effectiveStatus(w)==='online');
 
   // Total hashrate — mix of TH and GH, convert all to TH for display
   const totalTH = online.reduce((a,w)=>{
@@ -1421,11 +1441,13 @@ function renderFleetByFarm(){
 
   let html = '';
   Object.values(farmMap).forEach(function(farm){
-    const online  = farm.workers.filter(function(w){return w.status==='online';}).length;
-    const offline = farm.workers.filter(function(w){return w.status==='offline'||w.status==='warn';}).length;
-    const repair  = farm.workers.filter(function(w){return w.disabled||w.status==='disabled';}).length;
     const ag      = farm.agent;
     const onl     = ag && ag.online;
+    const repair  = farm.workers.filter(function(w){return w.disabled;}).length;
+    // If the agent itself is offline, none of its miners can be confirmed
+    // online right now — regardless of their last reported status
+    const online  = onl ? farm.workers.filter(function(w){return !w.disabled && w.status==='online';}).length : 0;
+    const offline = farm.workers.length - online - repair;
     html += '<div class="farm-card-click" data-fid="'+farm.id+'" style="background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:12px;margin-bottom:8px;cursor:pointer">';
     html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
     html += '<span class="sdot '+(onl?'on':'off')+'"></span>';
