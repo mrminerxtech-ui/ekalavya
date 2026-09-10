@@ -568,7 +568,7 @@ tr:last-child td{border-bottom:none;}
             <button class="btn btn-sm btn-g" onclick="exportFleet()">⬇ Export CSV</button>
             <button class="btn btn-sm" onclick="document.getElementById('importFile').click()">⬆ Import CSV</button>
             <input type="file" id="importFile" accept=".csv" style="display:none" onchange="importFleet(event)">
-            <button class="btn btn-sm btn-r" onclick="if(confirm('Clear ALL workers and customers?')){workers=[];customers=[];saveFleet();renderAll();toast('Fleet cleared','var(--red)');}">✕ Clear All</button>
+            <button class="btn btn-sm btn-r" onclick="clearAllFleetData()">✕ Clear All</button>
           </div>
         </div>
       </div>
