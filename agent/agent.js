@@ -39,6 +39,7 @@ function onSensorReading(ip, reading) {
     ip,
     temp:      reading.temp,
     humidity:  reading.humidity,
+    model:     reading.model || null,
     sensors:   th16.getReadings(),
     timestamp: new Date().toISOString(),
   }).catch(() => {});
@@ -704,12 +705,19 @@ function connect() {
 
         const doDiscover = async () => {
           let found = [];
-          if (macs && macs.length > 0) {
-            // MAC-based discovery — most accurate
+          if (ips && ips.length > 0 && macs && macs.length > 0) {
+            // Combined — scan the IP range and confirm the real sensor via MAC.
+            // Best option when the sensor's MAC isn't in the ARP cache yet
+            // (e.g. it's on a subnet the agent hasn't talked to before).
+            console.log(`[TH16] Scanning ${ips.length} IPs, matching against MAC(s): ${macs.join(', ')}`);
+            found = await th16.discoverByRangeAndMac(ips, macs, true);
+          } else if (macs && macs.length > 0) {
+            // MAC-only — relies on the ARP cache (fast, but only works if
+            // the PC has already exchanged traffic with the device)
             console.log(`[TH16] Resolving MACs: ${macs.join(', ')}`);
             found = await th16.discoverByMAC(macs);
           } else if (ips && ips.length > 0) {
-            // IP range scan
+            // IP range scan only — no MAC to confirm against
             console.log(`[TH16] Scanning ${ips.length} IPs`);
             found = await th16.discoverInRange(ips, 20);
           }
