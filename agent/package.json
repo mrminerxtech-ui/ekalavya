@@ -1,15 +1,18 @@
 {
   "name": "ekalavya-farm-agent",
   "version": "1.0.0",
-  "description": "Ekalavya Farm Agent — runs at each mining/hydro site",
+  "description": "Ekalavya Farm Agent \u2014 runs at each mining/hydro site",
   "main": "agent.js",
   "scripts": {
-    "start": "node agent.js"
+    "start": "node update-check.js",
+    "start:direct": "node agent.js"
   },
-  "engines": { "node": ">=16.0.0" },
+  "engines": {
+    "node": ">=16.0.0"
+  },
   "dependencies": {
-    "ws":           "^8.16.0",
-    "dotenv":       "^16.3.1",
+    "ws": "^8.16.0",
+    "dotenv": "^16.3.1",
     "modbus-serial": "^8.0.16"
   }
 }
