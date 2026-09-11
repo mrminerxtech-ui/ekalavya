@@ -1355,24 +1355,23 @@ function renderDash(){
   drawPie(online.length, offline.length + warning.length, disabled.length);
 
   // Farm cards — group workers by farm_id
+  // NEVER reassign a worker's farm_id to a different agent just because
+  // only one happens to be online right now — that silently corrupts
+  // which farm a machine actually belongs to. Each worker always stays
+  // under its own recorded farm, shown as offline if that agent isn't
+  // currently connected.
   const farmMap = {};
-  // Start from agents (source of truth)
   agents.forEach(a => {
     farmMap[a.id] = { id:a.id, name:a.name, workers:[], agent:a };
   });
-  // Assign workers to correct farms
   workers.forEach(w => {
     const fid = w.farm_id || 'unknown';
-    if(farmMap[fid]){
-      farmMap[fid].workers.push(w);
-    } else if(agents.length===1){
-      w.farm_id=agents[0].id; w.farm=agents[0].name;
-      farmMap[agents[0].id].workers.push(w);
-    } else {
-      const orphanName = w.farm || fid;
-      if(!farmMap[fid]) farmMap[fid]={id:fid, name:orphanName, workers:[], agent:null};
-      farmMap[fid].workers.push(w);
+    if (!farmMap[fid]) {
+      // This worker's farm isn't currently connected — show it under its
+      // OWN recorded farm name, marked offline, never merged into another agent
+      farmMap[fid] = { id: fid, name: w.farm || fid, workers: [], agent: null };
     }
+    farmMap[fid].workers.push(w);
   });
 
   const fc = document.getElementById('farmCards');
