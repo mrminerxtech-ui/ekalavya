@@ -134,11 +134,21 @@ agentWss.on('connection', (ws, req) => {
   ws.on('error', err => console.error(`[AGENT][${farmId}]`, err.message));
 });
 
-// ── Server-side keepalive: ping every 20s, drop anyone that
-// doesn't answer (catches agents that vanished without a clean close) ──
+// ── Server-side keepalive: ping every 20s, drop anyone that misses
+// TWO consecutive pongs (40s total) — one miss can just be a busy agent
+// mid-scan, not necessarily a dead connection.
 setInterval(() => {
   agentWss.clients.forEach(ws => {
-    if (ws.isAlive === false) { console.log('[AGENT] No pong — terminating dead connection'); return ws.terminate(); }
+    if (ws.missedPongs === undefined) ws.missedPongs = 0;
+    if (ws.isAlive === false) {
+      ws.missedPongs++;
+      if (ws.missedPongs >= 2) {
+        console.log('[AGENT] No pong for 2 cycles — terminating dead connection');
+        return ws.terminate();
+      }
+    } else {
+      ws.missedPongs = 0;
+    }
     ws.isAlive = false;
     try { ws.ping(); } catch(e) {}
   });
