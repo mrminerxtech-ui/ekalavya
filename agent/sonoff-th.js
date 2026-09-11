@@ -261,7 +261,7 @@ async function getMacForIp(ip) {
 async function discoverByRangeAndMac(ips, targetMacs, debug) {
   const targets = (targetMacs || []).map(m => normaliseMac(m));
   const found   = [];
-  const concurrency = 12; // gentler — avoids contention with regular miner polling
+  const concurrency = 8; // gentler still — avoids delaying the WebSocket heartbeat during a scan
 
   for (let i = 0; i < ips.length; i += concurrency) {
     const batch = ips.slice(i, i + concurrency);
