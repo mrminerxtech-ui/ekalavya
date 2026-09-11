@@ -1611,6 +1611,7 @@ function renderSensorInPanel(farmId, r){
       </div>
     </div>
     <div style="display:flex;justify-content:center;gap:6px;flex-wrap:wrap">
+      ${r.model?`<span style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--cyan);background:rgba(0,200,255,.08);border:1px solid rgba(0,200,255,.2);border-radius:3px;padding:2px 6px">${r.model}</span>`:''}
       ${r.ip?`<span style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--mute);background:var(--bg);border:1px solid var(--b1);border-radius:3px;padding:2px 6px">${r.ip}</span>`:''}
       <span style="font-size:9px;color:var(--mute)">${r.updated?new Date(r.updated).toLocaleString():''}</span>
     </div>
@@ -1624,25 +1625,31 @@ function discoverSensors(){
 function startSensorDiscover(){
   const mac=document.getElementById('sensorMacInput')?.value.trim();
   const ip =document.getElementById('sensorIpInput')?.value.trim();
-  if(!mac&&!ip){alert('Enter a MAC address or IP address');return;}
+  if(!mac&&!ip){alert('Enter a MAC address, an IP range, or both');return;}
   const status=document.getElementById('sensorDiscoverStatus');
   status.style.color='var(--cyan)';
 
   const token=localStorage.getItem('ekl_token');
   if(!token){status.textContent='Not logged in';status.style.color='var(--red)';return;}
 
-  let body, msg;
+  const body={farm_id:currentFarmId};
+  let msg='';
+
   if(mac){
-    // MAC-based (preferred)
-    const macs=mac.split(',').map(m=>m.trim()).filter(Boolean);
-    body={farm_id:currentFarmId, macs};
-    msg=`Resolving MAC ${mac} → finding IP via ARP...`;
-  } else {
-    // IP range
+    body.macs=mac.split(',').map(m=>m.trim()).filter(Boolean);
+  }
+  if(ip){
     const ips=expandIPRange(ip);
     if(ips.length===0){alert('Invalid IP format');return;}
-    body={farm_id:currentFarmId, ips};
-    msg=`Scanning ${ips.length} IP${ips.length>1?'s':''} for Sonoff sensors...`;
+    body.ips=ips;
+  }
+
+  if(body.ips && body.macs){
+    msg=`Scanning ${body.ips.length} IP${body.ips.length>1?'s':''} and matching against MAC ${mac}...`;
+  } else if(body.macs){
+    msg=`Resolving MAC ${mac} via ARP cache...`;
+  } else {
+    msg=`Scanning ${body.ips.length} IP${body.ips.length>1?'s':''} for Sonoff sensors...`;
   }
 
   status.textContent=msg;
@@ -1654,10 +1661,14 @@ function startSensorDiscover(){
   .then(r=>r.json())
   .then(d=>{
     if(d.ok){
-      status.textContent=mac
-        ? '✓ Sent to agent — it will resolve the MAC and start reading. Check back in 30s.'
-        : '✓ Scanning started — readings appear when sensors are found.';
+      status.textContent = (body.ips && body.macs)
+        ? '✓ Scanning range and verifying MAC — check back in 20-30s'
+        : body.macs
+          ? '✓ Sent to agent — resolving MAC via ARP. Check back in 10s.'
+          : '✓ Scanning started — readings appear when sensors are found.';
       status.style.color='var(--green)';
+      setTimeout(function(){ if(currentFarmId) fetchSensorFromBackend(currentFarmId); }, 15000);
+      setTimeout(function(){ if(currentFarmId) fetchSensorFromBackend(currentFarmId); }, 25000);
     } else {
       status.textContent='Error: '+d.error;
       status.style.color='var(--red)';
