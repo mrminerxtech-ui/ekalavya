@@ -941,13 +941,14 @@ window.onerror = function(msg, src, line, col, err) {
 
         <!-- Sensor discover mini-panel -->
         <div id="sensorDiscoverPanel" style="display:none;margin-top:10px;background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:12px">
+          <div style="font-size:10px;color:var(--mute);margin-bottom:10px">Use IP Range alone to scan an unfamiliar subnet, or combine it with MAC to confirm exactly which device is your sensor.</div>
           <div class="frow" style="margin-bottom:8px">
-            <label>MAC Address <span style="color:var(--green);font-size:9px">(recommended)</span></label>
-            <input id="sensorMacInput" placeholder="a4:cf:12:ab:cd:ef" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:7px 10px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:11px;outline:none">
+            <label>IP Range <span style="color:var(--cyan);font-size:9px">(scans every address)</span></label>
+            <input id="sensorIpInput" placeholder="192.168.13.1-255" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:7px 10px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:11px;outline:none">
           </div>
           <div class="frow" style="margin-bottom:8px">
-            <label>or IP Address / Range</label>
-            <input id="sensorIpInput" placeholder="192.168.1.50 or 192.168.1.1-255" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:7px 10px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:11px;outline:none">
+            <label>MAC Address <span style="color:var(--green);font-size:9px">(confirms which device — optional but recommended with a range)</span></label>
+            <input id="sensorMacInput" placeholder="a4:cf:12:ab:cd:ef" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:7px 10px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:11px;outline:none">
           </div>
           <div style="display:flex;gap:6px">
             <button class="btn btn-sm btn-g" onclick="startSensorDiscover()">&#x1F50D; Find</button>
