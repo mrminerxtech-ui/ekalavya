@@ -666,11 +666,13 @@ function connect() {
   function heartbeatPing() {
     clearTimeout(pongTimeout);
     try { ws.ping(); } catch(e) {}
-    // If no pong arrives within 10s, treat the connection as dead
+    // Generous timeout — a busy sensor scan or a large miner poll can
+    // briefly delay the event loop; we only want to catch connections
+    // that are genuinely dead, not momentarily slow to respond.
     pongTimeout = setTimeout(() => {
-      console.log('[WARN] No pong from server in 10s — forcing reconnect');
+      console.log('[WARN] No pong from server in 30s — forcing reconnect');
       try { ws.terminate(); } catch(e) {}
-    }, 10000);
+    }, 30000);
   }
 
   ws.on('pong', () => { clearTimeout(pongTimeout); });
@@ -680,8 +682,8 @@ function connect() {
     console.log(`[INFO] ✓ Connected | Farm: ${FARM_NAME}`);
     pollTimer = setInterval(pollMiners, POLL_MS);
     setInterval(() => send({ type:'heartbeat', farm_id:FARM_ID }), 20000);
-    // Ping the server every 15s; if it doesn't answer within 10s, reconnect
-    pingInterval = setInterval(heartbeatPing, 15000);
+    // Ping every 25s; only reconnect if truly unresponsive for 30s
+    pingInterval = setInterval(heartbeatPing, 25000);
     setTimeout(pollMiners, 5000);
     // Start Lanli RS485 polling if enabled
     if (LANLI_ENABLED && lanli) {
