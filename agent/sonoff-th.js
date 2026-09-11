@@ -237,14 +237,21 @@ async function discoverInRange(ips, concurrency = 20) {
 // ── Get the MAC address currently associated with an IP ────
 // (reads the ARP cache — works after any TCP connection attempt to
 // that IP, since that alone is enough to populate the ARP entry)
-async function getMacForIp(ip) {
-  const output = await runArp();
+// Look up a MAC from an ALREADY-FETCHED arp table (no shelling out here —
+// avoids spawning dozens of concurrent 'arp -a' processes, which was
+// causing lookups to silently fail under load).
+function findMacInArpOutput(output, ip) {
   for (const line of output.split('\n')) {
     if (!line.includes(ip)) continue;
     const macMatch = line.match(/([0-9a-fA-F]{2}[:\-]){5}[0-9a-fA-F]{2}/);
     if (macMatch) return macMatch[0].toUpperCase().replace(/-/g, ':');
   }
   return null;
+}
+
+async function getMacForIp(ip) {
+  const output = await runArp();
+  return findMacInArpOutput(output, ip);
 }
 
 // ── Combined search: scan an IP range, verify each live device's
@@ -254,23 +261,34 @@ async function getMacForIp(ip) {
 async function discoverByRangeAndMac(ips, targetMacs, debug) {
   const targets = (targetMacs || []).map(m => normaliseMac(m));
   const found   = [];
-  const concurrency = 20;
+  const concurrency = 12; // gentler — avoids contention with regular miner polling
 
   for (let i = 0; i < ips.length; i += concurrency) {
     const batch = ips.slice(i, i + concurrency);
-    const results = await Promise.all(batch.map(async ip => {
+
+    // Probe every IP in this batch first (just the TCP connect —
+    // this alone is what populates each device's ARP entry)
+    const aliveResults = await Promise.all(batch.map(async ip => {
       const open8081 = await portOpen(ip, 8081, 600);
       const open80   = !open8081 && await portOpen(ip, 80, 600);
-      if (!open8081 && !open80) return null; // nothing listening at all — skip
+      return (open8081 || open80) ? { ip, port: open8081 ? 8081 : 80 } : null;
+    }));
+    const alive = aliveResults.filter(Boolean);
+    if (alive.length === 0) continue;
 
-      // Something is alive here — check its MAC before doing a full read
-      const mac = await getMacForIp(ip);
+    // Small pause so the OS has definitely finished writing the new
+    // ARP entries before we read the table
+    await new Promise(r => setTimeout(r, 300));
+
+    // Read the ARP table ONCE for this whole batch — not once per IP
+    const arpOutput = await runArp();
+
+    const results = await Promise.all(alive.map(async ({ ip, port }) => {
+      const mac = findMacInArpOutput(arpOutput, ip);
       const macMatches = mac && targets.length > 0 && targets.includes(normaliseMac(mac));
 
-      if (debug) console.log(`[TH16-DEBUG] ${ip} → alive (port ${open8081?8081:80}), MAC: ${mac||'unknown'}${macMatches?' ← MATCH':''}`);
+      if (debug) console.log(`[TH16-DEBUG] ${ip} → alive (port ${port}), MAC: ${mac||'unknown'}${macMatches?' ← MATCH':''}`);
 
-      // Only attempt a full sensor read if the MAC matches (when a
-      // target list is given) or if no target MACs were provided at all
       if (targets.length > 0 && !macMatches) return { ip, mac, matched: false };
 
       const r = await readTH16(ip, '', '', debug);
