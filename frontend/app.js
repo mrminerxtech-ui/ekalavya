@@ -478,6 +478,13 @@ function initSensors() { loadSensors(); }
 function getSensorMacs(farmId){
   try { return JSON.parse(localStorage.getItem('sensor_macs_' + farmId) || '[]'); } catch { return []; }
 }
+function getSensorIpRange(farmId){
+  return localStorage.getItem('sensor_iprange_' + farmId) || '';
+}
+function setSensorIpRange(farmId, range){
+  if (range) localStorage.setItem('sensor_iprange_' + farmId, range);
+  else localStorage.removeItem('sensor_iprange_' + farmId);
+}
 function setSensorMacs(farmId, macs){
   localStorage.setItem('sensor_macs_' + farmId, JSON.stringify(macs));
   const token = localStorage.getItem('ekl_token');
@@ -514,6 +521,10 @@ function renderSensorEntryGrid() {
       +   '<div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px">% Humidity</div></div>'
       + '</div>'
 
+      // IP Range input
+      + '<div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">IP Range <span style="text-transform:none;color:var(--cyan)">(optional — scans this range)</span></div>'
+      + '<input id="iprange_' + f.id + '" placeholder="192.168.13.1-255" value="' + (getSensorIpRange(f.id)||'') + '" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:6px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none;margin-bottom:8px">'
+
       // MAC address input
       + '<div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Sensor MAC Address' + (macs.length > 1 ? 'es' : '') + '</div>'
       + '<textarea id="mac_' + f.id + '" rows="2" placeholder="a4:cf:12:ab:cd:ef" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:6px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none;resize:vertical;margin-bottom:8px">' + macs.join('\n') + '</textarea>'
@@ -537,30 +548,46 @@ function saveSensorMacs(farmId, farmName){
   const raw = document.getElementById('mac_' + farmId)?.value || '';
   const macs = raw.split(/[,\n]+/).map(function(s){ return s.trim(); }).filter(Boolean);
   setSensorMacs(farmId, macs);
-  toast('✓ Sensor MAC saved for ' + farmName, 'var(--green)');
+  const range = document.getElementById('iprange_' + farmId)?.value.trim() || '';
+  setSensorIpRange(farmId, range);
+  toast('✓ Sensor config saved for ' + farmName, 'var(--green)');
 }
 
 function scanSensorNow(farmId, farmName){
-  const raw = document.getElementById('mac_' + farmId)?.value || '';
-  const macs = raw.split(/[,\n]+/).map(function(s){ return s.trim(); }).filter(Boolean);
-  if (macs.length === 0) { toast('Enter at least one MAC address first', 'var(--warn)'); return; }
+  const macRaw = document.getElementById('mac_' + farmId)?.value || '';
+  const macs   = macRaw.split(/[,\n]+/).map(function(s){ return s.trim(); }).filter(Boolean);
+  const range  = document.getElementById('iprange_' + farmId)?.value.trim() || '';
+
+  if (macs.length === 0 && !range) { toast('Enter a MAC address, an IP range, or both', 'var(--warn)'); return; }
   saveSensorMacs(farmId, farmName);
 
   const token = localStorage.getItem('ekl_token');
   if (!token) { toast('Not logged in', 'var(--red)'); return; }
-  toast('Scanning ' + farmName + ' for sensor(s)...', 'var(--cyan)');
+
+  const body = { farm_id: farmId };
+  if (macs.length > 0) body.macs = macs;
+  if (range) {
+    const ips = expandIPRange(range);
+    if (ips.length === 0) { toast('Invalid IP range format', 'var(--red)'); return; }
+    body.ips = ips;
+  }
+
+  const msg = (body.ips && body.macs) ? 'Scanning ' + farmName + ' and matching MAC...'
+            : body.macs ? 'Resolving MAC for ' + farmName + '...'
+            : 'Scanning ' + farmName + ' for sensors...';
+  toast(msg, 'var(--cyan)');
 
   fetch(API_BASE + '/api/sensors/discover', {
     method: 'POST',
     headers: {'Content-Type':'application/json','Authorization':'Bearer '+token},
-    body: JSON.stringify({ farm_id: farmId, macs: macs })
+    body: JSON.stringify(body)
   })
   .then(function(r){ return r.json(); })
   .then(function(d){
     if (d.ok) {
-      toast('✓ Sent to agent — reading in ~5s', 'var(--green)');
-      setTimeout(function(){ fetchSensorFromBackend(farmId); }, 5000);
-      setTimeout(function(){ fetchSensorFromBackend(farmId); renderSensorEntryGrid(); }, 8000);
+      toast('✓ Sent to agent — reading in ~15-30s', 'var(--green)');
+      setTimeout(function(){ fetchSensorFromBackend(farmId); }, 15000);
+      setTimeout(function(){ fetchSensorFromBackend(farmId); renderSensorEntryGrid(); }, 25000);
     } else {
       toast('✗ ' + (d.error || 'Failed'), 'var(--red)');
     }
