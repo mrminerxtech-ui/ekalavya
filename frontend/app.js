@@ -122,22 +122,42 @@ function renderWorkers() {
   const eDs = document.getElementById('wDisBadge');     if (eDs) { eDs.textContent = dis; eDs.style.display = dis ? '' : 'none'; }
 }
 
+function fmtUptime(seconds){
+  if (!seconds && seconds !== 0) return '—';
+  const h = Math.floor(seconds/3600), m = Math.floor((seconds%3600)/60);
+  return h > 0 ? (h+'h '+m+'m') : (m+'m');
+}
+function fmtAgo(iso){
+  if (!iso) return '—';
+  const s = Math.floor((Date.now() - new Date(iso).getTime())/1000);
+  if (s < 60) return s+'s ago';
+  if (s < 3600) return Math.floor(s/60)+'m ago';
+  return Math.floor(s/3600)+'h ago';
+}
+
 function renderAgents() {
   const el = document.getElementById('agentGrid');
   if (!el) return;
   el.innerHTML = agents.length === 0
     ? '<div style="text-align:center;padding:40px;color:var(--mute)"><div style="font-size:32px;margin-bottom:12px">📡</div><div>No agents connected.<br>Run the agent on your farm PC to connect.</div></div>'
-    : agents.map(a => '<div class="card"><div class="card-head"><span class="sdot ' + (a.online ? 'on' : 'off') + '"></span>'
-      + '<div><div style="font-family:Exo 2,sans-serif;font-weight:700">' + a.name + '</div><div style="font-size:10px;color:var(--mute)">' + (a.subnet || '') + ' &middot; v' + (a.version || '1.0') + '</div></div>'
+    : agents.map(function(a){
+      const crashWarn = a.crash_count_5m > 0;
+      return '<div class="card"><div class="card-head"><span class="sdot ' + (a.online ? 'on' : 'off') + '"></span>'
+      + '<div><div style="font-family:Exo 2,sans-serif;font-weight:700">' + a.name + '</div><div style="font-size:10px;color:var(--mute)">' + (a.subnet || '') + (a.agent_version?' &middot; v'+a.agent_version:'') + '</div></div>'
       + '<span class="badge ' + (a.online ? 'bgn' : 'brn') + '" style="margin-left:auto">' + (a.online ? 'ONLINE' : 'OFFLINE') + '</span></div>'
       + '<div class="card-body"><div class="card-row"><span class="ck">Farm ID</span><span class="cv" style="font-family:Share Tech Mono,monospace">' + a.id + '</span></div>'
       + '<div class="card-row"><span class="ck">Host</span><span class="cv">' + (a.hostname || '—') + '</span></div>'
-      + '<div class="card-row"><span class="ck">Miners</span><span class="cv g">' + workers.filter(w => w.farm_id === a.id).length + '</span></div></div>'
+      + '<div class="card-row"><span class="ck">Miners</span><span class="cv g">' + workers.filter(function(w){return w.farm_id === a.id;}).length + '</span></div>'
+      + (a.updater_uptime !== undefined ? '<div class="card-row"><span class="ck">Supervisor Uptime</span><span class="cv">' + fmtUptime(a.updater_uptime) + '</span></div>' : '')
+      + (a.last_checkin_at ? '<div class="card-row"><span class="ck">Last Check-in</span><span class="cv">' + fmtAgo(a.last_checkin_at) + '</span></div>' : '')
+      + (a.last_update_at ? '<div class="card-row"><span class="ck">Last Updated</span><span class="cv">' + fmtAgo(a.last_update_at) + '</span></div>' : '')
+      + (crashWarn ? '<div class="card-row"><span class="ck" style="color:var(--warn)">⚠ Crashes (5m)</span><span class="cv" style="color:var(--warn)">' + a.crash_count_5m + '</span></div>' : '')
+      + '</div>'
       + '<div class="card-foot"><button class="btn btn-sm scan-btn" data-aid="' + a.id + '">&#x25B6; Scan</button>'
       + '<button class="btn btn-sm cfg-btn" data-aid="' + a.id + '" data-name="' + a.name.replace(/"/g,'') + '" data-subnet="' + (a.subnet||'').replace(/"/g,'') + '">&#x2699; IP Ranges</button>'
       + (a.online ? '' : '<button class="btn btn-sm btn-r rm-btn" data-aid="' + a.id + '">&#x2715; Remove</button>')
-      + '</div></div>'
-    ).join('');
+      + '</div></div>';
+    }).join('');
   el.querySelectorAll('.scan-btn').forEach(function(b){ b.addEventListener('click',function(){ triggerScan(this.dataset.aid); }); });
   el.querySelectorAll('.cfg-btn').forEach(function(b){ b.addEventListener('click',function(){ openAgentConfig(this.dataset.aid,this.dataset.name,this.dataset.subnet); }); });
   el.querySelectorAll('.rm-btn').forEach(function(b){ b.addEventListener('click',function(){ removeAgent(this.dataset.aid); }); });
