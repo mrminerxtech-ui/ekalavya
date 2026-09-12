@@ -458,6 +458,22 @@ async function getMinerInfo(ip) {
         }
       } catch(e) {}
     }
+
+    // ElphaPEX — no boot log with model/serial exists on this firmware;
+    // the only identifying text available is the syslog hostname field.
+    // Format:  "Sep 12 19:36:48 DG1+ user.info health: ..."
+    if (!isValidModel(model)) {
+      try {
+        const logText = await fetchMinerLog(ip);
+        if (typeof logText === 'string') {
+          const epMatch = logText.match(/^\w+\s+\d+\s+[\d:]+\s+(DG\d\+?|ElphaPEX\S*)\s+\S+\.\S+\s/im);
+          if (epMatch) {
+            const epCandidate = 'ElphaPEX ' + epMatch[1];
+            if (isValidModel(epCandidate)) { model = epCandidate; console.log(`[MODEL] ${ip} → found via syslog hostname: ${epCandidate}`); }
+          }
+        }
+      } catch(e) {}
+    }
   }
 
   if (!isValidModel(model)) model = 'Unknown';
@@ -467,8 +483,25 @@ async function getMinerInfo(ip) {
 
   // Hashrate from summary
   const s      = summary?.SUMMARY?.[0] || {};
-  const rawMhs = parseFloat(s['MHS 5s'] || s['MHS av'] || (s['GHS 5s']||0)*1000 || (s['THS 5s']||0)*1e6 || 0);
-  const hr     = convertHashrate(rawMhs, algo);
+  let   rawMhs = parseFloat(s['MHS 5s'] || s['MHS av'] || (s['GHS 5s']||0)*1000 || (s['THS 5s']||0)*1e6 || 0);
+
+  // ElphaPEX fallback — this firmware's own log prints a live hashrate
+  // reading when the standard CGMiner summary doesn't return one.
+  // Format: "hashrate by nonce is: 3329.432012 Mhash/s"
+  if (!rawMhs || rawMhs <= 0) {
+    try {
+      const logText = await fetchMinerLog(ip);
+      if (typeof logText === 'string') {
+        const hrMatch = logText.match(/hashrate by nonce is:\s*([\d.]+)\s*Mhash\/s/i);
+        if (hrMatch) {
+          rawMhs = parseFloat(hrMatch[1]);
+          console.log(`[HASHRATE] ${ip} → found via log: ${rawMhs} Mhash/s`);
+        }
+      }
+    } catch(e) {}
+  }
+
+  const hr = convertHashrate(rawMhs, algo);
 
   // Temperature — boards first, then summary
   const boardTemps = (devs?.DEVS || [])
