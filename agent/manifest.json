@@ -1,0 +1,29 @@
+{
+  "version": "1.1.0",
+  "released_at": "2026-09-12T00:00:00Z",
+  "min_node_version": "16.0.0",
+  "changelog": [
+    "Manifest-driven auto-update with SHA-256 checksum verification",
+    "Check-in reporting: version, uptime, crash history sent to backend",
+    "Process supervision with crash-loop detection and exponential backoff",
+    "Combined IP-range + MAC sensor discovery with batch progress logging",
+    "Loosened WebSocket heartbeat timeouts to avoid false-positive disconnects during scans"
+  ],
+  "files": [
+    {
+      "name": "agent.js",
+      "sha256": "8a7ded5ad38eff6298fb8066a3f490c8d3cf0aef094e56a4b00e7cfbb4660457",
+      "size": 34422
+    },
+    {
+      "name": "sonoff-th.js",
+      "sha256": "f68b055c80a16aaf2300d8ad58bc888eb53ed31c94f2609fa514cd264b76e522",
+      "size": 18391
+    },
+    {
+      "name": "lanli-rs485.js",
+      "sha256": "069b79a9252f403551c69e9cfd605616d0f44d7f6f4cf3236897d18e9c6d43a7",
+      "size": 5067
+    }
+  ]
+}
