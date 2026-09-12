@@ -324,16 +324,26 @@ async function getHardwareIds(ip) {
   }
 
   // Last resort — the miner's boot/system log often prints its serial
-  // even when no CGI endpoint exposes it directly. L-series (L9/L11)
-  // firmware logs a line like: "droa miner sn: DGAHFFUBEJAAE02R5"
+  // even when no CGI endpoint exposes it directly. Reuses the same
+  // fetchMinerLog() chain already proven to work for the View/Download
+  // Logs feature, instead of guessing a single endpoint on our own.
+  // Formats seen in the wild:
+  //   L-series:  "droa miner sn: DGAHFFUBEJAAE02R5"
+  //   S21 Pro:   "type: Antminer S21 Pro sn :DGAHFKUBDJFAE08XA mac:"
+  //              "Miner sn: DGAHFKUBDJFAE08XA"
   if (!serial) {
-    const logText = await httpGet(ip, '/cgi-bin/log.cgi', 'root:root');
-    if (typeof logText === 'string') {
-      const snMatch = logText.match(/droa miner sn:\s*([A-Za-z0-9]+)/i)
-                    || logText.match(/miner sn:\s*([A-Za-z0-9]+)/i)
-                    || logText.match(/\bsn:\s*([A-Za-z0-9]{8,})/i);
-      if (snMatch) serial = snMatch[1];
-    }
+    try {
+      const logText = await fetchMinerLog(ip);
+      if (typeof logText === 'string') {
+        const snMatch = logText.match(/droa miner sn:\s*([A-Za-z0-9]+)/i)
+                      || logText.match(/miner sn\s*:\s*([A-Za-z0-9]+)/i)
+                      || logText.match(/\bsn\s*:\s*([A-Za-z0-9]{8,})/i);
+        if (snMatch) {
+          serial = snMatch[1];
+          console.log(`[SN] ${ip} → found via boot log: ${serial}`);
+        }
+      }
+    } catch(e) { /* fetchMinerLog itself already swallows its own errors */ }
   }
 
   // Whatsminer — different endpoint / field names
