@@ -346,13 +346,42 @@ async function getHardwareIds(ip) {
     } catch(e) { /* fetchMinerLog itself already swallows its own errors */ }
   }
 
-  // Whatsminer — different endpoint / field names
+  // Whatsminer — the LuCI status page is HTML, not JSON, so we can't
+  // read wmInfo.mac like a normal object. MAC/serial must be pulled out
+  // of the page text (or the boot log) with a pattern match instead.
   if (!mac || !serial) {
     const wmInfo = await httpGet(ip, '/cgi-bin/luci/admin/status/overview', 'root:root');
-    if (wmInfo) {
+    if (typeof wmInfo === 'string') {
+      if (!mac) {
+        const macMatch = wmInfo.match(/([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}/);
+        if (macMatch) mac = macMatch[0];
+      }
+      if (!serial) {
+        const snMatch = wmInfo.match(/\bS\/?N\s*[:=]\s*([A-Za-z0-9]{6,})/i)
+                       || wmInfo.match(/serial\s*[:=]\s*([A-Za-z0-9]{6,})/i);
+        if (snMatch) serial = snMatch[1];
+      }
+    } else if (wmInfo && typeof wmInfo === 'object') {
+      // Some firmware variants DO return JSON here — keep the object path too
       mac    = mac    || wmInfo.mac      || wmInfo.macaddr    || null;
       serial = serial || wmInfo.sn       || wmInfo.serial_no  || null;
     }
+  }
+
+  // WhatsMiner boot log — confirmed format:
+  //   "MAC: CE:0B:16:00:24:C0, Firmware version: 20260416.14.Rel2,"
+  // No serial number is printed in this log on this firmware version.
+  if (!mac) {
+    try {
+      const logText = await fetchMinerLog(ip);
+      if (typeof logText === 'string') {
+        const macMatch = logText.match(/MAC\s*:\s*([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})/i);
+        if (macMatch) {
+          mac = macMatch[1];
+          console.log(`[MAC] ${ip} → found via boot log: ${mac}`);
+        }
+      }
+    } catch(e) {}
   }
 
   // Avalon — separate info endpoint
@@ -414,6 +443,20 @@ async function getMinerInfo(ip) {
       const avaInfo = await httpGet(ip, '/api/v1/info', 'root:root');
       const avaCandidate = avaInfo?.system_hw_version ? 'AvalonMiner ' + avaInfo.system_hw_version : null;
       if (isValidModel(avaCandidate)) model = avaCandidate;
+    }
+
+    // WhatsMiner boot log fallback — confirmed format: "miner_type=M50VH50"
+    if (!isValidModel(model)) {
+      try {
+        const logText = await fetchMinerLog(ip);
+        if (typeof logText === 'string') {
+          const wmMatch = logText.match(/miner_type\s*=\s*([A-Za-z0-9+]+)/i);
+          if (wmMatch) {
+            const wmCandidate = 'WhatsMiner ' + wmMatch[1];
+            if (isValidModel(wmCandidate)) { model = wmCandidate; console.log(`[MODEL] ${ip} → found via boot log: ${wmCandidate}`); }
+          }
+        }
+      } catch(e) {}
     }
   }
 
