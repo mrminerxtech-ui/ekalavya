@@ -72,6 +72,94 @@ async function createTables() {
 }
 
 // ── Workers CRUD ──────────────────────────────────────────
+// ── Efficient upsert for live poll updates ────────────────
+// Unlike saveWorkers() (full bulk replace, used for manual saves/imports),
+// this updates only the given workers by IP — used for the automatic
+// 30-second poll cycle so we're not rewriting the entire fleet table
+// every time a farm agent reports in.
+async function upsertWorkersByIp(farmId, minersFoundNow) {
+  if (useFallback || !pool) return upsertWorkersFallback(farmId, minersFoundNow);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const nowIps = new Set(minersFoundNow.map(m => m.ip));
+
+    // Update or insert every miner the poll found — merge new readings
+    // into the existing saved record so user-set fields (customer
+    // assignment, disabled flag, farm/cid) are preserved, not overwritten
+    for (const m of minersFoundNow) {
+      const existing = await client.query(
+        `SELECT data FROM workers WHERE data->>'ip' = $1 AND farm_id = $2`,
+        [m.ip, farmId]
+      );
+      let merged;
+      if (existing.rows.length > 0) {
+        const old = existing.rows[0].data;
+        merged = { ...old, ...m, id: old.id, cid: old.cid, disabled: old.disabled,
+                   disabled_reason: old.disabled_reason, disabled_at: old.disabled_at,
+                   farm: old.farm, farm_id: old.farm_id, status: m.status || 'online' };
+        await client.query(
+          `UPDATE workers SET data=$1, updated_at=NOW() WHERE data->>'ip'=$2 AND farm_id=$3`,
+          [JSON.stringify(merged), m.ip, farmId]
+        );
+      } else {
+        merged = { ...m, id: 'w-' + m.ip.replace(/\./g, '-'), farm_id: farmId, cid: '',
+                   disabled: false, status: 'online', source: 'auto-poll',
+                   added_at: new Date().toISOString() };
+        await client.query(
+          `INSERT INTO workers(id, data, farm_id) VALUES($1,$2,$3)`,
+          [merged.id, JSON.stringify(merged), farmId]
+        );
+      }
+    }
+
+    // Mark workers under this farm that WEREN'T in this poll as offline —
+    // they've either been unplugged or are unreachable right now
+    const allForFarm = await client.query(`SELECT id, data FROM workers WHERE farm_id = $1`, [farmId]);
+    for (const row of allForFarm.rows) {
+      if (!nowIps.has(row.data.ip) && row.data.status !== 'offline' && !row.data.disabled) {
+        const updated = { ...row.data, status: 'offline' };
+        await client.query(`UPDATE workers SET data=$1, updated_at=NOW() WHERE id=$2`, [JSON.stringify(updated), row.id]);
+      }
+    }
+
+    await client.query('COMMIT');
+    return true;
+  } catch(e) {
+    await client.query('ROLLBACK');
+    console.error('[DB] upsertWorkersByIp error:', e.message);
+    return false;
+  } finally { client.release(); }
+}
+
+function upsertWorkersFallback(farmId, minersFoundNow) {
+  // File-based fallback — simpler in-memory merge, same semantics
+  const existing = loadFallback('workers');
+  const nowIps = new Set(minersFoundNow.map(m => m.ip));
+  const byIp = new Map(existing.map(w => [w.ip, w]));
+
+  minersFoundNow.forEach(m => {
+    const old = byIp.get(m.ip);
+    if (old && old.farm_id === farmId) {
+      byIp.set(m.ip, { ...old, ...m, id: old.id, cid: old.cid, disabled: old.disabled,
+        disabled_reason: old.disabled_reason, disabled_at: old.disabled_at,
+        farm: old.farm, farm_id: old.farm_id, status: m.status || 'online' });
+    } else if (!old) {
+      byIp.set(m.ip, { ...m, id: 'w-' + m.ip.replace(/\./g, '-'), farm_id: farmId, cid: '',
+        disabled: false, status: 'online', source: 'auto-poll', added_at: new Date().toISOString() });
+    }
+  });
+
+  // Mark missing-from-this-poll workers (for this farm) as offline
+  byIp.forEach((w, ip) => {
+    if (w.farm_id === farmId && !nowIps.has(ip) && w.status !== 'offline' && !w.disabled) {
+      byIp.set(ip, { ...w, status: 'offline' });
+    }
+  });
+
+  return saveFallback('workers', Array.from(byIp.values()));
+}
+
 async function saveWorkers(workersList) {
   if (useFallback || !pool) return saveFallback('workers', workersList);
   const client = await pool.connect();
@@ -192,4 +280,4 @@ function loadFallback(key) {
 
 function isUsingDB() { return !useFallback && pool !== null && pool !== undefined; }
 
-module.exports = { connect, saveWorkers, loadWorkers, saveCustomers, loadCustomers, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB };
+module.exports = { connect, saveWorkers, loadWorkers, upsertWorkersByIp, saveCustomers, loadCustomers, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB };
