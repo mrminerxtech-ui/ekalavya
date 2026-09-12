@@ -290,6 +290,15 @@ function extractModel(stats, summary) {
 // ── Fetch MAC address + Serial number ─────────────────────
 async function getHardwareIds(ip) {
   let mac = null, serial = null;
+  let cachedLog = undefined; // fetched at most once per machine, reused everywhere below
+
+  async function getLog() {
+    if (cachedLog === undefined) {
+      try { cachedLog = await fetchMinerLog(ip); }
+      catch(e) { cachedLog = null; }
+    }
+    return cachedLog;
+  }
 
   // Antminer / most Bitmain-based firmware — get_system_info.cgi has the MAC
   const sysInfo = await httpGet(ip, '/cgi-bin/get_system_info.cgi', 'root:root');
@@ -299,10 +308,9 @@ async function getHardwareIds(ip) {
            || sysInfo.serial_number || sysInfo.miner_sn || null;
   }
 
-  // Serial number is often on get_miner_conf.cgi or the stats page instead
+  // Serial number is often on get_miner_conf.cgi instead
   if (!serial) {
-    const conf = await httpGet(ip, '/cgi-bin/get_miner_conf.cgi', 'root:root', true);
-    console.log('[SN-DEBUG] ' + ip + ' get_miner_conf.cgi →', JSON.stringify(conf).slice(0, 400));
+    const conf = await httpGet(ip, '/cgi-bin/get_miner_conf.cgi', 'root:root');
     if (conf && typeof conf === 'object') {
       serial = conf.minersn || conf.serialno || conf.sn || null;
     }
@@ -310,45 +318,15 @@ async function getHardwareIds(ip) {
 
   // Try get_network_info.cgi — some Bitmain firmware exposes serial here
   if (!serial) {
-    const netInfo = await httpGet(ip, '/cgi-bin/get_network_info.cgi', 'root:root', true);
-    console.log('[SN-DEBUG] ' + ip + ' get_network_info.cgi →', JSON.stringify(netInfo).slice(0, 400));
+    const netInfo = await httpGet(ip, '/cgi-bin/get_network_info.cgi', 'root:root');
     if (netInfo && typeof netInfo === 'object') {
       serial = netInfo.minersn || netInfo.serialno || netInfo.sn || null;
     }
   }
 
-  // Try get_blink_status.cgi — sometimes bundles hardware info
-  if (!serial) {
-    const blink = await httpGet(ip, '/cgi-bin/get_blink_status.cgi', 'root:root', true);
-    console.log('[SN-DEBUG] ' + ip + ' get_blink_status.cgi →', JSON.stringify(blink).slice(0, 400));
-  }
-
-  // Last resort — the miner's boot/system log often prints its serial
-  // even when no CGI endpoint exposes it directly. Reuses the same
-  // fetchMinerLog() chain already proven to work for the View/Download
-  // Logs feature, instead of guessing a single endpoint on our own.
-  // Formats seen in the wild:
-  //   L-series:  "droa miner sn: DGAHFFUBEJAAE02R5"
-  //   S21 Pro:   "type: Antminer S21 Pro sn :DGAHFKUBDJFAE08XA mac:"
-  //              "Miner sn: DGAHFKUBDJFAE08XA"
-  if (!serial) {
-    try {
-      const logText = await fetchMinerLog(ip);
-      if (typeof logText === 'string') {
-        const snMatch = logText.match(/droa miner sn:\s*([A-Za-z0-9]+)/i)
-                      || logText.match(/miner sn\s*:\s*([A-Za-z0-9]+)/i)
-                      || logText.match(/\bsn\s*:\s*([A-Za-z0-9]{8,})/i);
-        if (snMatch) {
-          serial = snMatch[1];
-          console.log(`[SN] ${ip} → found via boot log: ${serial}`);
-        }
-      }
-    } catch(e) { /* fetchMinerLog itself already swallows its own errors */ }
-  }
-
   // Whatsminer — the LuCI status page is HTML, not JSON, so we can't
   // read wmInfo.mac like a normal object. MAC/serial must be pulled out
-  // of the page text (or the boot log) with a pattern match instead.
+  // of the page text with a pattern match instead.
   if (!mac || !serial) {
     const wmInfo = await httpGet(ip, '/cgi-bin/luci/admin/status/overview', 'root:root');
     if (typeof wmInfo === 'string') {
@@ -362,26 +340,9 @@ async function getHardwareIds(ip) {
         if (snMatch) serial = snMatch[1];
       }
     } else if (wmInfo && typeof wmInfo === 'object') {
-      // Some firmware variants DO return JSON here — keep the object path too
       mac    = mac    || wmInfo.mac      || wmInfo.macaddr    || null;
       serial = serial || wmInfo.sn       || wmInfo.serial_no  || null;
     }
-  }
-
-  // WhatsMiner boot log — confirmed format:
-  //   "MAC: CE:0B:16:00:24:C0, Firmware version: 20260416.14.Rel2,"
-  // No serial number is printed in this log on this firmware version.
-  if (!mac) {
-    try {
-      const logText = await fetchMinerLog(ip);
-      if (typeof logText === 'string') {
-        const macMatch = logText.match(/MAC\s*:\s*([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})/i);
-        if (macMatch) {
-          mac = macMatch[1];
-          console.log(`[MAC] ${ip} → found via boot log: ${mac}`);
-        }
-      }
-    } catch(e) {}
   }
 
   // Avalon — separate info endpoint
@@ -402,9 +363,31 @@ async function getHardwareIds(ip) {
     }
   }
 
+  // Last resort — fetch the boot/system log ONCE and pull whatever we
+  // can from it. Formats confirmed so far:
+  //   L-series:   "droa miner sn: DGAHFFUBEJAAE02R5"
+  //   S21 Pro:    "type: Antminer S21 Pro sn :DGAHFKUBDJFAE08XA mac:"
+  //               "Miner sn: DGAHFKUBDJFAE08XA"
+  //   WhatsMiner: "MAC: CE:0B:16:00:24:C0, Firmware version: ..."
+  if (!mac || !serial) {
+    const logText = await getLog();
+    if (typeof logText === 'string') {
+      if (!serial) {
+        const snMatch = logText.match(/droa miner sn:\s*([A-Za-z0-9]+)/i)
+                      || logText.match(/miner sn\s*:\s*([A-Za-z0-9]+)/i)
+                      || logText.match(/\bsn\s*:\s*([A-Za-z0-9]{8,})/i);
+        if (snMatch) { serial = snMatch[1]; console.log(`[SN] ${ip} → found via boot log: ${serial}`); }
+      }
+      if (!mac) {
+        const macMatch = logText.match(/MAC\s*:\s*([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})/i);
+        if (macMatch) { mac = macMatch[1]; console.log(`[MAC] ${ip} → found via boot log: ${mac}`); }
+      }
+    }
+  }
+
   const cleanMac = mac ? mac.toUpperCase().replace(/[^0-9A-F]/g, '').replace(/(.{2})(?=.)/g, '$1:') : null;
   console.log('[HWID] ' + ip + ' → MAC: ' + (cleanMac || 'not found') + ' | Serial: ' + (serial || 'not found'));
-  return { mac: cleanMac, serial: serial || null };
+  return { mac: cleanMac, serial: serial || null, logText: cachedLog };
 }
 
 // ── Full miner info ────────────────────────────────────────
@@ -445,34 +428,25 @@ async function getMinerInfo(ip) {
       if (isValidModel(avaCandidate)) model = avaCandidate;
     }
 
-    // WhatsMiner boot log fallback — confirmed format: "miner_type=M50VH50"
-    if (!isValidModel(model)) {
-      try {
-        const logText = await fetchMinerLog(ip);
-        if (typeof logText === 'string') {
-          const wmMatch = logText.match(/miner_type\s*=\s*([A-Za-z0-9+]+)/i);
-          if (wmMatch) {
-            const wmCandidate = 'WhatsMiner ' + wmMatch[1];
-            if (isValidModel(wmCandidate)) { model = wmCandidate; console.log(`[MODEL] ${ip} → found via boot log: ${wmCandidate}`); }
-          }
+    // Model from boot log — reuses the SAME log fetch that getHardwareIds()
+    // already did (via hwIds.logText), instead of fetching it all over
+    // again here. Handles WhatsMiner + ElphaPEX formats:
+    //   WhatsMiner: "miner_type=M50VH50"
+    //   ElphaPEX:   "Sep 12 19:36:48 DG1+ user.info health: ..."
+    if (!isValidModel(model) && typeof hwIds?.logText === 'string') {
+      const logText = hwIds.logText;
+      const wmMatch = logText.match(/miner_type\s*=\s*([A-Za-z0-9+]+)/i);
+      if (wmMatch) {
+        const wmCandidate = 'WhatsMiner ' + wmMatch[1];
+        if (isValidModel(wmCandidate)) model = wmCandidate;
+      }
+      if (!isValidModel(model)) {
+        const epMatch = logText.match(/^\w+\s+\d+\s+[\d:]+\s+(DG\d\+?|ElphaPEX\S*)\s+\S+\.\S+\s/im);
+        if (epMatch) {
+          const epCandidate = 'ElphaPEX ' + epMatch[1];
+          if (isValidModel(epCandidate)) model = epCandidate;
         }
-      } catch(e) {}
-    }
-
-    // ElphaPEX — no boot log with model/serial exists on this firmware;
-    // the only identifying text available is the syslog hostname field.
-    // Format:  "Sep 12 19:36:48 DG1+ user.info health: ..."
-    if (!isValidModel(model)) {
-      try {
-        const logText = await fetchMinerLog(ip);
-        if (typeof logText === 'string') {
-          const epMatch = logText.match(/^\w+\s+\d+\s+[\d:]+\s+(DG\d\+?|ElphaPEX\S*)\s+\S+\.\S+\s/im);
-          if (epMatch) {
-            const epCandidate = 'ElphaPEX ' + epMatch[1];
-            if (isValidModel(epCandidate)) { model = epCandidate; console.log(`[MODEL] ${ip} → found via syslog hostname: ${epCandidate}`); }
-          }
-        }
-      } catch(e) {}
+      }
     }
   }
 
@@ -485,20 +459,11 @@ async function getMinerInfo(ip) {
   const s      = summary?.SUMMARY?.[0] || {};
   let   rawMhs = parseFloat(s['MHS 5s'] || s['MHS av'] || (s['GHS 5s']||0)*1000 || (s['THS 5s']||0)*1e6 || 0);
 
-  // ElphaPEX fallback — this firmware's own log prints a live hashrate
-  // reading when the standard CGMiner summary doesn't return one.
-  // Format: "hashrate by nonce is: 3329.432012 Mhash/s"
-  if (!rawMhs || rawMhs <= 0) {
-    try {
-      const logText = await fetchMinerLog(ip);
-      if (typeof logText === 'string') {
-        const hrMatch = logText.match(/hashrate by nonce is:\s*([\d.]+)\s*Mhash\/s/i);
-        if (hrMatch) {
-          rawMhs = parseFloat(hrMatch[1]);
-          console.log(`[HASHRATE] ${ip} → found via log: ${rawMhs} Mhash/s`);
-        }
-      }
-    } catch(e) {}
+  // ElphaPEX fallback — reuses the SAME cached log from hwIds.logText
+  // rather than fetching it again. Format: "hashrate by nonce is: 3329.432012 Mhash/s"
+  if ((!rawMhs || rawMhs <= 0) && typeof hwIds?.logText === 'string') {
+    const hrMatch = hwIds.logText.match(/hashrate by nonce is:\s*([\d.]+)\s*Mhash\/s/i);
+    if (hrMatch) rawMhs = parseFloat(hrMatch[1]);
   }
 
   const hr = convertHashrate(rawMhs, algo);
