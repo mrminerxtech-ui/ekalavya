@@ -217,6 +217,9 @@ tr:last-child td{border-bottom:none;}
 .bi.active{color:var(--cyan);}.bi-icon{font-size:20px;}.bi-lbl{font-size:9px;font-family:"Exo 2",sans-serif;font-weight:600;}
 .bi-badge{position:absolute;top:4px;right:calc(50% - 18px);width:15px;height:15px;background:var(--red);border-radius:50%;font-size:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;}
 @media(max-width:768px){#sidebar{display:none;}#bottomNav{display:block;}.scan-grid{grid-template-columns:1fr;}.two-col{grid-template-columns:1fr;}.action-grid{grid-template-columns:repeat(2,1fr);}.three-col{grid-template-columns:1fr 1fr;}}
+.sortable-th{cursor:pointer;user-select:none;white-space:nowrap;transition:color .15s;}
+.sortable-th:hover{color:var(--cyan);}
+.sort-arrow{font-size:9px;color:var(--cyan);display:inline-block;width:8px;}
 </style>
 </head>
 <body>
@@ -357,7 +360,18 @@ tr:last-child td{border-bottom:none;}
         </div>
         <div class="tw"><table><thead><tr>
           <th><input type="checkbox" id="selAll" onclick="toggleSelAll()" style="accent-color:var(--cyan)"></th>
-          <th>Worker</th><th>Sl. No.</th><th style="max-width:90px;width:90px">Brand/Model</th><th>IP</th><th>Farm</th><th>Customer</th><th>Hashrate</th><th>Temp</th><th>Fan</th><th>Pool</th><th>Status</th><th>Control</th>
+          <th class="sortable-th" data-sort="name">Worker <span class="sort-arrow" id="arrow-name"></span></th>
+          <th class="sortable-th" data-sort="serial">Sl. No. <span class="sort-arrow" id="arrow-serial"></span></th>
+          <th class="sortable-th" data-sort="brand" style="max-width:90px;width:90px">Brand/Model <span class="sort-arrow" id="arrow-brand"></span></th>
+          <th class="sortable-th" data-sort="ip">IP <span class="sort-arrow" id="arrow-ip"></span></th>
+          <th class="sortable-th" data-sort="farm">Farm <span class="sort-arrow" id="arrow-farm"></span></th>
+          <th class="sortable-th" data-sort="cid">Customer <span class="sort-arrow" id="arrow-cid"></span></th>
+          <th class="sortable-th" data-sort="hashrate">Hashrate <span class="sort-arrow" id="arrow-hashrate"></span></th>
+          <th class="sortable-th" data-sort="temp">Temp <span class="sort-arrow" id="arrow-temp"></span></th>
+          <th class="sortable-th" data-sort="fan">Fan <span class="sort-arrow" id="arrow-fan"></span></th>
+          <th class="sortable-th" data-sort="pool">Pool <span class="sort-arrow" id="arrow-pool"></span></th>
+          <th class="sortable-th" data-sort="status">Status <span class="sort-arrow" id="arrow-status"></span></th>
+          <th>Control</th>
         </tr></thead><tbody id="workersTbody"></tbody></table></div>
       </div>
     </div>
