@@ -70,6 +70,16 @@ function handleAgentMessage(farmId, msg) {
       console.log(`[AGENT→FRONTEND] ${msg.type} from ${farmId}`);
     } catch(e) { console.error('[BROADCAST]', e.message); }
   }
+
+  // Persist auto-poll results into the fleet — this is what makes new
+  // machines appear automatically and unplugged ones show offline,
+  // independent of whether anyone has the app open right now.
+  if (msg.type === 'poll_result' && Array.isArray(msg.miners)) {
+    const db = require('./db');
+    db.upsertWorkersByIp(farmId, msg.miners).then(ok => {
+      if (ok) console.log(`[POLL→DB] ${farmId}: ${msg.miners.length} miners persisted`);
+    }).catch(e => console.error('[POLL→DB] error:', e.message));
+  }
 }
 
 function getAgents() {
