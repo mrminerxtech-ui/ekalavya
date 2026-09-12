@@ -233,8 +233,8 @@ async function isAsic(ip) {
 // ── Algorithm detection ────────────────────────────────────
 function getAlgo(model) {
   const m = (model||'').toLowerCase();
-  // Scrypt — any L-series Antminer: L3, L3+, L5, L7, L9, L9 Hydro, L11 etc
-  if (/l\d/.test(m) || m.includes('scrypt') || m.includes('litecoin') || m.includes(' ltc')) return 'Scrypt';
+  // Scrypt — any L-series Antminer: L3, L3+, L5, L7, L9, L9 Hydro, L11, L15, L19 etc
+  if (/\bl\d/i.test(m) || m.includes('scrypt') || m.includes('litecoin') || m.includes(' ltc')) return 'Scrypt';
   if (m.includes('ka3') || m.includes('kaspa') || m.includes('ika'))             return 'KHeavyHash';
   if (m.includes('d9')  || m.includes('d19')  || m.includes('dash') || m.includes('x11')) return 'X11';
   if (m.includes('hs')  || m.includes('blake') || m.includes('handshake'))        return 'Blake2B';
@@ -321,6 +321,19 @@ async function getHardwareIds(ip) {
   if (!serial) {
     const blink = await httpGet(ip, '/cgi-bin/get_blink_status.cgi', 'root:root', true);
     console.log('[SN-DEBUG] ' + ip + ' get_blink_status.cgi →', JSON.stringify(blink).slice(0, 400));
+  }
+
+  // Last resort — the miner's boot/system log often prints its serial
+  // even when no CGI endpoint exposes it directly. L-series (L9/L11)
+  // firmware logs a line like: "droa miner sn: DGAHFFUBEJAAE02R5"
+  if (!serial) {
+    const logText = await httpGet(ip, '/cgi-bin/log.cgi', 'root:root');
+    if (typeof logText === 'string') {
+      const snMatch = logText.match(/droa miner sn:\s*([A-Za-z0-9]+)/i)
+                    || logText.match(/miner sn:\s*([A-Za-z0-9]+)/i)
+                    || logText.match(/\bsn:\s*([A-Za-z0-9]{8,})/i);
+      if (snMatch) serial = snMatch[1];
+    }
   }
 
   // Whatsminer — different endpoint / field names
