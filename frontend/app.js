@@ -64,12 +64,70 @@ function renderAll(){
   try{ renderCustomers(); }catch(e){}
   try{ updateNavCount(); }catch(e){}
 }
+// ── Column sorting state ────────────────────────────────────
+let workerSortField = null;
+let workerSortDir    = 1; // 1 = ascending, -1 = descending
+
+let _sortHandlersAttached = false;
+function attachSortHandlers(){
+  if (_sortHandlersAttached) return; // only need to bind once — headers are static
+  document.querySelectorAll('.sortable-th').forEach(function(th){
+    th.addEventListener('click', function(){ sortWorkersBy(this.dataset.sort); });
+  });
+  _sortHandlersAttached = true;
+}
+
+function sortWorkersBy(field){
+  if (workerSortField === field) workerSortDir *= -1;
+  else { workerSortField = field; workerSortDir = 1; }
+  _workersHash = ''; // force rebuild
+  renderWorkers();
+}
+
+function getSortValue(w, field){
+  switch(field){
+    case 'name':     return (w.name || '').toLowerCase();
+    case 'serial':   return (w.serial || w.mac || '').toLowerCase();
+    case 'brand':    return ((w.brand||'') + ' ' + (w.model||'')).toLowerCase();
+    case 'ip':       return w.ip ? w.ip.split('.').map(function(n){return n.padStart(3,'0');}).join('.') : '';
+    case 'farm':     return (w.farm || '').toLowerCase();
+    case 'cid':      { const c = customers.find(function(x){return x.id===w.cid;}); return c ? c.name.toLowerCase() : ''; }
+    case 'hashrate': return w.hashrate || 0;
+    case 'temp':     return w.temp || 0;
+    case 'fan':      return w.fan || 0;
+    case 'pool':     return (w.pool || '').toLowerCase();
+    case 'status':   return effectiveStatus(w);
+    default:         return '';
+  }
+}
+
+function updateSortArrows(){
+  document.querySelectorAll('.sort-arrow').forEach(function(el){ el.textContent = ''; });
+  if (workerSortField) {
+    const arrow = document.getElementById('arrow-' + workerSortField);
+    if (arrow) arrow.textContent = workerSortDir === 1 ? '▲' : '▼';
+  }
+}
+
 function renderWorkers() {
   const tb = document.getElementById('workersTbody');
   if (!tb) return;
   // Always rebuild — no hash guard (was preventing updates)
   const A = function(fid){ return agents.find(function(a){ return a.id === fid; }); };
   const C = function(id){ return customers.find(function(x){ return x.id === id; }); };
+
+  // Apply active sort (without mutating the master `workers` array order)
+  let displayWorkers = workers.slice();
+  if (workerSortField) {
+    displayWorkers.sort(function(a, b){
+      const va = getSortValue(a, workerSortField);
+      const vb = getSortValue(b, workerSortField);
+      if (va < vb) return -1 * workerSortDir;
+      if (va > vb) return  1 * workerSortDir;
+      return 0;
+    });
+  }
+  updateSortArrows();
 
   if (workers.length === 0) {
     tb.innerHTML = '<tr><td colspan="12" style="text-align:center;padding:40px;color:var(--mute)">'
@@ -79,7 +137,7 @@ function renderWorkers() {
     return;
   }
 
-  tb.innerHTML = workers.map(function(w) {
+  tb.innerHTML = displayWorkers.map(function(w) {
     const ag  = A(w.farm_id);
     const cust= C(w.cid);
     const tc   = w.temp >= 90 ? 'color:var(--red)' : w.temp >= 80 ? 'color:var(--warn)' : '';
@@ -937,14 +995,30 @@ function loadFleetFromBackend(cb) {
       .then(r => r.ok ? r.json() : null)
       .then(d => {
         if (d?.ok && d.workers?.length > 0) {
-          let added = 0;
+          let added = 0, updated = 0;
           d.workers.forEach(bw => {
-            if (!workers.find(lw => lw.ip === bw.ip)) { workers.push(bw); added++; }
+            const existing = workers.find(lw => lw.ip === bw.ip);
+            if (!existing) {
+              workers.push(bw); added++;
+            } else if (!existing.disabled && existing.status !== bw.status) {
+              // Sync live status/readings from the server's poll-based record
+              // (which reflects whether the agent actually saw this machine
+              // in its last scan) — but never touch user-set fields
+              existing.status   = bw.status;
+              existing.hashrate = bw.hashrate ?? existing.hashrate;
+              existing.temp     = bw.temp     ?? existing.temp;
+              existing.hr_display = bw.hr_display || existing.hr_display;
+              updated++;
+            }
           });
           (d.customers || []).forEach(bc => {
             if (!customers.find(lc => lc.id === bc.id)) customers.push(bc);
           });
-          if (added > 0) { saveFleet(); console.log('[FLEET] +' + added + ' from backend'); }
+          if (added > 0 || updated > 0) {
+            saveFleet();
+            _fleetHash = ''; _workersHash = '';
+            console.log('[FLEET] +' + added + ' new, ' + updated + ' status updates from backend');
+          }
         }
         loadAgentConfigsFromBackend();
         if (cb) cb();
@@ -1053,11 +1127,81 @@ function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).sty
         }
         if(msg.type==='agent_connected') fetchAgents();
         if(msg.type==='agent_disconnected') fetchAgents();
+
+        // Live auto-discovery: the agent polls its whole subnet every
+        // 30s independent of any manual scan. New machines appear here
+        // instantly; machines that stop responding get merged in as
+        // offline. This is what keeps the Workers page live without
+        // anyone needing to run a scan.
+        if(msg.type==='poll_result' && Array.isArray(msg.miners)){
+          mergePollResults(msg.farm_id, msg.miners);
+        }
       } catch(e) {}
     };
     liveWs.onerror = () => {};
   } catch(e) {}
 } // end launchApp
+
+// ── Merge live poll results into the local fleet ───────────
+function mergePollResults(farmId, minersFoundNow){
+  if(!farmId || !Array.isArray(minersFoundNow)) return;
+  const nowIps = new Set(minersFoundNow.map(function(m){ return m.ip; }));
+  let changed = false;
+
+  // Update or add every miner this poll found
+  minersFoundNow.forEach(function(m){
+    const existing = workers.find(function(w){ return w.ip === m.ip; });
+    if(existing){
+      // Merge in fresh readings, keep user-set fields (customer, disabled, farm) intact
+      if(!existing.disabled){
+        Object.assign(existing, m, {
+          id: existing.id, cid: existing.cid, disabled: existing.disabled,
+          disabled_reason: existing.disabled_reason, disabled_at: existing.disabled_at,
+          farm: existing.farm, farm_id: existing.farm_id, status: 'online',
+        });
+        changed = true;
+      }
+    } else {
+      // Brand new machine detected on the network — add it automatically
+      const algo    = m.algo || getAlgoFromModel(m.model || '');
+      const brand   = m.brand || detectBrand(m.model || '');
+      const ghAlgos = ['Scrypt','KHeavyHash','X11','Blake2B','Ethash','Equihash'];
+      const hrUnit  = m.hr_unit || (ghAlgos.includes(algo) ? 'GH/s' : 'TH/s');
+      const farmName= (agents.find(function(a){ return a.id === farmId; }) || {}).name || farmId;
+      workers.push({
+        id: 'w-' + m.ip.replace(/\./g,'-'), name: m.worker || m.ip.replace(/\./g,'-'),
+        worker_id: m.worker_id || m.worker || '—', model: m.model || 'ASIC Miner',
+        brand: brand, algo: algo, ip: m.ip,
+        hashrate: m.hashrate || 0, hr_unit: hrUnit, hr_display: m.hr_display || '—',
+        temp: m.temp || 0, fan: m.fan || 0, power: m.power || 0, status: 'online',
+        pool: m.pool || '—', pool_url: m.pool || '', pool_user: m.worker || '',
+        uptime: m.uptime || '—', farm: farmName, farm_id: farmId, cid: '',
+        disabled: false, led: false, firmware: m.firmware || '—',
+        mac: m.mac || null, serial: m.serial || null,
+        accepted: m.accepted || 0, rejected: m.rejected || 0, hw_errors: m.hw_errors || 0,
+        source: 'auto-poll', added_at: new Date().toISOString(),
+      });
+      changed = true;
+      toast('&#x26CF; New machine detected: ' + m.ip + ' (' + farmName + ')', 'var(--green)');
+    }
+  });
+
+  // Anything under this farm that this poll DIDN'T see is now offline —
+  // it was either unplugged or is unreachable right now
+  workers.forEach(function(w){
+    if(w.farm_id === farmId && !w.disabled && !nowIps.has(w.ip) && w.status !== 'offline'){
+      w.status = 'offline';
+      changed = true;
+    }
+  });
+
+  if(changed){
+    _fleetHash = ''; _workersHash = '';
+    saveFleet();
+    try { renderWorkers(); } catch(e) {}
+    try { renderDash(); } catch(e) {}
+  }
+}
 
 if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
   try { checkApiSetup(); } catch(e){}
@@ -1075,6 +1219,13 @@ if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch((
     try{ loadFleetFromBackend(function(){ try{ renderAll(); }catch(e){} }); }catch(e){}
   }, 2500);
   setInterval(function(){ try{saveFleet();}catch(e){}}, 30000);
+
+  // Refresh the Workers page from the backend every 60s — a reliable
+  // fallback alongside the live WebSocket updates, in case the socket
+  // ever drops or a poll_result message is missed
+  setInterval(function(){
+    try{ loadFleetFromBackend(function(){ try{ renderWorkers(); renderDash(); }catch(e){} }); }catch(e){}
+  }, 60000);
   const d=document.getElementById('currentApiDisplay');if(d)d.textContent=API_BASE;
   const ai=document.getElementById('apiUrl');if(ai)ai.value=API_BASE;
 function logout(){location.reload();}
@@ -1087,7 +1238,7 @@ function showPage(n){
   // Render the page's content when it opens
   try {
     if(n==='dashboard')     { renderDash(); }
-    if(n==='workers')       { renderWorkers(); }
+    if(n==='workers')       { renderWorkers(); attachSortHandlers(); }
     if(n==='agents')        { renderAgents(); }
     if(n==='customers')     { renderCustomers(); }
     if(n==='alerts')        { renderAlerts(); }
