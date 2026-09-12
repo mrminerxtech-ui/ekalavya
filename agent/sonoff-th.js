@@ -103,24 +103,29 @@ async function resolveMACsToIPs(macs) {
 
 // ── Read TH16 via HTTP ────────────────────────────────────
 async function readTH16(ip, deviceId, apikey, debug) {
-  // Try common LAN ports across firmware generations
-  let r = await tryPort8081(ip, deviceId, apikey, debug, 8081, false);
-  if (r) return r;
-  r = await tryPort8081(ip, deviceId, apikey, debug, 8081, true); // same port, HTTPS
-  if (r) return r;
-  r = await tryPort8081(ip, deviceId, apikey, debug, 8082, false);
-  if (r) return r;
+  // Try common LAN ports + endpoint paths across firmware generations
+  const attempts = [
+    { port: 8081, https: false, path: '/zeroconf/info' },
+    { port: 8081, https: false, path: '/zeroconf/switches' },
+    { port: 8081, https: true,  path: '/zeroconf/info' },
+    { port: 8082, https: false, path: '/zeroconf/info' },
+  ];
+  for (const a of attempts) {
+    const r = await tryPort8081(ip, deviceId, apikey, debug, a.port, a.https, a.path);
+    if (r) return r;
+  }
   return await tryPort80(ip, debug);
 }
 
-async function tryPort8081(ip, deviceId, apikey, debug, port, useHttps) {
+async function tryPort8081(ip, deviceId, apikey, debug, port, useHttps, path) {
   port = port || 8081;
+  path = path || '/zeroconf/info';
   try {
     const body = JSON.stringify({ deviceid: deviceId || '', sequence: Date.now().toString(), selfApikey: '4f2ecf19-f7a7-4076-869d-c6def6be3ab6', data: {} });
     const raw  = useHttps
-      ? await httpsPost(ip, port, '/zeroconf/info', body, 2000, debug)
-      : await httpPost(ip, port, '/zeroconf/info', body, 2000, debug);
-    if (debug) console.log(`[TH16-DEBUG] ${ip}:${port}/zeroconf/info (${useHttps?'https':'http'}) raw →`, raw ? raw.slice(0, 400) : '(no response)');
+      ? await httpsPost(ip, port, path, body, 2000, debug)
+      : await httpPost(ip, port, path, body, 2000, debug);
+    if (debug) console.log(`[TH16-DEBUG] ${ip}:${port}${path} (${useHttps?'https':'http'}) raw →`, raw ? raw.slice(0, 400) : '(no response)');
     if (!raw) return null;
     const resp = JSON.parse(raw);
     if (debug) console.log(`[TH16-DEBUG] ${ip} parsed → error=${resp.error} encrypt=${resp.encrypt} data type=${typeof resp.data}`);
@@ -263,7 +268,10 @@ async function discoverByRangeAndMac(ips, targetMacs, debug) {
   const found   = [];
   const concurrency = 8; // gentler still — avoids delaying the WebSocket heartbeat during a scan
 
+  const totalBatches = Math.ceil(ips.length / concurrency);
   for (let i = 0; i < ips.length; i += concurrency) {
+    const batchNum = Math.floor(i / concurrency) + 1;
+    console.log(`[TH16] Batch ${batchNum}/${totalBatches} (${ips[i]} - ${ips[Math.min(i+concurrency-1, ips.length-1)]})`);
     const batch = ips.slice(i, i + concurrency);
 
     // Probe every IP in this batch first (just the TCP connect —
@@ -350,7 +358,11 @@ function httpPost(ip, port, path, body, timeout, debug) {
     try {
       const req = http.request({
         hostname: ip, port, path, method: 'POST', timeout,
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          'Connection': 'close', // some embedded HTTP stacks mishandle keep-alive
+        }
       }, res => {
         if (debug) console.log(`[TH16-DEBUG] ${ip}:${port}${path} → HTTP ${res.statusCode}`);
         let d=''; res.on('data',c=>d+=c); res.on('end',()=>resolve(d));
