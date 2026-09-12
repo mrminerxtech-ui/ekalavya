@@ -1,19 +1,18 @@
 {
-  "version": "1.1.0",
-  "released_at": "2026-09-12T00:00:00Z",
+  "version": "1.1.1",
+  "released_at": "2026-09-12T12:00:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "Manifest-driven auto-update with SHA-256 checksum verification",
-    "Check-in reporting: version, uptime, crash history sent to backend",
-    "Process supervision with crash-loop detection and exponential backoff",
-    "Combined IP-range + MAC sensor discovery with batch progress logging",
-    "Loosened WebSocket heartbeat timeouts to avoid false-positive disconnects during scans"
+    "Fixed multi-subnet polling \u2014 machines on the 2nd+ subnet were being wrongly marked offline",
+    "Fixed corrupted Scrypt/L-series algorithm detection regex (was silently broken)",
+    "Added serial number extraction from boot log (multiple firmware formats)",
+    "Added overlap protection for poll cycles on large multi-subnet farms"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "8a7ded5ad38eff6298fb8066a3f490c8d3cf0aef094e56a4b00e7cfbb4660457",
-      "size": 34422
+      "sha256": "fe7ba1d0845cff4c6868079300375cd6bd298315ebff94265eefdaa1b4320375",
+      "size": 36367
     },
     {
       "name": "sonoff-th.js",
