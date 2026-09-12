@@ -621,20 +621,43 @@ async function scanNetwork(subnet, ports, timeout, sessionId, isLast=true) {
 }
 
 // ── Poll miners ────────────────────────────────────────────
+let pollInProgress = false;
 async function pollMiners() {
-  const ips = subnetToIPs(SUBNET);
-  const live = [];
-  const BATCH = 25;
-  for (let i = 0; i < ips.length; i += BATCH) {
-    const batch = ips.slice(i, i + BATCH);
-    const results = await Promise.all(batch.map(async ip => {
-      if (!await checkPort(ip, CGPORT, 1500)) return null;
-      return getMinerInfo(ip).catch(() => null);
-    }));
-    live.push(...results.filter(Boolean));
+  // Prevent overlapping cycles — scanning multiple subnets can take
+  // longer than the poll interval on a large farm, and running two
+  // polls at once would double up network load for no benefit.
+  if (pollInProgress) { console.log('[POLL] Previous cycle still running — skipping this tick'); return; }
+  pollInProgress = true;
+  try {
+    await doPollMiners();
+  } finally {
+    pollInProgress = false;
   }
+}
+
+async function doPollMiners() {
+  // Poll EVERY configured subnet, not just the first one — a farm
+  // with multiple subnets (e.g. "192.168.70.0/24,192.168.44.0/24")
+  // must have every machine on every subnet checked each cycle,
+  // otherwise machines on the 2nd+ subnet get wrongly marked offline
+  // even though they're actually online.
+  const live  = [];
+  const BATCH = 25;
+
+  for (const subnet of SUBNETS) {
+    const ips = subnetToIPs(subnet);
+    for (let i = 0; i < ips.length; i += BATCH) {
+      const batch = ips.slice(i, i + BATCH);
+      const results = await Promise.all(batch.map(async ip => {
+        if (!await checkPort(ip, CGPORT, 1500)) return null;
+        return getMinerInfo(ip).catch(() => null);
+      }));
+      live.push(...results.filter(Boolean));
+    }
+  }
+
   if (live.length > 0) {
-    console.log(`[POLL] ${live.length} miners online`);
+    console.log(`[POLL] ${live.length} miners online across ${SUBNETS.length} subnet(s)`);
     send({ type:'poll_result', miners:live, miner_count:live.length });
   }
 }
