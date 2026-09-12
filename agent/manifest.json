@@ -1,18 +1,17 @@
 {
-  "version": "1.1.1",
-  "released_at": "2026-09-12T12:00:00Z",
+  "version": "1.1.2",
+  "released_at": "2026-09-12T13:00:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "Fixed multi-subnet polling \u2014 machines on the 2nd+ subnet were being wrongly marked offline",
-    "Fixed corrupted Scrypt/L-series algorithm detection regex (was silently broken)",
-    "Added serial number extraction from boot log (multiple firmware formats)",
-    "Added overlap protection for poll cycles on large multi-subnet farms"
+    "Added WhatsMiner (MicroBT) MAC address extraction from boot log",
+    "Added WhatsMiner model extraction (miner_type= pattern)",
+    "Fixed WhatsMiner LuCI status page being parsed as JSON instead of HTML (silently broken)"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "fe7ba1d0845cff4c6868079300375cd6bd298315ebff94265eefdaa1b4320375",
-      "size": 36367
+      "sha256": "b920d6284d2c902b3d6e67b51a98000e7a1540312068bf0627c8392dc1ed4e64",
+      "size": 38173
     },
     {
       "name": "sonoff-th.js",
