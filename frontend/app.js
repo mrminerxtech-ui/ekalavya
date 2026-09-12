@@ -586,8 +586,9 @@ function scanSensorNow(farmId, farmName){
   .then(function(d){
     if (d.ok) {
       toast('✓ Sent to agent — reading in ~15-30s', 'var(--green)');
-      setTimeout(function(){ fetchSensorFromBackend(farmId); }, 15000);
-      setTimeout(function(){ fetchSensorFromBackend(farmId); renderSensorEntryGrid(); }, 25000);
+      setTimeout(function(){ fetchSensorFromBackend(farmId); }, 20000);
+      setTimeout(function(){ fetchSensorFromBackend(farmId); }, 60000);
+      setTimeout(function(){ fetchSensorFromBackend(farmId); renderSensorEntryGrid(); }, 120000);
     } else {
       toast('✗ ' + (d.error || 'Failed'), 'var(--red)');
     }
@@ -1694,8 +1695,9 @@ function startSensorDiscover(){
           ? '✓ Sent to agent — resolving MAC via ARP. Check back in 10s.'
           : '✓ Scanning started — readings appear when sensors are found.';
       status.style.color='var(--green)';
-      setTimeout(function(){ if(currentFarmId) fetchSensorFromBackend(currentFarmId); }, 15000);
-      setTimeout(function(){ if(currentFarmId) fetchSensorFromBackend(currentFarmId); }, 25000);
+      setTimeout(function(){ if(currentFarmId) fetchSensorFromBackend(currentFarmId); }, 20000);
+      setTimeout(function(){ if(currentFarmId) fetchSensorFromBackend(currentFarmId); }, 60000);
+      setTimeout(function(){ if(currentFarmId) fetchSensorFromBackend(currentFarmId); }, 120000);
     } else {
       status.textContent='Error: '+d.error;
       status.style.color='var(--red)';
