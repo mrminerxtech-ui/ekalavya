@@ -1,15 +1,15 @@
 {
-  "version": "1.1.6",
-  "released_at": "2026-09-12T17:00:00Z",
+  "version": "1.1.7",
+  "released_at": "2026-09-12T18:00:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "Machines reporting zero hashrate are now marked offline instead of showing as a healthy online machine with 0 TH/s"
+    "Added miner control action tunnel (restart/reboot/sleep/wake/led/chiptest/setworkerid/setpool/overclock/factoryreset/logs) \u2014 agent now executes these locally and reports results back, since the cloud backend has no direct path to a farm's private network"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "c15dcdbe9b1a8092050651b6c3c402e8ef7af325a1d39e8bb3d730a5043c3600",
-      "size": 39135
+      "sha256": "770d15d1035b81e643794e1982f00d63bb8a8f1a42599ba42869c7319bb6b863",
+      "size": 47267
     },
     {
       "name": "sonoff-th.js",
