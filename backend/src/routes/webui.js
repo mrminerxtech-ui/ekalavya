@@ -10,12 +10,18 @@ const express = require('express');
 const router  = express.Router();
 const agentMgr = require('../services/agentManager');
 
-// Matches every method and every sub-path under /api/webui/:farmId/:ip/*
-router.all('/:farmId/:ip/*?', async (req, res) => {
+// Matches every method and every sub-path under /api/webui/:farmId/:ip/...
+// Using router.use() with a fixed prefix (not a wildcard route pattern)
+// — this is the reliable, version-safe way to capture "everything after
+// this point" in Express 4's path matcher. The earlier /*? wildcard
+// pattern is unreliable across path-to-regexp versions and may simply
+// never match at all, which looks identical to "route doesn't exist".
+router.use('/:farmId/:ip', async (req, res) => {
   const { farmId, ip } = req.params;
-  // Everything after /:farmId/:ip/ becomes the path forwarded to the miner
-  const subPath = req.params[0] || '';
-  const minerPath = '/' + subPath + (req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '');
+  // Once mounted this way, req.url is already everything AFTER
+  // /:farmId/:ip — exactly the sub-path + querystring to forward
+  const minerPath = req.url === '/' ? '/' : req.url;
+  console.log(`[WEBUI] ${req.method} tunnel request → farm=${farmId} ip=${ip} path=${minerPath}`);
 
   const agent = agentMgr.getAgent(farmId);
   if (!agent) {
