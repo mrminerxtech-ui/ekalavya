@@ -898,7 +898,7 @@ function addAllToFleet() {
     const ghA    = ['Scrypt','KHeavyHash','X11','Blake2B','Ethash','Equihash'];
     const hrUnit = m.hr_unit || (ghA.includes(algo) ? 'GH/s' : 'TH/s');
     workers = workers.filter(w => w.ip !== m.ip);
-    workers.push({ id:'w-'+m.ip.replace(/\./g,'-'), name:m.worker||m.ip.replace(/\./g,'-'), model:m.model||'ASIC Miner', brand, algo, ip:m.ip, hashrate:m.hashrate||0, hr_unit:hrUnit, hr_display:m.hr_display||'—', temp:m.temp||0, fan:m.fan||0, power:m.power||0, status:'online', pool:m.pool||'—', pool_url:m.pool||'', pool_user:m.worker||'', uptime:m.uptime||'—', farm:farmName, farm_id:farmId, cid:'', disabled:false, led:false, firmware:m.firmware||'—', accepted:m.accepted||0, rejected:m.rejected||0, hw_errors:m.hw_errors||0, source:'scan', added_at:new Date().toISOString() });
+    workers.push({ id:'w-'+m.ip.replace(/\./g,'-'), name:m.worker||m.ip.replace(/\./g,'-'), model:m.model||'ASIC Miner', brand, algo, ip:m.ip, hashrate:m.hashrate||0, hr_unit:hrUnit, hr_display:(m.hashrate>0)?(m.hr_display||'—'):'—', temp:m.temp||0, fan:m.fan||0, power:m.power||0, status:(m.hashrate>0)?'online':'offline', pool:m.pool||'—', pool_url:m.pool||'', pool_user:m.worker||'', uptime:m.uptime||'—', farm:farmName, farm_id:farmId, cid:'', disabled:false, led:false, firmware:m.firmware||'—', accepted:m.accepted||0, rejected:m.rejected||0, hw_errors:m.hw_errors||0, source:'scan', added_at:new Date().toISOString() });
   });
   saveFleet(); updateNavCount(); showSavedIndicator(); setTimeout(saveFleetToBackend, 500);
   try { renderAll(); } catch(e) {}
@@ -1188,11 +1188,13 @@ function mergePollResults(farmId, minersFoundNow){
         // Once a MAC/Serial is found, it's permanent — no re-detection needed.
         existing.hashrate   = m.hashrate   ?? existing.hashrate;
         existing.hr_unit    = m.hr_unit    || existing.hr_unit;
-        existing.hr_display = m.hr_display || existing.hr_display;
+        existing.hr_display = (m.hashrate > 0) ? (m.hr_display || existing.hr_display) : '—';
         existing.temp       = m.temp       ?? existing.temp;
         existing.fan        = m.fan        ?? existing.fan;
         existing.power      = m.power      ?? existing.power;
-        existing.status     = 'online';
+        // Zero hashrate = not actually mining, even if the machine
+        // responded on the network — treat it as offline, not online.
+        existing.status     = (m.hashrate > 0) ? 'online' : 'offline';
         existing.uptime     = m.uptime     || existing.uptime;
         existing.accepted   = m.accepted   ?? existing.accepted;
         existing.rejected   = m.rejected   ?? existing.rejected;
@@ -1216,8 +1218,8 @@ function mergePollResults(farmId, minersFoundNow){
         id: 'w-' + m.ip.replace(/\./g,'-'), name: m.worker || m.ip.replace(/\./g,'-'),
         worker_id: m.worker_id || m.worker || '—', model: m.model || 'ASIC Miner',
         brand: brand, algo: algo, ip: m.ip,
-        hashrate: m.hashrate || 0, hr_unit: hrUnit, hr_display: m.hr_display || '—',
-        temp: m.temp || 0, fan: m.fan || 0, power: m.power || 0, status: 'online',
+        hashrate: m.hashrate || 0, hr_unit: hrUnit, hr_display: (m.hashrate > 0) ? (m.hr_display || '—') : '—',
+        temp: m.temp || 0, fan: m.fan || 0, power: m.power || 0, status: (m.hashrate > 0) ? 'online' : 'offline',
         pool: m.pool || '—', pool_url: m.pool || '', pool_user: m.worker || '',
         uptime: m.uptime || '—', farm: farmName, farm_id: farmId, cid: '',
         disabled: false, led: false, firmware: m.firmware || '—',
@@ -2364,9 +2366,9 @@ function addToFleetDirect(ip, model, farmId, farmName){
     serial: keptSerial, serial_manual: existing?.serial_manual || false,
     model: miner.model || model || 'ASIC Miner',
     brand: brand, algo: algo, ip: ip,
-    hashrate: miner.hashrate || 0, hr_unit: hrUnit, hr_display: hrDisp,
+    hashrate: miner.hashrate || 0, hr_unit: hrUnit, hr_display: (miner.hashrate > 0) ? hrDisp : '—',
     temp: miner.temp || 0, fan: miner.fan || 0, power: miner.power || 0,
-    status: 'online', pool: miner.pool || '—', pool_url: miner.pool || '',
+    status: (miner.hashrate > 0) ? 'online' : 'offline', pool: miner.pool || '—', pool_url: miner.pool || '',
     pool_user: miner.worker || '', uptime: miner.uptime || '—',
     farm: farmName, farm_id: farmId,
     cid: existing?.cid || '', disabled: existing?.disabled || false, led: false,
