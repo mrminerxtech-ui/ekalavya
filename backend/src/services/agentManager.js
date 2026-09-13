@@ -62,6 +62,18 @@ function handleAgentMessage(farmId, msg) {
     try { agent.ws.send(JSON.stringify({ type: 'heartbeat_ack' })); } catch(e) {}
   }
 
+  // Web UI tunnel — resolve the matching pending request
+  if (msg.type === 'webui_proxy_response') {
+    resolveWebuiResponse(msg);
+    return; // nothing else needs this message
+  }
+
+  // Miner action tunnel — resolve the matching pending request
+  if (msg.type === 'action_response') {
+    resolveActionResponse(msg);
+    return;
+  }
+
   // Broadcast scan events directly to frontend (no wrapping)
   if (['scan_found','scan_progress','poll_result','scan_update'].includes(msg.type)) {
     try {
@@ -95,6 +107,82 @@ function sendToAgent(farmId, payload) {
   const agent = connectedAgents.get(farmId);
   if (!agent || agent.ws.readyState !== 1) return false;
   try { agent.ws.send(JSON.stringify(payload)); return true; } catch(e) { return false; }
+}
+
+// ── Web UI tunnel — request/response matching ──────────────
+// The agent proxies an HTTP request to a miner's local web UI and sends
+// the raw response back over the same WebSocket. Since WebSocket is
+// fire-and-forget, we track each outstanding request by a unique ID and
+// resolve/reject a Promise when the matching response message arrives.
+const pendingWebuiRequests = new Map(); // request_id -> { resolve, reject, timer }
+
+function sendWebuiRequest(farmId, ip, method, path, headers, body) {
+  return new Promise((resolve, reject) => {
+    const agent = connectedAgents.get(farmId);
+    if (!agent || agent.ws.readyState !== 1) { reject(new Error(`Agent "${farmId}" not connected`)); return; }
+
+    const request_id = 'webui-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    const timer = setTimeout(() => {
+      pendingWebuiRequests.delete(request_id);
+      reject(new Error('Miner did not respond in time (is it powered on and reachable?)'));
+    }, 12000);
+
+    pendingWebuiRequests.set(request_id, { resolve, reject, timer });
+
+    try {
+      agent.ws.send(JSON.stringify({
+        type: 'webui_proxy_request', request_id, ip, method, path, headers, body,
+      }));
+    } catch(e) {
+      clearTimeout(timer);
+      pendingWebuiRequests.delete(request_id);
+      reject(e);
+    }
+  });
+}
+
+function resolveWebuiResponse(msg) {
+  const pending = pendingWebuiRequests.get(msg.request_id);
+  if (!pending) return; // timed out already, or unknown ID — ignore
+  clearTimeout(pending.timer);
+  pendingWebuiRequests.delete(msg.request_id);
+  pending.resolve(msg);
+}
+
+// ── Miner control actions — same request/response tunnel pattern
+// as the Web UI proxy above, since the backend has no direct network
+// path to a miner's private farm IP either. ─────────────────────────
+const pendingActionRequests = new Map();
+
+function sendActionRequest(farmId, ip, action, params) {
+  return new Promise((resolve, reject) => {
+    const agent = connectedAgents.get(farmId);
+    if (!agent || agent.ws.readyState !== 1) { reject(new Error(`Agent "${farmId}" not connected`)); return; }
+
+    const request_id = 'action-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    const timer = setTimeout(() => {
+      pendingActionRequests.delete(request_id);
+      reject(new Error('Miner did not respond in time (is it powered on and reachable?)'));
+    }, 15000);
+
+    pendingActionRequests.set(request_id, { resolve, reject, timer });
+
+    try {
+      agent.ws.send(JSON.stringify({ type: 'action_request', request_id, ip, action, params }));
+    } catch(e) {
+      clearTimeout(timer);
+      pendingActionRequests.delete(request_id);
+      reject(e);
+    }
+  });
+}
+
+function resolveActionResponse(msg) {
+  const pending = pendingActionRequests.get(msg.request_id);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  pendingActionRequests.delete(msg.request_id);
+  pending.resolve(msg);
 }
 
 function sanitize(a) {
@@ -135,4 +223,4 @@ setInterval(() => {
 }, 30 * 1000);
 
 module.exports = {
-  removeAgent, registerAgent, unregisterAgent, handleAgentMessage, getAgents, getAgent, sendToAgent };
+  removeAgent, registerAgent, unregisterAgent, handleAgentMessage, getAgents, getAgent, sendToAgent, sendWebuiRequest, sendActionRequest };
