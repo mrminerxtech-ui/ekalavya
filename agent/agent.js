@@ -783,9 +783,10 @@ function send(payload) {
 // farm-network IP at all. Same reasoning as the Web UI tunnel.
 async function handleActionRequest(msg) {
   const { request_id, ip, action, params } = msg;
-  const auth = 'root:root';
+  console.log(`[ACTION] Received: ${action} → ${ip} (request_id: ${request_id})`);
 
   async function reply(ok, extra) {
+    console.log(`[ACTION] Replying: ${action} → ${ip} | ok=${ok}` + (extra?.error ? ` | error: ${extra.error}` : ''));
     send({ type: 'action_response', request_id, ok, ...(extra || {}) });
   }
 
