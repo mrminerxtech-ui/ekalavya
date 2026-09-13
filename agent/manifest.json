@@ -1,16 +1,15 @@
 {
-  "version": "1.1.5",
-  "released_at": "2026-09-12T16:00:00Z",
+  "version": "1.1.6",
+  "released_at": "2026-09-12T17:00:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "CRITICAL FIX: serial number extraction was calling the wrong log function \u2014 fetchMinerLog() returns get_system_info.cgi's JSON immediately (used by View/Download Logs), never reaching the actual syslog text needed for serial patterns. Added dedicated fetchBootLog() that goes straight to log.cgi.",
-    "This explains 100% serial extraction failure across all brands since the previous update"
+    "Machines reporting zero hashrate are now marked offline instead of showing as a healthy online machine with 0 TH/s"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "ee4875dc8996d48f3f125d0115cd2cf06e0329c4a5d2980e8a33c186335bee8b",
-      "size": 38845
+      "sha256": "c15dcdbe9b1a8092050651b6c3c402e8ef7af325a1d39e8bb3d730a5043c3600",
+      "size": 39135
     },
     {
       "name": "sonoff-th.js",
