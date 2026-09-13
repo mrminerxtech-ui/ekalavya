@@ -1,16 +1,17 @@
 {
-  "version": "1.1.4",
-  "released_at": "2026-09-12T15:00:00Z",
+  "version": "1.1.2",
+  "released_at": "2026-09-12T13:00:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "CRITICAL FIX: reduced redundant boot-log fetches from up to 4 per machine down to 1 \u2014 this was silently breaking serial/MAC/model detection for ALL brands, not just ElphaPEX, due to accumulated timeout delays",
-    "Boot log is now fetched once per machine and cached/reused across serial, MAC, model, and hashrate extraction"
+    "Added WhatsMiner (MicroBT) MAC address extraction from boot log",
+    "Added WhatsMiner model extraction (miner_type= pattern)",
+    "Fixed WhatsMiner LuCI status page being parsed as JSON instead of HTML (silently broken)"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "0b3f2c9fae749adfd38e3d21cf64952ef6646647bb714fc2e00b47d25db94cad",
-      "size": 38052
+      "sha256": "b920d6284d2c902b3d6e67b51a98000e7a1540312068bf0627c8392dc1ed4e64",
+      "size": 38173
     },
     {
       "name": "sonoff-th.js",
