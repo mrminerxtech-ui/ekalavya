@@ -51,6 +51,7 @@ app.use('/api/logs',      logRoutes);
 app.use('/api/sensors',   sensorRoutes);
 app.use('/api/scada',     scadaRoutes);
 app.use('/api/fleet',     fleetRoutes);
+app.use('/api/webui',     require('./routes/webui'));
 
 app.get('/health', (_, res) => res.json({
   status:    'ok',
