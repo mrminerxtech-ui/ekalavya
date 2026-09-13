@@ -193,6 +193,11 @@ async function loadWorkers() {
   }
 }
 
+async function getWorkerById(id) {
+  const all = await loadWorkers();
+  return all.find(w => w.id === id) || null;
+}
+
 // ── Customers CRUD ────────────────────────────────────────
 async function saveCustomers(customersList) {
   if (useFallback || !pool) return saveFallback('customers', customersList);
@@ -280,4 +285,4 @@ function loadFallback(key) {
 
 function isUsingDB() { return !useFallback && pool !== null && pool !== undefined; }
 
-module.exports = { connect, saveWorkers, loadWorkers, upsertWorkersByIp, saveCustomers, loadCustomers, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB };
+module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, upsertWorkersByIp, saveCustomers, loadCustomers, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB };
