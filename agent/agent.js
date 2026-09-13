@@ -155,6 +155,46 @@ function httpGet(ip, path, auth, debug) {
   });
 }
 
+// ── HTTP POST with Digest-auth fallback — used for miner control
+// actions (set_miner_conf.cgi, reboot.cgi, etc). Mirrors httpGet's
+// auto Basic→Digest retry, since these same miners require it. ──────
+function httpPost(ip, port, path, body, timeout, auth) {
+  auth = auth || 'root:root';
+  const [user, pass] = auth.split(':');
+  return new Promise(resolve => {
+    function attempt(authHeader, isRetry) {
+      const headers = {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body || ''),
+      };
+      if (authHeader) headers['Authorization'] = authHeader;
+      const req = http.request({ hostname: ip, port: port || 80, path, method: 'POST', headers, timeout: timeout || 5000 }, res => {
+        if (res.statusCode === 401 && !isRetry && res.headers['www-authenticate']) {
+          const wa = res.headers['www-authenticate'];
+          res.resume();
+          if (wa.toLowerCase().startsWith('digest') && user && pass) {
+            const params = parseDigestHeader(wa);
+            const digestHeader = buildDigestAuth(user, pass, 'POST', path, params);
+            attempt(digestHeader, true);
+          } else {
+            resolve(null);
+          }
+          return;
+        }
+        let d = '';
+        res.on('data', c => d += c);
+        res.on('end', () => { try { resolve(JSON.parse(d)); } catch(e) { resolve(d || true); } });
+      });
+      req.on('error',   () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+      req.write(body || '');
+      req.end();
+    }
+    const basicAuth = 'Basic ' + Buffer.from(auth).toString('base64');
+    attempt(basicAuth, false);
+  });
+}
+
 function postJson(url, body) {
   return new Promise(resolve => {
     try {
@@ -734,6 +774,153 @@ function send(payload) {
 
 // ── Connect ────────────────────────────────────────────────
 // ── Poll Lanli RS485 cabinets ──────────────────────────────
+// ── Web UI tunnel — proxy a browser request to a miner's local
+// web dashboard, and send the raw response back to the backend
+// over the same WebSocket connection. ──────────────────────
+// ── Miner control actions — restart, reboot, sleep, wake, led, etc ──
+// These run HERE on the agent (which has real LAN access to the miner)
+// rather than on the cloud backend, which has no path to a private
+// farm-network IP at all. Same reasoning as the Web UI tunnel.
+async function handleActionRequest(msg) {
+  const { request_id, ip, action, params } = msg;
+  const auth = 'root:root';
+
+  async function reply(ok, extra) {
+    send({ type: 'action_response', request_id, ok, ...(extra || {}) });
+  }
+
+  try {
+    switch (action) {
+      case 'restart': {
+        const r = await cgCmd(ip, 'restart');
+        await reply(!!r, { message: 'Mining software restart sent' });
+        break;
+      }
+      case 'reboot': {
+        let r = await cgCmd(ip, 'restart');
+        if (!r) { try { await httpPost(ip, 80, '/cgi-bin/reboot.cgi', '', 5000); r = true; } catch(e) {} }
+        await reply(!!r, { message: 'Hard reboot sent' });
+        break;
+      }
+      case 'sleep': {
+        let r = await cgCmd(ip, 'zero');
+        if (!r) { try { await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', JSON.stringify({ sleep: 1 }), 5000); r = true; } catch(e) {} }
+        await reply(!!r, { message: 'Sleep mode requested' });
+        break;
+      }
+      case 'wake': {
+        let r = await cgCmd(ip, 'resume');
+        if (!r) { try { await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', JSON.stringify({ sleep: 0 }), 5000); r = true; } catch(e) {} }
+        await reply(!!r, { message: 'Wake-up requested' });
+        break;
+      }
+      case 'led': {
+        try { await httpPost(ip, 80, '/cgi-bin/blink.cgi', JSON.stringify({ blink: params?.on ? 1 : 0 }), 5000); }
+        catch(e) {}
+        await reply(true, { message: 'LED command sent' });
+        break;
+      }
+      case 'chiptest': {
+        // No universal ASIC self-test command exists across firmware —
+        // 'check' is the closest CGMiner diagnostic available generically.
+        const r = await cgCmd(ip, 'check');
+        await reply(!!r, { message: 'Diagnostic check requested', result: r });
+        break;
+      }
+      case 'setworkerid': {
+        try {
+          const body = JSON.stringify({ pools: [{ url: params.pool_url, user: params.new_user, pass: 'x' }] });
+          await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', body, 5000);
+          await reply(true, { message: 'Worker ID updated' });
+        } catch(e) { await reply(false, { error: e.message }); }
+        break;
+      }
+      case 'setpool': {
+        try {
+          const pools = [{ url: params.pool_url, user: params.pool_user, pass: params.pool_pass || 'x' }];
+          if (params.pool_url2) pools.push({ url: params.pool_url2, user: params.pool_user2 || params.pool_user, pass: 'x' });
+          if (params.pool_url3) pools.push({ url: params.pool_url3, user: params.pool_user3 || params.pool_user, pass: 'x' });
+          await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', JSON.stringify({ pools }), 5000);
+          await reply(true, { message: 'Pool configuration updated' });
+        } catch(e) { await reply(false, { error: e.message }); }
+        break;
+      }
+      case 'overclock': {
+        try {
+          const body = JSON.stringify({ 'bitmain-work-mode': params.mode, freq: params.freq_pct, 'fan-speed': params.fan_pct });
+          await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', body, 5000);
+          await reply(true, { message: 'Power settings applied' });
+        } catch(e) { await reply(false, { error: e.message }); }
+        break;
+      }
+      case 'factoryreset': {
+        try { await httpPost(ip, 80, '/cgi-bin/factory_reset.cgi', JSON.stringify({ reset: 1 }), 5000); await reply(true, { message: 'Factory reset initiated' }); }
+        catch(e) { await reply(false, { error: e.message }); }
+        break;
+      }
+      case 'fetchlogs':
+      case 'downloadlogs': {
+        const logText = await fetchBootLog(ip);
+        if (logText) await reply(true, { logs: logText });
+        else await reply(false, { error: 'Could not retrieve logs from this miner' });
+        break;
+      }
+      default:
+        await reply(false, { error: `Unknown action: ${action}` });
+    }
+  } catch(e) {
+    await reply(false, { error: e.message });
+  }
+}
+
+function handleWebuiProxyRequest(msg) {
+  const { request_id, ip, method, path: reqPath, headers, body } = msg;
+
+  const options = {
+    hostname: ip,
+    port:     80,
+    path:     reqPath || '/',
+    method:   method || 'GET',
+    headers:  { 'Authorization': 'Basic ' + Buffer.from('root:root').toString('base64') },
+    timeout:  8000,
+  };
+  if (body) options.headers['Content-Length'] = Buffer.byteLength(body);
+  if (headers && headers['content-type']) options.headers['Content-Type'] = headers['content-type'];
+
+  const req = http.request(options, res => {
+    const chunks = [];
+    res.on('data', c => chunks.push(c));
+    res.on('end', () => {
+      const buf = Buffer.concat(chunks);
+      const contentType = res.headers['content-type'] || '';
+      // Text content goes over the wire as plain UTF-8; anything else
+      // (images, fonts, etc.) is base64-encoded so it survives JSON
+      const isText = /text|json|javascript|xml|css/i.test(contentType);
+      send({
+        type: 'webui_proxy_response',
+        request_id,
+        status: res.statusCode,
+        headers: { 'content-type': contentType || 'text/html' },
+        body: isText ? buf.toString('utf8') : buf.toString('base64'),
+        encoding: isText ? 'utf8' : 'base64',
+      });
+    });
+  });
+
+  req.on('error', e => {
+    send({ type: 'webui_proxy_response', request_id, status: 502,
+      headers: { 'content-type': 'text/plain' }, body: 'Cannot reach miner: ' + e.message, encoding: 'utf8' });
+  });
+  req.on('timeout', () => {
+    req.destroy();
+    send({ type: 'webui_proxy_response', request_id, status: 504,
+      headers: { 'content-type': 'text/plain' }, body: 'Miner did not respond in time', encoding: 'utf8' });
+  });
+
+  if (body) req.write(body);
+  req.end();
+}
+
 async function pollLanli() {
   if (!lanli) return;
   try {
@@ -810,6 +997,10 @@ function connect() {
         console.log('[TH16] Manual read triggered');
         // Re-poll all known sensors immediately
         th16.startLivePolling(th16.getDiscovered().length > 0 ? th16.getDiscovered() : parseTHEnv(), 30000, onSensorReading);
+      } else if (msg.type === 'webui_proxy_request') {
+        handleWebuiProxyRequest(msg);
+      } else if (msg.type === 'action_request') {
+        handleActionRequest(msg);
       } else if (msg.type === 'sensor_discover') {
         const { ips, macs, session_id } = msg;
         send({ type:'sensor_discover_start', session_id, farm_id: FARM_ID });
