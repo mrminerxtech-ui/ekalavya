@@ -140,8 +140,9 @@ function renderWorkers() {
   const A = function(fid){ return agents.find(function(a){ return a.id === fid; }); };
   const C = function(id){ return customers.find(function(x){ return x.id === id; }); };
 
-  // Apply active sort (without mutating the master `workers` array order)
-  let displayWorkers = workers.slice();
+  // Apply active filter + search first, then sort
+  let displayWorkers = workers.filter(function(w){ return matchesWorkerFilter(w, workerFilter); });
+  displayWorkers = filterWorkersBySearch(displayWorkers);
   if (workerSortField) {
     displayWorkers.sort(function(a, b){
       const va = getSortValue(a, workerSortField);
@@ -2315,8 +2316,48 @@ function applyPreset(url, user){
   const u = document.getElementById('poolUrl'); if(u) u.value = url;
   const w = document.getElementById('poolUser'); if(w) w.value = user || '';
 }
-function setWF(val){
-  const el = document.getElementById('wfInput'); if(el) el.value = val;
+// ── Worker table filter + search ────────────────────────────
+let workerFilter = 'all';
+
+function setWF(val, btnEl){
+  workerFilter = val;
+  document.querySelectorAll('.fbtn').forEach(function(b){ b.classList.remove('active'); });
+  if (btnEl) btnEl.classList.add('active');
+  _workersHash = ''; // force rebuild
+  renderWorkers();
+}
+
+function matchesWorkerFilter(w, filter){
+  if (filter === 'all') return true;
+  if (filter === 'disabled') return !!w.disabled;
+  if (filter === 'sleeping') return w.status === 'sleeping';
+  if (filter === 'warn')     return !w.disabled && w.status === 'warn';
+  // online/offline go through effectiveStatus so a machine whose agent
+  // is down, or whose hashrate is 0, is correctly counted as offline here too
+  const eff = effectiveStatus(w);
+  if (filter === 'online')  return eff === 'online';
+  if (filter === 'offline') return eff !== 'online' && !w.disabled && w.status !== 'sleeping';
+  return true;
+}
+
+function filterWorkersBySearch(list){
+  const box = document.getElementById('wSearch');
+  const q   = box ? box.value.trim().toLowerCase() : '';
+  if (!q) return list;
+  return list.filter(function(w){
+    return (w.name  || '').toLowerCase().includes(q)
+        || (w.ip    || '').toLowerCase().includes(q)
+        || (w.model || '').toLowerCase().includes(q)
+        || (w.brand || '').toLowerCase().includes(q)
+        || (w.worker_id || '').toLowerCase().includes(q)
+        || (w.serial || '').toLowerCase().includes(q)
+        || (w.mac    || '').toLowerCase().includes(q);
+  });
+}
+
+function onWorkerSearchInput(){
+  _workersHash = '';
+  renderWorkers();
 }
 function bulkReboot(){
   const checked = Array.from(document.querySelectorAll('.worker-check:checked')).map(function(c){ return c.dataset.wid; });
