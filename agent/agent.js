@@ -511,11 +511,16 @@ async function getMinerInfo(ip) {
   const hwErrors  = parseInt(s['Hardware Errors']||0);
   const boards    = (devs?.DEVS||[]).length;
 
+  // A machine that responds on the network but reports zero hashrate
+  // isn't actually mining — treat it the same as offline rather than
+  // showing it as a healthy connected machine.
+  const isActuallyMining = hr.value > 0;
+
   return {
     ip, model, brand, algo,
     hashrate:    hr.value,
     hr_unit:     hr.unit,
-    hr_display:  hr.display,
+    hr_display:  isActuallyMining ? hr.display : '—',
     temp, fan, power, uptime,
     pool:        activePool.URL     || '—',
     worker:      fullWorkerId,
@@ -526,7 +531,7 @@ async function getMinerInfo(ip) {
     serial:      hwIds.serial || null,   // manufacturer serial number
     accepted, rejected, hw_errors: hwErrors,
     boards,
-    status: 'online',
+    status: isActuallyMining ? 'online' : 'offline',
     source: 'cgminer',
   };
 }
