@@ -1,17 +1,16 @@
 {
-  "version": "1.1.2",
-  "released_at": "2026-09-12T13:00:00Z",
+  "version": "1.1.5",
+  "released_at": "2026-09-12T16:00:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "Added WhatsMiner (MicroBT) MAC address extraction from boot log",
-    "Added WhatsMiner model extraction (miner_type= pattern)",
-    "Fixed WhatsMiner LuCI status page being parsed as JSON instead of HTML (silently broken)"
+    "CRITICAL FIX: serial number extraction was calling the wrong log function \u2014 fetchMinerLog() returns get_system_info.cgi's JSON immediately (used by View/Download Logs), never reaching the actual syslog text needed for serial patterns. Added dedicated fetchBootLog() that goes straight to log.cgi.",
+    "This explains 100% serial extraction failure across all brands since the previous update"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "b920d6284d2c902b3d6e67b51a98000e7a1540312068bf0627c8392dc1ed4e64",
-      "size": 38173
+      "sha256": "ee4875dc8996d48f3f125d0115cd2cf06e0329c4a5d2980e8a33c186335bee8b",
+      "size": 38845
     },
     {
       "name": "sonoff-th.js",
