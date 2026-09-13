@@ -1,18 +1,16 @@
 {
-  "version": "1.1.1",
-  "released_at": "2026-09-12T12:00:00Z",
+  "version": "1.1.4",
+  "released_at": "2026-09-12T15:00:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "Fixed multi-subnet polling \u2014 machines on the 2nd+ subnet were being wrongly marked offline",
-    "Fixed corrupted Scrypt/L-series algorithm detection regex (was silently broken)",
-    "Added serial number extraction from boot log (multiple firmware formats)",
-    "Added overlap protection for poll cycles on large multi-subnet farms"
+    "CRITICAL FIX: reduced redundant boot-log fetches from up to 4 per machine down to 1 \u2014 this was silently breaking serial/MAC/model detection for ALL brands, not just ElphaPEX, due to accumulated timeout delays",
+    "Boot log is now fetched once per machine and cached/reused across serial, MAC, model, and hashrate extraction"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "fe7ba1d0845cff4c6868079300375cd6bd298315ebff94265eefdaa1b4320375",
-      "size": 36367
+      "sha256": "0b3f2c9fae749adfd38e3d21cf64952ef6646647bb714fc2e00b47d25db94cad",
+      "size": 38052
     },
     {
       "name": "sonoff-th.js",
