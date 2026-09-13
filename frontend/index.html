@@ -350,7 +350,7 @@ tr:last-child td{border-bottom:none;}
       <div class="panel">
         <div class="ph"><div class="phd">All Machines</div><div class="pa"><button class="btn btn-sm btn-r" onclick="bulkReboot()">&#x27F3; Bulk Reboot</button></div></div>
         <div class="toolbar">
-          <input class="si" placeholder="Search name/IP/model..." id="wSearch" oninput="renderWorkers()" style="width:180px">
+          <input class="si" placeholder="Search name/IP/model..." id="wSearch" oninput="onWorkerSearchInput()" style="width:180px">
           <button class="fbtn active" onclick="setWF('all',this)">All</button>
           <button class="fbtn" onclick="setWF('online',this)">Online</button>
           <button class="fbtn" onclick="setWF('offline',this)">Offline</button>
