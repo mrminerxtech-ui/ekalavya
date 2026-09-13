@@ -77,6 +77,11 @@ function attachSortHandlers(){
   _sortHandlersAttached = true;
 }
 
+function toggleTailscaleMode(checked){
+  localStorage.setItem('use_tailscale_webui', checked ? 'true' : 'false');
+  toast(checked ? '✓ Tailscale direct mode enabled on this device' : 'Tunnel mode restored', 'var(--green)');
+}
+
 function editSerialAndMac(wid){
   const w = workers.find(function(x){ return x.id === wid; });
   if (!w) return;
@@ -1291,7 +1296,7 @@ function showPage(n){
     if(n==='alerts')        { renderAlerts(); }
     if(n==='scanner')       { populateDropdowns(); }
     if(n==='scada')         { checkScadaSession(); }
-    if(n==='settings')      { updateFleetStat(); renderSensorEntryGrid(); }
+    if(n==='settings')      { updateFleetStat(); renderSensorEntryGrid(); const tt=document.getElementById('tailscaleToggle'); if(tt) tt.checked = localStorage.getItem('use_tailscale_webui') === 'true'; }
   } catch(e) { console.error('showPage render error:', e); }
 }
 function nav(page,el){showPage(page);document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));if(el)el.classList.add('active');}
@@ -2365,19 +2370,84 @@ function bulkReboot(){
   if(!confirm('Reboot ' + checked.length + ' miners?')) return;
   toast('Reboot command sent to ' + checked.length + ' miners', 'var(--cyan)');
 }
+function openMinerWebUI(wid){
+  const w = workers.find(function(x){ return x.id === (wid || activeWid); });
+  if(!w){ toast('No miner selected', 'var(--warn)'); return; }
+  if(!w.ip){ toast('No IP address for this miner', 'var(--red)'); return; }
+
+  const useTailscale = localStorage.getItem('use_tailscale_webui') === 'true';
+
+  if (useTailscale) {
+    // Direct connection — assumes THIS device is on the same Tailscale
+    // network as the farm PC acting as a subnet router. No proxy, no
+    // URL rewriting, no JS shims needed — it's a real network path.
+    window.open('http://' + w.ip + '/', '_blank');
+    toast('Opening ' + w.name + ' directly via Tailscale...', 'var(--cyan)');
+    return;
+  }
+
+  if(!w.farm_id){ toast('This miner has no farm assigned — cannot tunnel', 'var(--red)'); return; }
+  const url = API_BASE + '/api/webui/' + encodeURIComponent(w.farm_id) + '/' + encodeURIComponent(w.ip) + '/';
+  window.open(url, '_blank');
+  toast('Opening ' + w.name + ' web UI via ' + (agents.find(function(a){return a.id===w.farm_id;})||{}).name + ' tunnel...', 'var(--cyan)');
+}
+
 function doAction(action, wid){
   const w = workers.find(function(x){ return x.id === (wid || activeWid); });
   if(!w){ toast('No miner selected', 'var(--warn)'); return; }
+
+  // worker_id here means "which miner to look up" — kept consistent
+  // with the backend's lookup field. Parameterized actions add their
+  // OWN differently-named fields below so nothing collides with this.
+  var body = { ip: w.ip, farm_id: w.farm_id, worker_id: w.id };
+
+  if (action === 'setworkerid') {
+    var newWid = document.getElementById('newWid');
+    if (!newWid || !newWid.value.trim()) { toast('Enter a new Worker ID first', 'var(--warn)'); return; }
+    body.new_worker_id = newWid.value.trim();
+  } else if (action === 'setpool') {
+    var pUrl1 = document.getElementById('pUrl1'), pUser1 = document.getElementById('pUser1');
+    if (!pUrl1 || !pUrl1.value.trim() || !pUser1 || !pUser1.value.trim()) { toast('Enter at least the primary pool URL and worker', 'var(--warn)'); return; }
+    body.pool_url  = pUrl1.value.trim();
+    body.pool_user = pUser1.value.trim();
+    var pUrl2 = document.getElementById('pUrl2'), pUrl3 = document.getElementById('pUrl3');
+    if (pUrl2 && pUrl2.value.trim()) body.pool_url2 = pUrl2.value.trim();
+    if (pUrl3 && pUrl3.value.trim()) body.pool_url3 = pUrl3.value.trim();
+  } else if (action === 'overclock') {
+    var powerMode = document.getElementById('powerMode'), freqPct = document.getElementById('freqPct'), fanPct = document.getElementById('fanPct');
+    body.mode     = powerMode ? powerMode.value : 'normal';
+    body.freq_pct = freqPct  ? parseInt(freqPct.value)  : 100;
+    body.fan_pct  = fanPct   ? parseInt(fanPct.value)   : 80;
+  } else if (action === 'factoryreset') {
+    if (!confirm('Factory reset ' + w.name + '? This wipes all settings and cannot be undone.')) return;
+    body.confirmed = true;
+  } else if (action === 'delete') {
+    if (!confirm('Permanently remove ' + w.name + ' from the fleet? This cannot be undone.')) return;
+  }
+
   const token = localStorage.getItem('ekl_token');
+  toast('Sending ' + action + ' to ' + w.name + '...', 'var(--cyan)');
+
   fetch(API_BASE + '/api/actions/' + action, {
     method: 'POST',
     headers: {'Content-Type':'application/json','Authorization':'Bearer ' + (token||'')},
-    body: JSON.stringify({ ip: w.ip, farm_id: w.farm_id, worker_id: w.id })
+    body: JSON.stringify(body)
   })
-  .then(function(r){ return r.json(); })
+  .then(function(r){
+    return r.text().then(function(text){
+      let d;
+      try { d = JSON.parse(text); }
+      catch(e) { throw new Error('Server returned an unexpected response (HTTP ' + r.status + ') — this action may not be available yet'); }
+      return d;
+    });
+  })
   .then(function(d){
-    if(d.ok) toast('✓ ' + action + ' sent to ' + w.name, 'var(--green)');
-    else toast('✗ ' + (d.error || 'Failed'), 'var(--red)');
+    if(d.ok) {
+      toast('✓ ' + (d.message || (action + ' sent to ' + w.name)), 'var(--green)');
+      if (action === 'delete') { workers = workers.filter(function(x){ return x.id !== w.id; }); saveFleet(); closeCtrl(); renderWorkers(); }
+    } else {
+      toast('✗ ' + (d.error || 'Failed'), 'var(--red)');
+    }
   })
   .catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
 }
