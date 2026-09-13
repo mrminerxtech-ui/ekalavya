@@ -77,6 +77,30 @@ function attachSortHandlers(){
   _sortHandlersAttached = true;
 }
 
+function editSerialAndMac(wid){
+  const w = workers.find(function(x){ return x.id === wid; });
+  if (!w) return;
+
+  const newSerial = prompt('Serial Number for ' + (w.name || w.ip) + ':', w.serial || '');
+  if (newSerial === null) return; // cancelled
+  const trimmedSerial = newSerial.trim();
+  w.serial = trimmedSerial || null;
+  w.serial_manual = !!trimmedSerial; // marks it as locked — auto-detection will never overwrite this again
+
+  const newMac = prompt('MAC Address for ' + (w.name || w.ip) + ':', w.mac || '');
+  if (newMac !== null) {
+    const trimmedMac = newMac.trim();
+    w.mac = trimmedMac || null;
+    w.mac_manual = !!trimmedMac;
+  }
+
+  saveFleet();
+  saveFleetToBackend();
+  _workersHash = '';
+  renderWorkers();
+  toast('✓ Saved for ' + (w.name || w.ip), 'var(--green)');
+}
+
 function sortWorkersBy(field){
   if (workerSortField === field) workerSortDir *= -1;
   else { workerSortField = field; workerSortDir = 1; }
@@ -150,9 +174,9 @@ function renderWorkers() {
       + '<td><div style="font-family:Share Tech Mono,monospace;font-weight:700;font-size:12px;color:var(--cyan)">' + (w.name || '—') + '</div>'
       + '<span class="sdot ' + sdot(w) + '" style="margin-right:4px"></span><span style="font-size:9px;color:var(--mute)">' + (w.algo || '') + '</span>'
       + '</td>'
-      + '<td title="MAC: ' + (w.mac || 'unknown') + '" style="font-family:Share Tech Mono,monospace;font-size:10px">'
-      +   (w.serial || '<span style="color:var(--mute)">—</span>')
-      +   (w.mac ? '<div style="font-size:9px;color:var(--mute)">' + w.mac + '</div>' : '')
+      + '<td title="MAC: ' + (w.mac || 'unknown') + ' — click to edit" class="sn-edit-cell" data-wid="' + w.id + '" style="font-family:Share Tech Mono,monospace;font-size:10px;cursor:pointer">'
+      +   (w.serial ? w.serial : '<span style="color:var(--mute)">&#x270E; add</span>')
+      +   (w.mac ? '<div style="font-size:9px;color:var(--mute)">' + w.mac + '</div>' : '<div style="font-size:9px;color:var(--mute)">&#x270E; add MAC</div>')
       + '</td>'
       + '<td style="font-size:11px;max-width:90px;width:90px;white-space:normal;word-break:break-word;overflow-wrap:break-word">' + cleanBrandModel(w.brand) + '<br><span style="color:var(--mute);font-size:10px">' + cleanBrandModel(w.model) + '</span></td>'
       + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (w.ip || '—') + '</td>'
@@ -169,6 +193,9 @@ function renderWorkers() {
 
   tb.querySelectorAll('.open-ctrl-btn').forEach(function(b){
     b.addEventListener('click', function(){ openCtrl(this.dataset.wid); });
+  });
+  tb.querySelectorAll('.sn-edit-cell').forEach(function(td){
+    td.addEventListener('click', function(){ editSerialAndMac(this.dataset.wid); });
   });
 
   // Update badge counts (accounts for agent connectivity)
@@ -364,9 +391,10 @@ function openCtrl(wid) {
   if (wi) {
     var parts = [];
     if (w.worker_id && w.worker_id !== '—') parts.push('Worker: ' + w.worker_id);
-    if (w.serial) parts.push('S/N: ' + w.serial);
-    if (w.mac) parts.push('MAC: ' + w.mac);
-    wi.innerHTML = parts.join('<br>');
+    parts.push('S/N: ' + (w.serial || '<span style="color:var(--mute)">not set</span>'));
+    parts.push('MAC: ' + (w.mac || '<span style="color:var(--mute)">not set</span>'));
+    wi.innerHTML = parts.join('<br>')
+      + '<button class="abtn" style="margin-top:6px" onclick="editSerialAndMac(\'' + w.id + '\');refreshCtrl();">&#x270E; Edit S/N &amp; MAC</button>';
   }
   el.style.display = 'flex';
 }
@@ -1007,6 +1035,7 @@ function loadFleetFromBackend(cb) {
               existing.status   = bw.status;
               existing.hashrate = bw.hashrate ?? existing.hashrate;
               existing.temp     = bw.temp     ?? existing.temp;
+              existing.fan      = bw.fan      ?? existing.fan;
               existing.hr_display = bw.hr_display || existing.hr_display;
               updated++;
             }
@@ -1152,13 +1181,28 @@ function mergePollResults(farmId, minersFoundNow){
   minersFoundNow.forEach(function(m){
     const existing = workers.find(function(w){ return w.ip === m.ip; });
     if(existing){
-      // Merge in fresh readings, keep user-set fields (customer, disabled, farm) intact
       if(!existing.disabled){
-        Object.assign(existing, m, {
-          id: existing.id, cid: existing.cid, disabled: existing.disabled,
-          disabled_reason: existing.disabled_reason, disabled_at: existing.disabled_at,
-          farm: existing.farm, farm_id: existing.farm_id, status: 'online',
-        });
+        // Only these fields refresh on every scan — everything else
+        // (name, model, brand, algo, MAC, serial, pool, farm, customer)
+        // stays exactly as it was first detected or as manually edited.
+        // Once a MAC/Serial is found, it's permanent — no re-detection needed.
+        existing.hashrate   = m.hashrate   ?? existing.hashrate;
+        existing.hr_unit    = m.hr_unit    || existing.hr_unit;
+        existing.hr_display = m.hr_display || existing.hr_display;
+        existing.temp       = m.temp       ?? existing.temp;
+        existing.fan        = m.fan        ?? existing.fan;
+        existing.power      = m.power      ?? existing.power;
+        existing.status     = 'online';
+        existing.uptime     = m.uptime     || existing.uptime;
+        existing.accepted   = m.accepted   ?? existing.accepted;
+        existing.rejected   = m.rejected   ?? existing.rejected;
+        existing.hw_errors  = m.hw_errors  ?? existing.hw_errors;
+
+        // MAC/Serial: only fill in if currently missing — never overwrite
+        // an already-known value, and never overwrite a manual edit
+        if (!existing.mac_manual && !existing.mac && m.mac) existing.mac = m.mac;
+        if (!existing.serial_manual && !existing.serial && m.serial) existing.serial = m.serial;
+
         changed = true;
       }
     } else {
@@ -2297,19 +2341,27 @@ function doAction(action, wid){
 
 
 function addToFleetDirect(ip, model, farmId, farmName){
-  const miner = (_lastScanResults && _lastScanResults[ip]) ? _lastScanResults[ip] : {};
+  const miner   = (_lastScanResults && _lastScanResults[ip]) ? _lastScanResults[ip] : {};
+  const existing= workers.find(function(w){ return w.ip === ip; });
   workers = workers.filter(function(w){ return w.ip !== ip; });
   var algo    = miner.algo || getAlgoFromModel(model || miner.model || '');
   var brand   = miner.brand || detectBrand(miner.model || model);
   var ghAlgos = ['Scrypt','KHeavyHash','X11','Blake2B','Ethash','Equihash'];
   var hrUnit  = miner.hr_unit || (ghAlgos.includes(algo) ? 'GH/s' : 'TH/s');
   var hrDisp  = (miner.hr_display && miner.hr_display !== '—') ? miner.hr_display : (miner.hashrate > 0 ? miner.hashrate.toFixed(2) + ' ' + hrUnit : '—');
+
+  // If this machine was already in the fleet, keep its locked/manual
+  // Serial and MAC (and the customer/disabled state) instead of wiping
+  // them out just because it's being re-added via a fresh scan.
+  const keptSerial = existing && (existing.serial_manual || existing.serial) ? existing.serial : (miner.serial || null);
+  const keptMac    = existing && (existing.mac_manual    || existing.mac)    ? existing.mac    : (miner.mac    || null);
+
   workers.push({
     id: 'w-' + ip.replace(/\./g, '-'),
     name: miner.worker || ip.replace(/\./g, '-'),
     worker_id: miner.worker_id || miner.worker || '—',   // full wallet.worker string
-    mac: miner.mac || null,
-    serial: miner.serial || null,
+    mac: keptMac, mac_manual: existing?.mac_manual || false,
+    serial: keptSerial, serial_manual: existing?.serial_manual || false,
     model: miner.model || model || 'ASIC Miner',
     brand: brand, algo: algo, ip: ip,
     hashrate: miner.hashrate || 0, hr_unit: hrUnit, hr_display: hrDisp,
@@ -2317,10 +2369,11 @@ function addToFleetDirect(ip, model, farmId, farmName){
     status: 'online', pool: miner.pool || '—', pool_url: miner.pool || '',
     pool_user: miner.worker || '', uptime: miner.uptime || '—',
     farm: farmName, farm_id: farmId,
-    cid: '', disabled: false, led: false, firmware: miner.firmware || '—',
+    cid: existing?.cid || '', disabled: existing?.disabled || false, led: false,
+    firmware: miner.firmware || '—',
     accepted: miner.accepted || 0, rejected: miner.rejected || 0,
     hw_errors: miner.hw_errors || 0, source: 'scan',
-    added_at: new Date().toISOString()
+    added_at: existing?.added_at || new Date().toISOString()
   });
   saveFleet();
   updateNavCount();
