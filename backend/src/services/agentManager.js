@@ -157,11 +157,15 @@ const pendingActionRequests = new Map();
 function sendActionRequest(farmId, ip, action, params) {
   return new Promise((resolve, reject) => {
     const agent = connectedAgents.get(farmId);
-    if (!agent || agent.ws.readyState !== 1) { reject(new Error(`Agent "${farmId}" not connected`)); return; }
+    if (!agent || agent.ws.readyState !== 1) {
+      console.log(`[ACTION-TUNNEL] ✗ Agent "${farmId}" not connected (readyState: ${agent ? agent.ws.readyState : 'no agent'})`);
+      reject(new Error(`Agent "${farmId}" not connected`)); return;
+    }
 
     const request_id = 'action-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     const timer = setTimeout(() => {
       pendingActionRequests.delete(request_id);
+      console.log(`[ACTION-TUNNEL] ✗ Timeout — no response for ${action} → ${ip} (request_id: ${request_id})`);
       reject(new Error('Miner did not respond in time (is it powered on and reachable?)'));
     }, 15000);
 
@@ -169,17 +173,20 @@ function sendActionRequest(farmId, ip, action, params) {
 
     try {
       agent.ws.send(JSON.stringify({ type: 'action_request', request_id, ip, action, params }));
+      console.log(`[ACTION-TUNNEL] → Sent ${action} → farm=${farmId} ip=${ip} (request_id: ${request_id})`);
     } catch(e) {
       clearTimeout(timer);
       pendingActionRequests.delete(request_id);
+      console.log(`[ACTION-TUNNEL] ✗ ws.send() threw: ${e.message}`);
       reject(e);
     }
   });
 }
 
 function resolveActionResponse(msg) {
+  console.log(`[ACTION-TUNNEL] ← Response received for request_id ${msg.request_id} | ok=${msg.ok}`);
   const pending = pendingActionRequests.get(msg.request_id);
-  if (!pending) return;
+  if (!pending) { console.log(`[ACTION-TUNNEL] ✗ No pending request matches this ID — already timed out?`); return; }
   clearTimeout(pending.timer);
   pendingActionRequests.delete(msg.request_id);
   pending.resolve(msg);
