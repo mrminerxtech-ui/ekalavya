@@ -1,16 +1,15 @@
 {
-  "version": "1.1.12",
-  "released_at": "2026-09-13T09:00:00Z",
+  "version": "1.1.14",
+  "released_at": "2026-09-13T10:30:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "Fixed restart/reboot/sleep/wake reporting success when the miner actually rejected the command \u2014 was only checking 'did we get a response' instead of 'did the miner confirm it worked', so the HTTP fallback never triggered when it should have",
-    "Added debug logging showing the miner's raw response for these actions"
+    "Added response body logging to restart/reboot/sleep/wake HTTP fallback \u2014 a 200 OK status alone isn't reliable proof of success on this firmware, since its web server appears to return 200 for unmatched paths too"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "c466012ab22c4af2dfc1697e21063c9527fe933afb5292c5c6c48ab0f6ca6d4c",
-      "size": 51223
+      "sha256": "6e7276e496f24b377e0bce50caf9aa1cd9b094585e8384813e3e000b2e6b6d26",
+      "size": 53195
     },
     {
       "name": "sonoff-th.js",
