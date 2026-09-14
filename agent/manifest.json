@@ -1,16 +1,15 @@
 {
-  "version": "1.1.10",
-  "released_at": "2026-09-12T21:00:00Z",
+  "version": "1.1.11",
+  "released_at": "2026-09-12T22:00:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "Web UI tunnel: switched to relative-path resolution instead of prefix-rewriting \u2014 simpler, more robust technique inspired by studying how a competitor product handles this",
-    "Fixed redirect (Location header) forwarding, which was previously silently dropped"
+    "Web UI tunnel now auto-retries with Digest authentication when a miner rejects Basic auth \u2014 some Antminer firmware (e.g. L9/L11) requires Digest, previously causing a silent login failure through the tunnel"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "f0316db7a46002952d76c9041098745422eb81976944415c8ec795f0e10d50e7",
-      "size": 47837
+      "sha256": "b342186cbc028b8e20c4ee3b45236b4e0e5bd5bc69d0d8693beca1f52878d238",
+      "size": 48816
     },
     {
       "name": "sonoff-th.js",
