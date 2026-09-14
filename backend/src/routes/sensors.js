@@ -6,33 +6,45 @@ const router   = express.Router();
 const { authMiddleware } = require('../middleware/auth');
 const ewelink  = require('../services/ewelink');
 
-// GET /api/sensors/status — eWeLink config status
+// GET /api/sensors/status — eWeLink connection status
 router.get('/status', authMiddleware, (req, res) => {
-  res.json({ ok: true, config: ewelink.getConfig() });
+  res.json({ ok: true, config: ewelink.getConfig(), status: ewelink.getStatus() });
 });
 
-// POST /api/sensors/config — save eWeLink credentials
+// POST /api/sensors/config — save App ID / Secret / Redirect URL
 router.post('/config', authMiddleware, (req, res) => {
-  const { email, password, appid, secret, region } = req.body;
-  ewelink.updateConfig({ email, password, appid, secret, region: region || 'eu' });
-  res.json({ ok: true, message: 'eWeLink config saved. Login will be attempted on next reading.' });
+  const { appid, secret, redirectUrl } = req.body;
+  ewelink.updateConfig({ appid, secret, redirectUrl });
+  res.json({ ok: true, message: 'eWeLink app credentials saved.' });
 });
 
-// POST /api/sensors/login — test connection
-router.post('/login', authMiddleware, async (req, res) => {
-  const result = await ewelink.login();
-  if (result.ok) {
-    await ewelink.getDevices();
-    res.json({ ok: true, devices: ewelink.getDevicesState().length });
-  } else {
-    res.status(400).json({ error: result.error });
+// GET /api/sensors/ewelink/authorize-url — build the URL the browser
+// should be sent to in order to log in on eWeLink's own page
+router.get('/ewelink/authorize-url', authMiddleware, (req, res) => {
+  try {
+    const url = ewelink.buildAuthorizeUrl('ekalavya-' + req.user.id);
+    res.json({ ok: true, url });
+  } catch(e) {
+    res.status(400).json({ error: e.message });
   }
+});
+
+// POST /api/sensors/ewelink/exchange — called by the frontend once
+// eWeLink redirects back with a one-time code in the URL
+router.post('/ewelink/exchange', authMiddleware, async (req, res) => {
+  const { code, region } = req.body;
+  if (!code) return res.status(400).json({ error: 'code is required' });
+  const result = await ewelink.exchangeCodeForToken(code, region);
+  if (result.error) return res.status(400).json({ error: result.error });
+  const devicesResult = await ewelink.getDevices();
+  res.json({ ok: true, devices: devicesResult.devices?.length || 0 });
 });
 
 // GET /api/sensors/devices — list all eWeLink devices
 router.get('/devices', authMiddleware, async (req, res) => {
-  const devices = await ewelink.getDevices();
-  res.json({ ok: true, devices });
+  const result = await ewelink.getDevices();
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.json({ ok: true, devices: result.devices });
 });
 
 // GET /api/sensors/readings — all current readings
@@ -102,7 +114,7 @@ router.get('/agent-config/:farmId', authMiddleware, (req, res) => {
 const sensorCache = {}; // farm_id → {temp, humidity, updated, farm_name}
 
 router.post('/push', (req, res) => {
-  const { farm_id, farm_name, temp, humidity, device_id, device_name } = req.body;
+  const { farm_id, farm_name, temp, humidity, device_id, device_name, model } = req.body;
   if (!farm_id && !device_id) return res.status(400).json({ error: 'farm_id required' });
   const key = farm_id || device_id;
   sensorCache[key] = {
@@ -110,9 +122,10 @@ router.post('/push', (req, res) => {
     farm_name: farm_name || device_name || key,
     temp:      temp     != null ? parseFloat(temp)     : null,
     humidity:  humidity != null ? parseFloat(humidity) : null,
+    model:     model || null,
     updated:   new Date().toISOString(),
   };
-  console.log(`[SENSOR] Push: ${key} → temp:${temp} humidity:${humidity}`);
+  console.log(`[SENSOR] Push: ${key} → temp:${temp} humidity:${humidity} model:${model||'—'}`);
   res.json({ ok: true });
 });
 
