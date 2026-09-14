@@ -158,6 +158,12 @@ function httpGet(ip, path, auth, debug) {
 // ── HTTP POST with Digest-auth fallback — used for miner control
 // actions (set_miner_conf.cgi, reboot.cgi, etc). Mirrors httpGet's
 // auto Basic→Digest retry, since these same miners require it. ──────
+// Resolves with { status, body } — status:0 means the connection
+// itself failed (never reached the miner). Any other status is
+// whatever the miner's web server actually returned, so callers can
+// tell "200 OK" apart from "404 no such endpoint" or "500 error" —
+// this used to just resolve the body either way, which made it
+// impossible to tell a genuine success from a silent failure.
 function httpPost(ip, port, path, body, timeout, auth) {
   auth = auth || 'root:root';
   const [user, pass] = auth.split(':');
@@ -177,22 +183,33 @@ function httpPost(ip, port, path, body, timeout, auth) {
             const digestHeader = buildDigestAuth(user, pass, 'POST', path, params);
             attempt(digestHeader, true);
           } else {
-            resolve(null);
+            resolve({ status: 401, body: null });
           }
           return;
         }
         let d = '';
         res.on('data', c => d += c);
-        res.on('end', () => { try { resolve(JSON.parse(d)); } catch(e) { resolve(d || true); } });
+        res.on('end', () => {
+          let parsed;
+          try { parsed = JSON.parse(d); } catch(e) { parsed = d || null; }
+          resolve({ status: res.statusCode, body: parsed });
+        });
       });
-      req.on('error',   () => resolve(null));
-      req.on('timeout', () => { req.destroy(); resolve(null); });
+      req.on('error',   () => resolve({ status: 0, body: null }));
+      req.on('timeout', () => { req.destroy(); resolve({ status: 0, body: null }); });
       req.write(body || '');
       req.end();
     }
     const basicAuth = 'Basic ' + Buffer.from(auth).toString('base64');
     attempt(basicAuth, false);
   });
+}
+
+// A miner's own CGI script returning HTTP 200 with an empty/generic
+// body is still meaningfully different from "connection refused" or
+// "404 no such endpoint" — this is genuine confirmation, not a guess.
+function httpOk(result) {
+  return result && result.status >= 200 && result.status < 300;
 }
 
 function postJson(url, body) {
@@ -808,17 +825,14 @@ async function handleActionRequest(msg) {
       case 'restart': {
         const r = await cgCmd(ip, 'restart');
         console.log(`[ACTION-DEBUG] ${ip} restart cgminer response:`, JSON.stringify(r).slice(0, 300));
-        const ok = cgSuccess(r);
-        if (!ok) {
+        if (!cgSuccess(r)) {
           // 'restart' via the CGMiner TCP API isn't supported by every
           // firmware build — fall back to the miner's own hardware
           // "restart mining software" HTTP endpoint instead.
-          try {
-            const httpResult = await httpPost(ip, 80, '/cgi-bin/reboot.cgi', JSON.stringify({ mode: 'restart' }), 5000);
-            await reply(true, { message: 'Mining software restart sent (via HTTP fallback)' });
-          } catch(e) {
-            await reply(false, { error: 'Miner rejected the command: ' + (cgErrorMsg(r) || e.message) });
-          }
+          const httpResult = await httpPost(ip, 80, '/cgi-bin/reboot.cgi', JSON.stringify({ mode: 'restart' }), 5000);
+          console.log(`[ACTION-DEBUG] ${ip} restart HTTP fallback: status=${httpResult.status} body=${JSON.stringify(httpResult.body).slice(0,300)}`);
+          if (httpOk(httpResult)) await reply(true, { message: 'Mining software restart sent (via HTTP fallback)' });
+          else await reply(false, { error: 'Miner rejected the command (cgminer: ' + (cgErrorMsg(r) || 'no reply') + ', HTTP status: ' + httpResult.status + ')' });
         } else {
           await reply(true, { message: 'Mining software restart sent' });
         }
@@ -828,12 +842,10 @@ async function handleActionRequest(msg) {
         let r = await cgCmd(ip, 'restart');
         console.log(`[ACTION-DEBUG] ${ip} reboot cgminer response:`, JSON.stringify(r).slice(0, 300));
         if (!cgSuccess(r)) {
-          try {
-            await httpPost(ip, 80, '/cgi-bin/reboot.cgi', '', 5000);
-            await reply(true, { message: 'Hard reboot sent (via HTTP fallback)' });
-          } catch(e) {
-            await reply(false, { error: 'Miner rejected the command: ' + (cgErrorMsg(r) || e.message) });
-          }
+          const httpResult = await httpPost(ip, 80, '/cgi-bin/reboot.cgi', '', 5000);
+          console.log(`[ACTION-DEBUG] ${ip} reboot HTTP fallback: status=${httpResult.status} body=${JSON.stringify(httpResult.body).slice(0,300)}`);
+          if (httpOk(httpResult)) await reply(true, { message: 'Hard reboot sent (via HTTP fallback)' });
+          else await reply(false, { error: 'Miner rejected the command (cgminer: ' + (cgErrorMsg(r) || 'no reply') + ', HTTP status: ' + httpResult.status + ')' });
         } else {
           await reply(true, { message: 'Hard reboot sent' });
         }
@@ -843,12 +855,10 @@ async function handleActionRequest(msg) {
         let r = await cgCmd(ip, 'zero');
         console.log(`[ACTION-DEBUG] ${ip} sleep cgminer response:`, JSON.stringify(r).slice(0, 300));
         if (!cgSuccess(r)) {
-          try {
-            await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', JSON.stringify({ sleep: 1 }), 5000);
-            await reply(true, { message: 'Sleep mode requested (via HTTP fallback)' });
-          } catch(e) {
-            await reply(false, { error: 'Miner rejected the command: ' + (cgErrorMsg(r) || e.message) });
-          }
+          const httpResult = await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', JSON.stringify({ sleep: 1 }), 5000);
+          console.log(`[ACTION-DEBUG] ${ip} sleep HTTP fallback: status=${httpResult.status} body=${JSON.stringify(httpResult.body).slice(0,300)}`);
+          if (httpOk(httpResult)) await reply(true, { message: 'Sleep mode requested (via HTTP fallback)' });
+          else await reply(false, { error: 'Miner rejected the command (cgminer: ' + (cgErrorMsg(r) || 'no reply') + ', HTTP status: ' + httpResult.status + ')' });
         } else {
           await reply(true, { message: 'Sleep mode requested' });
         }
@@ -858,21 +868,19 @@ async function handleActionRequest(msg) {
         let r = await cgCmd(ip, 'resume');
         console.log(`[ACTION-DEBUG] ${ip} wake cgminer response:`, JSON.stringify(r).slice(0, 300));
         if (!cgSuccess(r)) {
-          try {
-            await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', JSON.stringify({ sleep: 0 }), 5000);
-            await reply(true, { message: 'Wake-up requested (via HTTP fallback)' });
-          } catch(e) {
-            await reply(false, { error: 'Miner rejected the command: ' + (cgErrorMsg(r) || e.message) });
-          }
+          const httpResult = await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', JSON.stringify({ sleep: 0 }), 5000);
+          console.log(`[ACTION-DEBUG] ${ip} wake HTTP fallback: status=${httpResult.status} body=${JSON.stringify(httpResult.body).slice(0,300)}`);
+          if (httpOk(httpResult)) await reply(true, { message: 'Wake-up requested (via HTTP fallback)' });
+          else await reply(false, { error: 'Miner rejected the command (cgminer: ' + (cgErrorMsg(r) || 'no reply') + ', HTTP status: ' + httpResult.status + ')' });
         } else {
           await reply(true, { message: 'Wake-up requested' });
         }
         break;
       }
       case 'led': {
-        try { await httpPost(ip, 80, '/cgi-bin/blink.cgi', JSON.stringify({ blink: params?.on ? 1 : 0 }), 5000); }
-        catch(e) {}
-        await reply(true, { message: 'LED command sent' });
+        const r = await httpPost(ip, 80, '/cgi-bin/blink.cgi', JSON.stringify({ blink: params?.on ? 1 : 0 }), 5000);
+        if (httpOk(r)) await reply(true, { message: 'LED command sent' });
+        else await reply(false, { error: 'Miner did not accept the LED command (HTTP status: ' + r.status + ')' });
         break;
       }
       case 'chiptest': {
@@ -883,41 +891,38 @@ async function handleActionRequest(msg) {
         break;
       }
       case 'setworkerid': {
-        try {
-          const body = JSON.stringify({ pools: [{ url: params.pool_url, user: params.new_user, pass: 'x' }] });
-          await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', body, 5000);
-          await reply(true, { message: 'Worker ID updated' });
-        } catch(e) { await reply(false, { error: e.message }); }
+        const body = JSON.stringify({ pools: [{ url: params.pool_url, user: params.new_user, pass: 'x' }] });
+        const r = await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', body, 5000);
+        if (httpOk(r)) await reply(true, { message: 'Worker ID updated' });
+        else await reply(false, { error: 'Miner rejected the change (HTTP status: ' + r.status + ')' });
         break;
       }
       case 'setpool': {
-        try {
-          const pools = [{ url: params.pool_url, user: params.pool_user, pass: params.pool_pass || 'x' }];
-          if (params.pool_url2) pools.push({ url: params.pool_url2, user: params.pool_user2 || params.pool_user, pass: 'x' });
-          if (params.pool_url3) pools.push({ url: params.pool_url3, user: params.pool_user3 || params.pool_user, pass: 'x' });
-          await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', JSON.stringify({ pools }), 5000);
-          await reply(true, { message: 'Pool configuration updated' });
-        } catch(e) { await reply(false, { error: e.message }); }
+        const pools = [{ url: params.pool_url, user: params.pool_user, pass: params.pool_pass || 'x' }];
+        if (params.pool_url2) pools.push({ url: params.pool_url2, user: params.pool_user2 || params.pool_user, pass: 'x' });
+        if (params.pool_url3) pools.push({ url: params.pool_url3, user: params.pool_user3 || params.pool_user, pass: 'x' });
+        const r = await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', JSON.stringify({ pools }), 5000);
+        if (httpOk(r)) await reply(true, { message: 'Pool configuration updated' });
+        else await reply(false, { error: 'Miner rejected the change (HTTP status: ' + r.status + ')' });
         break;
       }
       case 'overclock': {
-        try {
-          const body = JSON.stringify({ 'bitmain-work-mode': params.mode, freq: params.freq_pct, 'fan-speed': params.fan_pct });
-          await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', body, 5000);
-          await reply(true, { message: 'Power settings applied' });
-        } catch(e) { await reply(false, { error: e.message }); }
+        const body = JSON.stringify({ 'bitmain-work-mode': params.mode, freq: params.freq_pct, 'fan-speed': params.fan_pct });
+        const r = await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', body, 5000);
+        if (httpOk(r)) await reply(true, { message: 'Power settings applied' });
+        else await reply(false, { error: 'Miner rejected the change (HTTP status: ' + r.status + ')' });
         break;
       }
       case 'factoryreset': {
-        try { await httpPost(ip, 80, '/cgi-bin/factory_reset.cgi', JSON.stringify({ reset: 1 }), 5000); await reply(true, { message: 'Factory reset initiated' }); }
-        catch(e) { await reply(false, { error: e.message }); }
+        const r = await httpPost(ip, 80, '/cgi-bin/factory_reset.cgi', JSON.stringify({ reset: 1 }), 5000);
+        if (httpOk(r)) await reply(true, { message: 'Factory reset initiated' });
+        else await reply(false, { error: 'Miner rejected the command (HTTP status: ' + r.status + ')' });
         break;
       }
       case 'firmware': {
-        try {
-          await httpPost(ip, 80, '/cgi-bin/upgrade.cgi', JSON.stringify({ url: params.firmware_url }), 8000);
-          await reply(true, { message: 'Firmware upgrade started — do NOT power off, takes 3-5 minutes' });
-        } catch(e) { await reply(false, { error: e.message }); }
+        const r = await httpPost(ip, 80, '/cgi-bin/upgrade.cgi', JSON.stringify({ url: params.firmware_url }), 8000);
+        if (httpOk(r)) await reply(true, { message: 'Firmware upgrade started — do NOT power off, takes 3-5 minutes' });
+        else await reply(false, { error: 'Miner rejected the upgrade (HTTP status: ' + r.status + ')' });
         break;
       }
       case 'fetchlogs':
