@@ -528,24 +528,18 @@ tr:last-child td{border-bottom:none;}
         </div>
         <div style="padding:16px">
           <div style="background:rgba(0,200,255,.05);border:1px solid rgba(0,200,255,.2);border-radius:6px;padding:10px 12px;margin-bottom:14px;font-size:11px;color:var(--mute)">
-            Use this when a sensor is on a different network than the farm agent (e.g. a separate subnet or router). Requires a free <strong style="color:var(--txt)">dev.ewelink.cc</strong> developer account — the free tier covers periodic polling with no cost.
+            Use this when a sensor is on a different network than the farm agent. Enter your app's details from <strong style="color:var(--txt)">dev.ewelink.cc</strong> once, then tap Connect — you'll briefly go to eWeLink's own login page and come right back.
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
-            <div class="frow"><label>eWeLink Email</label><input class="si" style="width:100%" id="ewEmail" placeholder="your@email.com"></div>
-            <div class="frow"><label>Password</label><input class="si" style="width:100%" id="ewPass" type="password" placeholder="eWeLink app password"></div>
-            <div class="frow"><label>App ID <span style="color:var(--mute);font-size:9px">(dev.ewelink.cc → Create App)</span></label><input class="si" style="width:100%" id="ewAppId" placeholder="App ID"></div>
-            <div class="frow"><label>App Secret</label><input class="si" style="width:100%" id="ewSecret" type="password" placeholder="App Secret"></div>
-            <div class="frow"><label>Region</label>
-              <select class="si" style="width:100%" id="ewRegion">
-                <option value="eu">Europe (eu)</option>
-                <option value="us">Americas (us)</option>
-                <option value="as">Asia (as)</option>
-                <option value="cn">China (cn)</option>
-              </select>
-            </div>
+            <div class="frow"><label>App ID</label><input class="si" style="width:100%" id="ewAppId" placeholder="from dev.ewelink.cc"></div>
+            <div class="frow"><label>App Secret</label><input class="si" style="width:100%" id="ewSecret" type="password" placeholder="from dev.ewelink.cc"></div>
+          </div>
+          <div class="frow" style="margin-bottom:12px">
+            <label>Redirect URL <span style="color:var(--mute);font-size:9px">(must exactly match what's set on dev.ewelink.cc for this app)</span></label>
+            <input class="si" style="width:100%" id="ewRedirectUrl" placeholder="https://your-app-url">
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-g btn-sm" onclick="saveEwelinkConfig()">Save &amp; Connect</button>
+            <button class="btn btn-g btn-sm" onclick="connectEwelink()">🔗 Connect to eWeLink</button>
             <button class="btn btn-sm" onclick="fetchEwelinkDevices()">&#x21BA; Fetch My Sensors</button>
           </div>
           <div id="ewStatus" style="margin-top:10px;font-size:11px;color:var(--mute)"></div>
@@ -588,6 +582,20 @@ tr:last-child td{border-bottom:none;}
       </div>
 
       <div class="panel">
+        <div class="ph"><div class="phd">🌐 Web Login</div></div>
+        <div style="padding:14px">
+          <div style="font-size:11px;color:var(--mute);margin-bottom:12px">
+            How "Open miner web UI" should connect. Only turn on Tailscale mode if <strong style="color:var(--txt)">this specific device</strong> has Tailscale installed and joined to the same network as your farm PCs — otherwise leave it off.
+          </div>
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+            <input type="checkbox" id="tailscaleToggle" onchange="toggleTailscaleMode(this.checked)" style="width:16px;height:16px;accent-color:var(--cyan)">
+            <span style="font-size:12px">Use Tailscale direct connection on this device</span>
+          </label>
+          <div style="font-size:10px;color:var(--mute);margin-top:8px">Off (default): routes through the agent tunnel — works from any browser, anywhere.<br>On: connects straight to the miner's local IP — faster and more reliable, but only works if Tailscale is active on this device.</div>
+        </div>
+      </div>
+
+      <div class="panel">
         <div class="ph"><div class="phd">Notifications</div></div>
         <div style="padding:14px 16px">
           <div class="tw-row"><div style="font-weight:600">Push Notifications</div><label class="toggle"><input type="checkbox" checked><span class="tsldr"></span></label></div>
@@ -614,7 +622,7 @@ tr:last-child td{border-bottom:none;}
       </div>
       <div class="panel">
         <div class="ph"><div class="phd">My Miners</div><span class="badge bgn" id="portalOnlineBadge">0 Online</span></div>
-        <div class="tw"><table><thead><tr><th></th><th>Machine</th><th>Model</th><th>Hashrate</th><th>Temp</th><th>Fan</th><th>Pool</th><th>Status</th></tr></thead><tbody id="portalTable"></tbody></table></div>
+        <div class="tw"><table><thead><tr><th></th><th>Machine</th><th>Model</th><th>Hashrate</th><th>Temp</th><th>Fan</th><th>Pool</th><th>Status</th><th>Action</th></tr></thead><tbody id="portalTable"></tbody></table></div>
       </div>
     </div>
     <div id="page-portal-miners" class="page"><div class="page-title">My Miners</div><div class="card-grid" id="portalMinersGrid"></div></div>
@@ -655,7 +663,7 @@ tr:last-child td{border-bottom:none;}
         <div class="action-btn act-purple" onclick="doAction('sleep')"><div class="action-icon">&#x1F634;</div><div class="action-label">Sleep</div><div class="action-desc">Low-power sleep &mdash; halts hashing, stays warm</div></div>
         <div class="action-btn act-green" onclick="doAction('wake')"><div class="action-icon">&#x26A1;</div><div class="action-label">Wake Up</div><div class="action-desc">Exit sleep mode, resume full hashing</div></div>
         <div class="action-btn act-cyan" onclick="doAction('led')"><div class="action-icon">&#x1F4A1;</div><div class="action-label">LED Blink</div><div class="action-desc">Blink LEDs to find machine in rack</div></div>
-        <div class="action-btn act-cyan" onclick="doAction('webui')"><div class="action-icon">&#x1F310;</div><div class="action-label">Web Login</div><div class="action-desc">Open miner web UI via agent tunnel</div></div>
+        <div class="action-btn act-cyan" onclick="openMinerWebUI()"><div class="action-icon">&#x1F310;</div><div class="action-label">Web Login</div><div class="action-desc">Open miner web UI via agent tunnel</div></div>
       </div>
     </div>
 
@@ -664,7 +672,7 @@ tr:last-child td{border-bottom:none;}
       <div class="action-grid">
         <div class="action-btn act-cyan" onclick="toggleCfg('poolCfg')"><div class="action-icon">&#x1F3CA;</div><div class="action-label">Change Pool</div><div class="action-desc">Update pool &mdash; up to 3 failover pools</div></div>
         <div class="action-btn act-cyan" onclick="toggleCfg('workerCfg')"><div class="action-icon">&#x1F194;</div><div class="action-label">Change Worker ID</div><div class="action-desc">Rename worker in MMX and pool</div></div>
-        <div class="action-btn act-warn" onclick="toggleCfg('powerCfg')"><div class="action-icon">&#x26A1;</div><div class="action-label">Power / OC</div><div class="action-desc">Adjust frequency and power mode</div></div>
+        <div class="action-btn act-warn" id="ctrlPowerBtn" onclick="toggleCfg('powerCfg')"><div class="action-icon">&#x26A1;</div><div class="action-label">Power / OC</div><div class="action-desc">Adjust frequency and power mode</div></div>
       </div>
 
       <div class="config-panel" id="poolCfg">
@@ -720,7 +728,7 @@ tr:last-child td{border-bottom:none;}
       <div class="log-viewer" id="logViewer" style="display:none;margin-top:12px"></div>
     </div>
 
-    <div class="ctrl-sec">
+    <div class="ctrl-sec" id="ctrlMaintenanceSec">
       <div class="ctrl-sec-title" style="color:var(--orange)">&#x1F527; Maintenance</div>
       <div class="action-grid">
         <div class="action-btn act-orange" onclick="doAction('disable')"><div class="action-icon">&#x1F6AB;</div><div class="action-label">Disable</div><div class="action-desc">Take offline for repair &mdash; stays in fleet</div></div>
@@ -736,7 +744,7 @@ tr:last-child td{border-bottom:none;}
       </div>
     </div>
 
-    <div class="ctrl-sec">
+    <div class="ctrl-sec" id="ctrlDangerSec">
       <div class="ctrl-sec-title" style="color:var(--red)">&#x26A0; Danger Zone</div>
       <div class="action-grid">
         <div class="action-btn act-red" onclick="doAction('factoryreset')"><div class="action-icon">&#x1F4A3;</div><div class="action-label">Factory Reset</div><div class="action-desc">Wipe ALL settings &mdash; full reconfiguration needed</div></div>
