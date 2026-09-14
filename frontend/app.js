@@ -1293,6 +1293,8 @@ function mergePollResults(farmId, minersFoundNow){
 }
 
 if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+// If eWeLink just sent us back here with a login code, finish the connection
+try { handleEwelinkCallback(); } catch(e) {}
   try { checkApiSetup(); } catch(e){}
   try { loadFleet(); } catch(e){}
   try { initSensors(); } catch(e){}
@@ -1333,7 +1335,7 @@ function showPage(n){
     if(n==='alerts')        { renderAlerts(); }
     if(n==='scanner')       { populateDropdowns(); }
     if(n==='scada')         { checkScadaSession(); }
-    if(n==='settings')      { updateFleetStat(); renderSensorEntryGrid(); const tt=document.getElementById('tailscaleToggle'); if(tt) tt.checked = localStorage.getItem('use_tailscale_webui') === 'true'; }
+    if(n==='settings')      { updateFleetStat(); renderSensorEntryGrid(); const tt=document.getElementById('tailscaleToggle'); if(tt) tt.checked = localStorage.getItem('use_tailscale_webui') === 'true'; const rr=document.getElementById('ewRedirectUrl'); if(rr && !rr.value) rr.value = window.location.origin + window.location.pathname; }
   } catch(e) { console.error('showPage render error:', e); }
 }
 function nav(page,el){showPage(page);document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));if(el)el.classList.add('active');}
@@ -2003,40 +2005,82 @@ function renderSensorCard(farmId, r){
 // ── eWeLink config ─────────────────────────────────────────
 function saveEwelinkConfig(){
   const cfg = {
-    email:    document.getElementById('ewEmail').value.trim(),
-    password: document.getElementById('ewPass').value,
-    appid:    document.getElementById('ewAppId')?.value.trim() || '',
-    secret:   document.getElementById('ewSecret')?.value.trim() || '',
-    region:   document.getElementById('ewRegion').value,
+    appid:       document.getElementById('ewAppId')?.value.trim() || '',
+    secret:      document.getElementById('ewSecret')?.value.trim() || '',
+    redirectUrl: document.getElementById('ewRedirectUrl')?.value.trim() || '',
   };
-  if(!cfg.email||!cfg.password){alert('Email and password required');return;}
-  if(!cfg.appid||!cfg.secret){alert('App ID and App Secret required.\n\nGet them free from dev.ewelink.cc:\n1. Sign in with your eWeLink email\n2. Create App (Type: OAuth2.0, Role: Standard)\n3. Copy App ID and Secret here');return;}
-  document.getElementById('ewStatus').textContent = 'Saving and connecting...';
-  fetch(API_BASE+'/api/sensors/config',{
+  if(!cfg.appid || !cfg.secret || !cfg.redirectUrl){
+    alert('App ID, App Secret, and Redirect URL are all required.\n\nGet the App ID/Secret from dev.ewelink.cc, and set Redirect URL to exactly match what you entered there when creating the app.');
+    return null;
+  }
+  return fetch(API_BASE+'/api/sensors/config',{
     method:'POST',
     headers:{'Content-Type':'application/json','Authorization':'Bearer '+(localStorage.getItem('ekl_token')||'')},
     body:JSON.stringify(cfg)
-  })
-  .then(r=>r.json())
-  .then(()=>{
-    return fetch(API_BASE+'/api/sensors/login',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+(localStorage.getItem('ekl_token')||'')},
-      body:JSON.stringify({})
+  }).then(r=>r.json());
+}
+
+function connectEwelink(){
+  const status = document.getElementById('ewStatus');
+  status.textContent = 'Saving settings...';
+  const saved = saveEwelinkConfig();
+  if(!saved) return; // validation failed, alert already shown
+
+  saved.then(()=>{
+    status.textContent = 'Redirecting to eWeLink login...';
+    return fetch(API_BASE+'/api/sensors/ewelink/authorize-url', {
+      headers:{'Authorization':'Bearer '+(localStorage.getItem('ekl_token')||'')}
     });
   })
   .then(r=>r.json())
   .then(d=>{
-    if(d.ok){
-      document.getElementById('ewStatus').innerHTML = '<span style="color:var(--green)">✓ Connected — '+d.devices+' devices found</span>';
-      const badge = document.getElementById('ewConnBadge');
-      if(badge){ badge.textContent='Connected'; badge.style.background='rgba(0,255,157,.15)'; badge.style.color='var(--green)'; }
-      fetchEwelinkDevices();
+    if(d.ok && d.url){
+      // Remember we're mid-connection so we can pick up the pieces
+      // when eWeLink sends the browser back to us with a code
+      sessionStorage.setItem('ewelink_connecting', 'true');
+      window.location.href = d.url;
     } else {
-      document.getElementById('ewStatus').innerHTML = '<span style="color:var(--red)">✗ '+d.error+'</span>';
+      status.innerHTML = '<span style="color:var(--red)">✗ '+(d.error||'Could not start login')+'</span>';
     }
   })
-  .catch(e=>{ document.getElementById('ewStatus').innerHTML='<span style="color:var(--red)">✗ '+e.message+'</span>'; });
+  .catch(e=>{ status.innerHTML='<span style="color:var(--red)">✗ '+e.message+'</span>'; });
+}
+
+// Called once, on app load — checks whether eWeLink just sent us back
+// with a one-time code after the user logged in on their own page
+function handleEwelinkCallback(){
+  const params = new URLSearchParams(window.location.search);
+  const code   = params.get('code');
+  const region = params.get('region');
+  if(!code) return;
+
+  // Clean the code out of the URL immediately so refreshing the page
+  // doesn't try to reuse an already-spent one-time code
+  const cleanUrl = window.location.origin + window.location.pathname;
+  window.history.replaceState({}, document.title, cleanUrl);
+
+  const token = localStorage.getItem('ekl_token');
+  if(!token) return; // not logged into Ekalavya yet — can't complete this
+
+  toast('Finishing eWeLink connection...', 'var(--cyan)');
+  fetch(API_BASE+'/api/sensors/ewelink/exchange', {
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+    body: JSON.stringify({ code, region })
+  })
+  .then(r=>r.json())
+  .then(d=>{
+    sessionStorage.removeItem('ewelink_connecting');
+    if(d.ok){
+      toast('✓ eWeLink connected — ' + d.devices + ' devices found', 'var(--green)');
+      const badge = document.getElementById('ewConnBadge');
+      if(badge){ badge.textContent='Connected'; badge.style.background='rgba(0,255,157,.15)'; badge.style.color='var(--green)'; }
+      if (document.getElementById('ewDeviceList')) fetchEwelinkDevices();
+    } else {
+      toast('✗ eWeLink connection failed: ' + d.error, 'var(--red)');
+    }
+  })
+  .catch(e=>{ toast('✗ ' + e.message, 'var(--red)'); });
 }
 
 function fetchEwelinkDevices(){
@@ -2044,25 +2088,32 @@ function fetchEwelinkDevices(){
   fetch(API_BASE+'/api/sensors/devices',{headers:{'Authorization':'Bearer '+(localStorage.getItem('ekl_token')||'')}})
   .then(r=>r.json())
   .then(d=>{
+    if(d.error){
+      document.getElementById('ewStatus').innerHTML = '<span style="color:var(--red)">✗ '+d.error+'</span>';
+      return;
+    }
     if(d.devices){
       document.getElementById('ewStatus').innerHTML = '<span style="color:var(--green)">✓ '+d.devices.length+' devices</span>';
-      // Show assignable devices
-      const tempDevices = d.devices.filter(dev=>dev.temp!=null||dev.humidity!=null);
-      if(tempDevices.length > 0){
+      const badge = document.getElementById('ewConnBadge');
+      if(badge){ badge.textContent='Connected'; badge.style.background='rgba(0,255,157,.15)'; badge.style.color='var(--green)'; }
+
+      if(d.devices.length > 0){
         document.getElementById('ewDeviceList').innerHTML = '<div style="margin-top:10px"><div style="font-size:10px;color:var(--mute);margin-bottom:8px;text-transform:uppercase;letter-spacing:1px">Assign sensors to farms:</div>'+
-          tempDevices.map(dev=>`
-            <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--b1)">
-              <div style="flex:1"><div style="font-size:12px;font-family:'Exo 2',sans-serif;font-weight:600">${dev.name}</div>
-              <div style="font-size:10px;color:var(--mute)">${dev.temp!=null?dev.temp+'°C':''} ${dev.humidity!=null?dev.humidity+'%':''}</div></div>
-              <select style="background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:4px 8px;color:var(--txt);font-size:11px" id="assign_${dev.id}">
-                <option value="">— No farm —</option>
-                ${agents.map(a=>`<option value="${a.id}">${a.name}</option>`).join('')}
-              </select>
-              <button class="abtn" onclick="assignSensor('${dev.id}')">Assign</button>
-            </div>`
-          ).join('')+'</div>';
+          d.devices.map(function(dev){
+            const p = dev.params || {};
+            const temp = p.currentTemperature, hum = p.currentHumidity;
+            return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--b1)">'
+              + '<div style="flex:1"><div style="font-size:12px;font-family:\'Exo 2\',sans-serif;font-weight:600">' + (dev.name||dev.deviceid) + '</div>'
+              + '<div style="font-size:10px;color:var(--mute)">' + (dev.online?'&#x1F7E2; Online':'&#x26AB; Offline') + (temp!=null?' &middot; '+temp+'°C':'') + (hum!=null?' &middot; '+hum+'%':'') + '</div></div>'
+              + '<select style="background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:4px 8px;color:var(--txt);font-size:11px" id="assign_' + dev.deviceid + '">'
+              +   '<option value="">— No farm —</option>'
+              +   agents.map(function(a){ return '<option value="'+a.id+'">'+a.name+'</option>'; }).join('')
+              + '</select>'
+              + '<button class="abtn" onclick="assignSensor(\'' + dev.deviceid + '\')">Assign</button>'
+              + '</div>';
+          }).join('')+'</div>';
       } else {
-        document.getElementById('ewDeviceList').innerHTML = '<div style="font-size:11px;color:var(--mute);margin-top:8px">No temperature/humidity sensors found. Add them in the eWeLink app first.</div>';
+        document.getElementById('ewDeviceList').innerHTML = '<div style="font-size:11px;color:var(--mute);margin-top:8px">No devices found on this eWeLink account.</div>';
       }
     }
   })
