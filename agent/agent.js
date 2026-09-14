@@ -164,27 +164,41 @@ function httpGet(ip, path, auth, debug) {
 // tell "200 OK" apart from "404 no such endpoint" or "500 error" —
 // this used to just resolve the body either way, which made it
 // impossible to tell a genuine success from a silent failure.
+//
+// Some miner CGI scripts (simple trigger-actions like reboot.cgi)
+// only accept GET, not POST, and reply "405 Method Not Allowed" if
+// sent the wrong way. Rather than needing to know this in advance
+// for every firmware, we just retry automatically as GET whenever
+// that specific rejection happens.
 function httpPost(ip, port, path, body, timeout, auth) {
   auth = auth || 'root:root';
   const [user, pass] = auth.split(':');
   return new Promise(resolve => {
-    function attempt(authHeader, isRetry) {
-      const headers = {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body || ''),
-      };
+    function attempt(authHeader, isRetry, httpMethod) {
+      const method = httpMethod || 'POST';
+      const headers = {};
+      if (method === 'POST') {
+        headers['Content-Type'] = 'application/json';
+        headers['Content-Length'] = Buffer.byteLength(body || '');
+      }
       if (authHeader) headers['Authorization'] = authHeader;
-      const req = http.request({ hostname: ip, port: port || 80, path, method: 'POST', headers, timeout: timeout || 5000 }, res => {
+      const req = http.request({ hostname: ip, port: port || 80, path, method, headers, timeout: timeout || 5000 }, res => {
         if (res.statusCode === 401 && !isRetry && res.headers['www-authenticate']) {
           const wa = res.headers['www-authenticate'];
           res.resume();
           if (wa.toLowerCase().startsWith('digest') && user && pass) {
             const params = parseDigestHeader(wa);
-            const digestHeader = buildDigestAuth(user, pass, 'POST', path, params);
-            attempt(digestHeader, true);
+            const digestHeader = buildDigestAuth(user, pass, method, path, params);
+            attempt(digestHeader, true, method);
           } else {
             resolve({ status: 401, body: null });
           }
+          return;
+        }
+        if (res.statusCode === 405 && method === 'POST') {
+          // This script doesn't accept POST — try again as a plain GET
+          res.resume();
+          attempt(authHeader, isRetry, 'GET');
           return;
         }
         let d = '';
@@ -197,7 +211,7 @@ function httpPost(ip, port, path, body, timeout, auth) {
       });
       req.on('error',   () => resolve({ status: 0, body: null }));
       req.on('timeout', () => { req.destroy(); resolve({ status: 0, body: null }); });
-      req.write(body || '');
+      if (method === 'POST') req.write(body || '');
       req.end();
     }
     const basicAuth = 'Basic ' + Buffer.from(auth).toString('base64');
@@ -914,7 +928,11 @@ async function handleActionRequest(msg) {
         break;
       }
       case 'factoryreset': {
-        const r = await httpPost(ip, 80, '/cgi-bin/factory_reset.cgi', JSON.stringify({ reset: 1 }), 5000);
+        // Confirmed directly from this exact firmware's own dashboard code:
+        // the real endpoint is reset_conf.cgi, not factory_reset.cgi — our
+        // httpPost() will auto-retry as GET if it also rejects POST like
+        // reboot.cgi does, same pattern already confirmed working.
+        const r = await httpPost(ip, 80, '/cgi-bin/reset_conf.cgi', JSON.stringify({ reset: 1 }), 5000);
         if (httpOk(r)) await reply(true, { message: 'Factory reset initiated' });
         else await reply(false, { error: 'Miner rejected the command (HTTP status: ' + r.status + ')' });
         break;
