@@ -10,6 +10,19 @@
 // connected farm agent via sendActionRequest(), which executes the
 // real command locally (the agent has actual LAN access) and sends
 // the result back over the same WebSocket connection.
+//
+// PERMISSIONS MODEL:
+//   admin/manager/technician — full access to everything
+//   customer                 — self-service on their OWN assigned
+//                               machines only: restart, reboot, sleep,
+//                               wake, led, chiptest, setworkerid,
+//                               setpool, view/download logs.
+//                               Never: factory reset, overclock,
+//                               disable/enable, delete.
+// Every route that allows 'customer' relies on getWorkerOr404() below
+// to enforce ownership (worker.cid === req.user.id) — without that
+// check, opening these actions to customers at all would let any
+// customer control any OTHER customer's machines too.
 // ============================================================
 const express  = require('express');
 const router   = express.Router();
@@ -20,10 +33,17 @@ const agentMgr = require('../services/agentManager');
 // Helper: look up a worker by ID from the REAL fleet data (PostgreSQL/
 // file fallback via db.js) — not the old in-memory store.js, which is
 // never populated with real fleet workers and always returns nothing.
+// Also enforces per-customer ownership: a customer account may only
+// ever act on a machine assigned to their own account (worker.cid).
 async function getWorkerOr404(req, res) {
   const id = req.body.worker_id || req.params.id;
   const w  = await db.getWorkerById(id);
   if (!w) { res.status(404).json({ error: 'Worker not found' }); return null; }
+  if (req.user?.role === 'customer' && w.cid !== req.user.id) {
+    console.log(`[ACTIONS] ✗ Customer ${req.user.id} denied access to worker ${id} (not their assigned machine)`);
+    res.status(403).json({ error: 'This machine is not assigned to your account' });
+    return null;
+  }
   return w;
 }
 
@@ -60,12 +80,12 @@ async function runTunneledAction(req, res, action, params) {
   res.json({ ok: true, action, message: result.message || `${action} sent to ${w.name}`, ...result });
 }
 
-// ── Simple no-parameter actions ───────────────────────────
-router.post('/restart', authMiddleware, requireRole('admin','technician'), async (req, res) => {
+// ── Simple no-parameter actions — customer self-service allowed ──
+router.post('/restart', authMiddleware, requireRole('admin','manager','technician','customer'), async (req, res) => {
   await runTunneledAction(req, res, 'restart');
 });
 
-router.post('/reboot', authMiddleware, requireRole('admin','technician'), async (req, res) => {
+router.post('/reboot', authMiddleware, requireRole('admin','manager','technician','customer'), async (req, res) => {
   const w = await getWorkerOr404(req, res); if (!w) return;
   await persistWorkerUpdate(w.id, { status: 'rebooting', last_action: 'reboot', last_action_at: new Date().toISOString() });
   const result = await runTunneledActionRaw(w, 'reboot');
@@ -73,7 +93,7 @@ router.post('/reboot', authMiddleware, requireRole('admin','technician'), async 
   res.json({ ok: true, action: 'reboot', message: result.message || `Hard reboot sent to ${w.name}` });
 });
 
-router.post('/sleep', authMiddleware, requireRole('admin','technician'), async (req, res) => {
+router.post('/sleep', authMiddleware, requireRole('admin','manager','technician','customer'), async (req, res) => {
   const w = await getWorkerOr404(req, res); if (!w) return;
   await persistWorkerUpdate(w.id, { status: 'sleeping', last_action: 'sleep', last_action_at: new Date().toISOString() });
   const result = await runTunneledActionRaw(w, 'sleep');
@@ -81,7 +101,7 @@ router.post('/sleep', authMiddleware, requireRole('admin','technician'), async (
   res.json({ ok: true, action: 'sleep', message: result.message || `${w.name} entering sleep mode` });
 });
 
-router.post('/wake', authMiddleware, requireRole('admin','technician'), async (req, res) => {
+router.post('/wake', authMiddleware, requireRole('admin','manager','technician','customer'), async (req, res) => {
   const w = await getWorkerOr404(req, res); if (!w) return;
   await persistWorkerUpdate(w.id, { status: 'online', last_action: 'wake', last_action_at: new Date().toISOString() });
   const result = await runTunneledActionRaw(w, 'wake');
@@ -89,31 +109,46 @@ router.post('/wake', authMiddleware, requireRole('admin','technician'), async (r
   res.json({ ok: true, action: 'wake', message: result.message || `${w.name} waking up` });
 });
 
-router.post('/led', authMiddleware, requireRole('admin','technician'), async (req, res) => {
+router.post('/led', authMiddleware, requireRole('admin','manager','technician','customer'), async (req, res) => {
   await runTunneledAction(req, res, 'led', { on: req.body.on !== false });
 });
 
-router.post('/chiptest', authMiddleware, requireRole('admin','technician'), async (req, res) => {
+router.post('/chiptest', authMiddleware, requireRole('admin','manager','technician','customer'), async (req, res) => {
   await runTunneledAction(req, res, 'chiptest');
 });
 
+// ── Staff-only — risk of data loss / hardware damage / warranty ──
 router.post('/factoryreset', authMiddleware, requireRole('admin'), async (req, res) => {
   if (!req.body.confirmed) return res.status(400).json({ error: 'confirmed:true required for factory reset' });
   await runTunneledAction(req, res, 'factoryreset');
 });
 
-// ── Logs ───────────────────────────────────────────────────
-router.post('/fetchlogs', authMiddleware, async (req, res) => {
+router.post('/overclock', authMiddleware, requireRole('admin'), async (req, res) => {
+  const { mode, freq_pct, fan_pct } = req.body;
+  await runTunneledAction(req, res, 'overclock', { mode, freq_pct, fan_pct });
+});
+
+router.post('/firmware', authMiddleware, requireRole('admin'), async (req, res) => {
+  const w = await getWorkerOr404(req, res); if (!w) return;
+  const { firmware_url, firmware_version } = req.body;
+  if (!firmware_url) return res.status(400).json({ error: 'firmware_url required' });
+  const result = await runTunneledActionRaw(w, 'firmware', { firmware_url });
+  if (!result.ok) return res.status(502).json({ error: result.error || 'Firmware upgrade failed' });
+  await persistWorkerUpdate(w.id, { status: 'upgrading', firmware_target: firmware_version, last_action: 'firmware' });
+  res.json({ ok: true, action: 'firmware', message: result.message || `Firmware upgrade started on ${w.name}`, warning: 'Do NOT power off. Takes 3-5 minutes.' });
+});
+
+// ── Logs — customer self-service allowed, ownership-checked ──
+router.post('/fetchlogs', authMiddleware, requireRole('admin','manager','technician','customer'), async (req, res) => {
   await runTunneledAction(req, res, 'fetchlogs');
 });
 
-router.post('/downloadlogs', authMiddleware, async (req, res) => {
+router.post('/downloadlogs', authMiddleware, requireRole('admin','manager','technician','customer'), async (req, res) => {
   await runTunneledAction(req, res, 'downloadlogs');
 });
 
-// ── Parameterized actions — need extra fields collected from
-// the Control Panel's input fields on the frontend ─────────
-router.post('/setworkerid', authMiddleware, requireRole('admin','manager'), async (req, res) => {
+// ── Parameterized actions — customer self-service allowed ──
+router.post('/setworkerid', authMiddleware, requireRole('admin','manager','customer'), async (req, res) => {
   const w = await getWorkerOr404(req, res); if (!w) return;
   const { new_worker_id } = req.body;
   if (!new_worker_id) return res.status(400).json({ error: 'new_worker_id required' });
@@ -125,7 +160,7 @@ router.post('/setworkerid', authMiddleware, requireRole('admin','manager'), asyn
   res.json({ ok: true, action: 'setworkerid', worker_id: new_worker_id, message: `Worker ID updated to ${new_worker_id}` });
 });
 
-router.post('/setpool', authMiddleware, requireRole('admin','manager'), async (req, res) => {
+router.post('/setpool', authMiddleware, requireRole('admin','manager','customer'), async (req, res) => {
   const w = await getWorkerOr404(req, res); if (!w) return;
   const { pool_url, pool_user, pool_pass, pool_url2, pool_user2, pool_url3, pool_user3 } = req.body;
   if (!pool_url || !pool_user) return res.status(400).json({ error: 'pool_url and pool_user required' });
@@ -135,13 +170,8 @@ router.post('/setpool', authMiddleware, requireRole('admin','manager'), async (r
   res.json({ ok: true, action: 'setpool', pool: pool_url, message: `Pool updated on ${w.name}` });
 });
 
-router.post('/overclock', authMiddleware, requireRole('admin'), async (req, res) => {
-  const { mode, freq_pct, fan_pct } = req.body;
-  await runTunneledAction(req, res, 'overclock', { mode, freq_pct, fan_pct });
-});
-
-// ── Disable / Enable — repair workflow, no agent tunnel needed
-// (these just change status in the fleet record itself) ────
+// ── Disable / Enable / Delete — staff-only repair & fleet
+// management workflow, no agent tunnel needed for disable/enable ──
 router.post('/disable', authMiddleware, requireRole('admin','manager'), async (req, res) => {
   const w = await getWorkerOr404(req, res); if (!w) return;
   const { reason = 'Taken for repair' } = req.body;
