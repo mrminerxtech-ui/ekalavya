@@ -1,192 +1,229 @@
 // ============================================================
-// EWELINK SERVICE — App-style login (no dev account needed)
-// Uses the same credentials as the eWeLink mobile/web app
+// EWELINK SERVICE — OAuth2.0 (Standard app role)
+// ------------------------------------------------------------
+// Standard-role eWeLink apps (the only role available on personal
+// dev.ewelink.cc accounts) do NOT support direct email/password
+// login. Access requires the full OAuth2.0 flow:
+//   1. Send the user to eWeLink's own login page (buildAuthorizeUrl)
+//   2. eWeLink redirects back to us with a one-time "code"
+//   3. We exchange that code, server-side, for an access token
+//      (exchangeCodeForToken)
+//   4. The access token expires periodically — refreshAccessToken()
+//      renews it automatically using the longer-lived refresh token
 // ============================================================
 const https  = require('https');
 const crypto = require('crypto');
 
-// Known working App IDs from open-source eWeLink integrations
-// Tried in order until one works
-const APP_CONFIGS = [
-  { appid: 'oeVkj2lYFkl4tb2lh3Z6n1OlAgpIZsKY', secret: '6Nz4n0xA8s8qdxQf2GqurZj2Fs55FUvM' },
-  { appid: 'McFJj4Noke1mGDZCR1QarGW7P9YlW9Fl', secret: 'ApSxXnHhjnfz2ywMkI7OcM7fc22zIpAa' },
-  { appid: 'YzfeftUVcZ6twZw1OoVKPRFYTrGEg01Q', secret: '4G91qSoboqYO4Y0XJ0LPPKIsq8reHdfa' },
-];
-
 const state = {
-  token:     null,
-  expiry:    null,
-  devices:   [],
-  readings:  {},
-  sensorMap: {},
-  appConfig: null, // which app config worked
+  accessToken:  null,
+  refreshToken: null,
+  atExpiry:     null, // access token expiry (ms timestamp)
+  region:       null, // set once eWeLink tells us during the callback
+  devices:      [],
+  readings:     {},
+  sensorMap:    {},
   config: {
-    email:    process.env.EWELINK_EMAIL    || '',
-    password: process.env.EWELINK_PASSWORD || '',
-    region:   process.env.EWELINK_REGION   || 'eu',
-    appid:    process.env.EWELINK_APPID    || '',
-    secret:   process.env.EWELINK_SECRET   || '',
+    appid:       process.env.EWELINK_APPID       || '',
+    secret:      process.env.EWELINK_SECRET      || '',
+    redirectUrl: process.env.EWELINK_REDIRECT_URL || '',
   },
 };
 
-function regionHost(region) {
-  const h = { eu: 'eu-apia.coolkit.cc', us: 'us-apia.coolkit.cc', as: 'as-apia.coolkit.cc', cn: 'cn-apia.coolkit.cc' };
-  return h[region] || h.eu;
+function updateConfig(cfg) {
+  state.config = { ...state.config, ...cfg };
 }
 
-function sign(secret, body) {
-  return crypto.createHmac('sha256', secret).update(JSON.stringify(body)).digest('base64');
+function getConfig() {
+  return { ...state.config, connected: !!state.accessToken };
 }
 
-function apiRequest(host, method, path, body, token, appid) {
+function getStatus() {
+  return {
+    connected: !!state.accessToken,
+    region:    state.region,
+    devices:   state.devices.length,
+  };
+}
+
+// ── Signing helper — every eWeLink v2 API call needs a signature
+// computed as base64(HMAC-SHA256(payload, appSecret)) ──────────────
+function sign(secret, payload) {
+  return crypto.createHmac('sha256', secret).update(payload, 'utf8').digest('base64');
+}
+
+// ── Step 1: build the URL to send the user's browser to ──────────
+// eWeLink's authorization page lives on a fixed host regardless of
+// region — the region is only revealed later, in the callback.
+function buildAuthorizeUrl(stateToken) {
+  const { appid, secret, redirectUrl } = state.config;
+  if (!appid || !secret || !redirectUrl) {
+    throw new Error('App ID, App Secret, and Redirect URL must be set first');
+  }
+  const seq = Date.now().toString();
+  const authorization = sign(secret, appid + seq);
+
+  const params = new URLSearchParams({
+    state:        stateToken || 'ekalavya',
+    clientId:     appid,
+    authorization,
+    seq,
+    redirectUrl,
+    nonce:        crypto.randomBytes(8).toString('hex'),
+    grantType:    'authorization_code',
+    showQRCode:   'false',
+  });
+  return 'https://c2ccdn.coolkit.cc/oauth/index.html?' + params.toString();
+}
+
+// ── Generic signed request to a region-specific eWeLink API host ──
+function apiRequest(host, method, path, body, accessToken) {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : null;
-    const headers = { 'Content-Type': 'application/json', 'X-CK-Appid': appid };
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
+    const headers = { 'Content-Type': 'application/json', 'X-CK-Appid': state.config.appid };
+    if (accessToken) {
+      headers['Authorization'] = `Bearer ${accessToken}`;
+    } else if (data) {
+      headers['Authorization'] = 'Sign ' + sign(state.config.secret, data);
     }
     if (data) headers['Content-Length'] = Buffer.byteLength(data);
-    const req = https.request({ hostname: host, path, method, headers, timeout: 8000 }, res => {
+
+    const req = https.request({ hostname: host, path, method, headers, timeout: 10000 }, res => {
       let d = '';
       res.on('data', c => d += c);
-      res.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve({ error: -1, raw: d.slice(0,200) }); } });
+      res.on('end', () => {
+        try { resolve(JSON.parse(d)); } catch(e) { reject(new Error('Invalid response from eWeLink: ' + d.slice(0, 200))); }
+      });
     });
-    req.on('error', e => reject(e));
-    req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('eWeLink request timed out')); });
     if (data) req.write(data);
     req.end();
   });
 }
 
-// ── Login — try each App Config until one works ───────────
-async function login() {
-  const { email, password, region } = state.config;
-  if (!email || !password) return { error: 'Set EWELINK_EMAIL and EWELINK_PASSWORD in Railway Variables' };
+// ── Step 2: exchange the one-time code for real access ────────────
+async function exchangeCodeForToken(code, region) {
+  const host = `${region || 'us'}-apia.coolkit.cc`;
+  const body = { grantType: 'authorization_code', code, redirectUrl: state.config.redirectUrl };
+  const resp = await apiRequest(host, 'POST', '/v2/user/oauth/token', body, null);
 
-  const host = regionHost(region);
-
-  // Build list: user-supplied first, then fallbacks
-  const configs = [];
-  if (state.config.appid && state.config.secret) {
-    configs.push({ appid: state.config.appid, secret: state.config.secret });
+  if (resp.error && resp.error !== 0) {
+    console.error('[EWELINK] Token exchange failed:', JSON.stringify(resp));
+    return { error: resp.msg || resp.error || 'Token exchange failed' };
   }
-  configs.push(...APP_CONFIGS);
 
-  for (const cfg of configs) {
-    const body = { email, password, countryCode: '+1' };
-    try {
-      const headers_sign = sign(cfg.secret, body);
-      // Try v2 API
-      const r2 = await apiRequest(host, 'POST', '/v2/user/login', body,
-        null, cfg.appid).catch(() => null);
-      if (r2?.error === 0 && r2.data?.accessToken) {
-        state.token     = r2.data.accessToken;
-        state.expiry    = Date.now() + (r2.data.atExpiredTime || 86400000);
-        state.appConfig = cfg;
-        console.log(`[EWELINK] ✓ Login OK (appid: ${cfg.appid.slice(0,8)}...)`);
-        return { ok: true };
-      }
-      // Try v1 API (older format)
-      const nonce = Math.random().toString(36).slice(2, 10);
-      const ts    = Math.floor(Date.now() / 1000);
-      const body1 = { email, password, version: 8, ts, nonce, appid: cfg.appid };
-      const sign1 = crypto.createHmac('sha256', cfg.secret).update(JSON.stringify(body1)).digest('base64');
-      const r1 = await apiRequest(
-        'eu-api.coolkit.cc', 'POST', '/api/user/login', body1,
-        null, cfg.appid
-      ).catch(() => null);
-      if (r1?.at) {
-        state.token     = r1.at;
-        state.expiry    = Date.now() + 86400000;
-        state.appConfig = { ...cfg, v1: true };
-        console.log(`[EWELINK] ✓ Login OK v1 (appid: ${cfg.appid.slice(0,8)}...)`);
-        return { ok: true };
-      }
-      if (r2?.error || r1?.error) console.warn(`[EWELINK] Config ${cfg.appid.slice(0,8)} failed: ${r2?.error||r1?.error}`);
-    } catch(e) { console.warn(`[EWELINK] Config error: ${e.message}`); }
+  const d = resp.data || {};
+  state.accessToken  = d.accessToken;
+  state.refreshToken = d.refreshToken;
+  state.atExpiry      = Date.now() + (d.atExpiredTime || 30 * 24 * 3600 * 1000);
+  state.region        = region || 'us';
+  console.log(`[EWELINK] ✓ OAuth login successful (region: ${state.region})`);
+  return { ok: true };
+}
+
+// ── Step 3: renew the access token when it's close to expiring ────
+async function refreshAccessToken() {
+  if (!state.refreshToken) return { error: 'No refresh token — connect again' };
+  const host = `${state.region || 'us'}-apia.coolkit.cc`;
+  const body = { rt: state.refreshToken };
+  const resp = await apiRequest(host, 'POST', '/v2/user/refresh', body, null);
+  if (resp.error && resp.error !== 0) {
+    console.error('[EWELINK] Token refresh failed:', JSON.stringify(resp));
+    return { error: resp.msg || 'Refresh failed — please reconnect' };
   }
-  return { error: 'Login failed. Check your email and password. The eWeLink API may be temporarily unavailable.' };
+  const d = resp.data || {};
+  state.accessToken = d.accessToken || state.accessToken;
+  state.atExpiry     = Date.now() + (d.atExpiredTime || 30 * 24 * 3600 * 1000);
+  console.log('[EWELINK] ✓ Access token refreshed');
+  return { ok: true };
 }
 
 async function ensureToken() {
-  if (!state.token || Date.now() > (state.expiry - 60000)) await login();
-  return state.token;
+  if (!state.accessToken) return { error: 'Not connected — use Connect to eWeLink first' };
+  if (state.atExpiry && Date.now() > state.atExpiry - 5 * 60 * 1000) {
+    const r = await refreshAccessToken();
+    if (r.error) return r;
+  }
+  return { ok: true };
 }
 
-// ── Get devices ───────────────────────────────────────────
+// ── Device list ─────────────────────────────────────────────────
 async function getDevices() {
-  const token = await ensureToken();
-  if (!token || !state.appConfig) return [];
-  const host = regionHost(state.config.region);
-  const cfg  = state.appConfig;
-  try {
-    let devices = [];
-    if (cfg.v1) {
-      // v1 device list
-      const r = await apiRequest(host, 'GET', '/api/user/device?version=8&getTags=1', null, token, cfg.appid);
-      devices = (r.devicelist || []).map(d => ({
-        id: d.deviceid, name: d.name, online: d.online,
-        model: d.extra?.model || 'Sensor',
-        temp:     d.params?.temperature ?? d.params?.currentTemperature ?? null,
-        humidity: d.params?.humidity    ?? d.params?.currentHumidity    ?? null,
-        params:   d.params || {},
-      }));
-    } else {
-      // v2 device list
-      const r = await apiRequest(host, 'GET', '/v2/device/thing?num=100', null, token, cfg.appid);
-      if (r.error === 0 && r.data?.thingList) {
-        devices = r.data.thingList
-          .filter(i => i.itemType === 1)
-          .map(i => {
-            const d = i.itemData || i;
-            const p = d.params || {};
-            return {
-              id: d.deviceid, name: d.name, online: d.online,
-              model: d.extra?.model || d.productModel || 'Sensor',
-              temp:     p.temperature ?? p.currentTemperature ?? null,
-              humidity: p.humidity    ?? p.currentHumidity    ?? null,
-              params: p,
-            };
-          });
-      }
-    }
-    state.devices = devices.filter(d => d.id);
-    console.log(`[EWELINK] ${state.devices.length} devices`);
-    return state.devices;
-  } catch(e) { console.error('[EWELINK] getDevices:', e.message); return []; }
+  const ok = await ensureToken();
+  if (ok.error) return ok;
+  const host = `${state.region || 'us'}-apia.coolkit.cc`;
+  const resp = await apiRequest(host, 'GET', '/v2/device/thing', null, state.accessToken);
+  if (resp.error && resp.error !== 0) return { error: resp.msg || 'Could not fetch devices' };
+
+  const things = (resp.data && resp.data.thingList) || [];
+  state.devices = things.map(t => ({
+    deviceid: t.itemData?.deviceid,
+    name:     t.itemData?.name,
+    online:   t.itemData?.online,
+    params:   t.itemData?.params,
+    extra:    t.itemData?.extra,
+  })).filter(d => d.deviceid);
+
+  return { ok: true, devices: state.devices };
 }
 
+function getReadings() { return state.readings; }
+function getDeviceList() { return state.devices; }
+
+// ── Farm ↔ device assignment (which sensor belongs to which farm) ──
+function setSensorMap(farmId, deviceIds) {
+  state.sensorMap[farmId] = deviceIds || [];
+}
+function getSensorMap() {
+  return state.sensorMap;
+}
+
+// ── Fetch live temperature/humidity for one device from eWeLink ───
+async function fetchDeviceStatus(deviceId) {
+  const ok = await ensureToken();
+  if (ok.error) return null;
+  const host = `${state.region || 'us'}-apia.coolkit.cc`;
+  try {
+    const resp = await apiRequest(host, 'GET', `/v2/device/thing/status?type=1&id=${deviceId}`, null, state.accessToken);
+    if (resp.error && resp.error !== 0) return null;
+    const params = resp.data?.params || {};
+    const temp = parseFloat(params.currentTemperature ?? params.temperature ?? '');
+    const hum  = parseFloat(params.currentHumidity    ?? params.humidity    ?? '');
+    return {
+      temp:     isNaN(temp) ? null : temp,
+      humidity: isNaN(hum)  ? null : hum,
+      updated:  new Date().toISOString(),
+    };
+  } catch(e) {
+    console.error(`[EWELINK] Status fetch failed for ${deviceId}:`, e.message);
+    return null;
+  }
+}
+
+// ── Refresh readings for every device assigned to any farm ────────
 async function refreshReadings() {
-  const devices = await getDevices();
-  devices.forEach(d => {
-    if (d.temp !== null || d.humidity !== null) {
-      state.readings[d.id] = { name: d.name, model: d.model, temp: d.temp, humidity: d.humidity, online: d.online, updated: new Date().toISOString() };
-    }
-  });
+  const allDeviceIds = Object.values(state.sensorMap).flat();
+  for (const deviceId of allDeviceIds) {
+    const reading = await fetchDeviceStatus(deviceId);
+    if (reading) state.readings[deviceId] = reading;
+  }
   return state.readings;
 }
 
-function setSensorMap(farmId, ids) { state.sensorMap[farmId] = ids; }
-function getSensorMap()             { return state.sensorMap;  }
-function getReadings()              { return state.readings;   }
-function getDevicesState()          { return state.devices;    }
+// ── Look up the current reading for whichever device(s) are
+// assigned to a given farm ──────────────────────────────────────
 function getFarmReadings(farmId) {
-  return (state.sensorMap[farmId] || []).map(id => ({ id, ...state.readings[id] })).filter(r => r.name);
-}
-function getConfig() {
-  return { email: state.config.email, region: state.config.region, configured: !!(state.config.email && state.config.password), loggedIn: !!state.token };
-}
-function updateConfig(cfg) {
-  Object.assign(state.config, cfg);
-  state.token = null; state.expiry = null; state.appConfig = null;
+  const deviceIds = state.sensorMap[farmId] || [];
+  return deviceIds.map(id => ({
+    device_id: id,
+    device_name: state.devices.find(d => d.deviceid === id)?.name || id,
+    ...(state.readings[id] || { temp: null, humidity: null, updated: null }),
+  }));
 }
 
-setInterval(async () => {
-  if (state.config.email) { try { await refreshReadings(); } catch(e) {} }
-}, 5 * 60 * 1000);
-
-setTimeout(async () => {
-  if (state.config.email) { await refreshReadings().catch(() => {}); }
-}, 10000);
-
-module.exports = { login, getDevices, refreshReadings, setSensorMap, getSensorMap, getReadings, getFarmReadings, getConfig, updateConfig, getDevicesState };
+module.exports = {
+  updateConfig, getConfig, getStatus,
+  buildAuthorizeUrl, exchangeCodeForToken, refreshAccessToken,
+  getDevices, getReadings, getDeviceList,
+  setSensorMap, getSensorMap, refreshReadings, getFarmReadings,
+};
