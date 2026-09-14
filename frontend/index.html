@@ -9,7 +9,8 @@
 <meta name="theme-color" content="#00c8ff">
 <link rel="manifest" href="manifest.json">
   <link rel="icon" type="image/x-icon" href="favicon.ico">
-<title>Ekalavya</title>
+  <link rel="apple-touch-icon" href="icon-192.png">
+<title>EKY Monitoring</title>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;600;700;900&family=Exo+2:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#0d1b2a;--s1:#16283d;--s2:#1c3450;--b1:#2d4a68;--b2:#3d5f80;--cyan:#00d4ff;--green:#39ff14;--purple:#7b2fff;--warn:#ffee00;--red:#ff2d55;--gold:#ffd700;--orange:#ff5f00;--txt:#f0f4f8;--mute:#7a94ac;--glow:0 0 24px rgba(255,95,0,0.35);}
@@ -228,8 +229,7 @@ tr:last-child td{border-bottom:none;}
 <div id="loginScreen">
   <div class="login-glow"></div>
   <div class="login-card">
-    <div class="login-hex">&#x2B21;</div>
-    <div class="login-logo">EKALAVYA</div>
+    <img src="logo-sidebar.png" alt="EKY Monitoring" style="width:96px;height:96px;display:block;margin:0 auto 8px">
     <div class="login-sub">Remote ASIC Management</div>
     <div class="ltabs">
       <div class="ltab active" onclick="setLTab('admin',this)">Admin</div>
@@ -249,7 +249,7 @@ tr:last-child td{border-bottom:none;}
 
 <!-- TOPBAR -->
 <nav id="topbar" style="display:none">
-  <div class="logo">EKL</div>
+  <img class="logo" src="logo-sidebar.png" alt="EKY Monitoring" style="height:32px;width:auto;display:block">
   <div class="logo-badge" id="topBadge">ADMIN</div>
   <div class="spacer"></div>
   <div class="pill ap" id="agentPill">
