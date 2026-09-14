@@ -2427,19 +2427,13 @@ function openMinerWebUI(wid){
     url = API_BASE + '/api/webui/' + encodeURIComponent(w.farm_id) + '/' + encodeURIComponent(w.ip) + '/?token=' + encodeURIComponent(token);
   }
 
-  // Mobile browsers and installed PWAs often silently block
-  // window.open() even from a direct click — a real <a> element with
-  // target="_blank" is treated more reliably as a genuine user action.
-  const a = document.createElement('a');
-  a.href = url;
-  a.target = '_blank';
-  a.rel = 'noopener';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-
-  const label = useTailscale ? 'directly via Tailscale' : 'via ' + (agents.find(function(a){return a.id===w.farm_id;})||{}).name + ' tunnel';
-  toast('Opening ' + w.name + ' web UI ' + label + '... if nothing appears, check your browser blocked a pop-up.', 'var(--cyan)');
+  // "New tab" approaches (window.open, anchor click with target=_blank)
+  // are handled very inconsistently across mobile browsers and installed
+  // home-screen apps — some silently swallow them with no way to detect
+  // it. Navigating the current screen is less convenient (you'll need to
+  // use your browser's Back button to return) but works everywhere,
+  // every time, with nothing that can silently fail.
+  window.location.href = url;
 }
 
 function doAction(action, wid){
