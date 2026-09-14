@@ -349,6 +349,31 @@ function renderBilling() {
 
 function renderPortal() {
   try { renderDash(); } catch(e) {}
+  const tb = document.getElementById('portalTable');
+  if (!tb || !currentUser) return;
+
+  const mine = workers.filter(function(w){ return w.cid === currentUser.id; });
+
+  if (mine.length === 0) {
+    tb.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--mute)">No machines assigned to your account yet.<br><span style="font-size:11px">Contact your farm operator to have machines linked to you.</span></td></tr>';
+    return;
+  }
+
+  tb.innerHTML = mine.map(function(w){
+    const eff = effectiveStatus(w);
+    const sb  = w.disabled ? 'bor' : eff === 'online' ? 'bgn' : 'brn';
+    return '<tr>'
+      + '<td><span class="sdot ' + sdot(w) + '"></span></td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:12px;color:var(--cyan);font-weight:700">' + (w.name || w.ip) + '</td>'
+      + '<td style="font-size:11px">' + cleanBrandModel(w.brand) + ' ' + cleanBrandModel(w.model) + '</td>'
+      + '<td style="color:var(--green);font-family:Share Tech Mono,monospace;font-size:11px">' + (w.hr_display || '—') + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (w.temp > 0 ? w.temp + '°C' : '—') + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (w.fan > 0 ? w.fan : '—') + '</td>'
+      + '<td style="font-size:10px;color:var(--mute)">' + (w.pool || '—') + '</td>'
+      + '<td><span class="badge ' + sb + '">' + (w.disabled ? 'REPAIR' : eff.toUpperCase()) + '</span></td>'
+      + '<td><button class="abtn" onclick="openCtrl(\'' + w.id + '\')">Manage</button></td>'
+      + '</tr>';
+  }).join('');
 }
 
 // ── Populate scanner dropdowns ────────────────────────────
@@ -403,6 +428,18 @@ function openCtrl(wid) {
       + '<button class="abtn" style="margin-top:6px" onclick="editSerialAndMac(\'' + w.id + '\');refreshCtrl();">&#x270E; Edit S/N &amp; MAC</button>';
   }
   el.style.display = 'flex';
+
+  // Customer accounts get self-service basics only — no overclock/
+  // power tuning, no firmware upgrade or disable/enable repair
+  // workflow, and no factory reset or delete. Ownership of the
+  // machine itself is still enforced server-side on every request;
+  // this is just keeping their UI free of buttons they can't use.
+  const powerBtn = document.getElementById('ctrlPowerBtn');
+  const maintSec = document.getElementById('ctrlMaintenanceSec');
+  const dangerSec = document.getElementById('ctrlDangerSec');
+  if (powerBtn)  powerBtn.style.display  = isCustomer ? 'none' : '';
+  if (maintSec)  maintSec.style.display  = isCustomer ? 'none' : '';
+  if (dangerSec) dangerSec.style.display = isCustomer ? 'none' : '';
 }
 function closeCtrl() { const el = document.getElementById('ctrlPanel'); if (el) el.style.display = 'none'; activeWid = null; }
 function refreshCtrl() { if (activeWid) openCtrl(activeWid); }
@@ -2376,20 +2413,33 @@ function openMinerWebUI(wid){
   if(!w.ip){ toast('No IP address for this miner', 'var(--red)'); return; }
 
   const useTailscale = localStorage.getItem('use_tailscale_webui') === 'true';
+  var url;
 
   if (useTailscale) {
     // Direct connection — assumes THIS device is on the same Tailscale
     // network as the farm PC acting as a subnet router. No proxy, no
     // URL rewriting, no JS shims needed — it's a real network path.
-    window.open('http://' + w.ip + '/', '_blank');
-    toast('Opening ' + w.name + ' directly via Tailscale...', 'var(--cyan)');
-    return;
+    url = 'http://' + w.ip + '/';
+  } else {
+    if(!w.farm_id){ toast('This miner has no farm assigned — cannot tunnel', 'var(--red)'); return; }
+    const token = localStorage.getItem('ekl_token');
+    if(!token){ toast('Not logged in', 'var(--red)'); return; }
+    url = API_BASE + '/api/webui/' + encodeURIComponent(w.farm_id) + '/' + encodeURIComponent(w.ip) + '/?token=' + encodeURIComponent(token);
   }
 
-  if(!w.farm_id){ toast('This miner has no farm assigned — cannot tunnel', 'var(--red)'); return; }
-  const url = API_BASE + '/api/webui/' + encodeURIComponent(w.farm_id) + '/' + encodeURIComponent(w.ip) + '/';
-  window.open(url, '_blank');
-  toast('Opening ' + w.name + ' web UI via ' + (agents.find(function(a){return a.id===w.farm_id;})||{}).name + ' tunnel...', 'var(--cyan)');
+  // Mobile browsers and installed PWAs often silently block
+  // window.open() even from a direct click — a real <a> element with
+  // target="_blank" is treated more reliably as a genuine user action.
+  const a = document.createElement('a');
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+
+  const label = useTailscale ? 'directly via Tailscale' : 'via ' + (agents.find(function(a){return a.id===w.farm_id;})||{}).name + ' tunnel';
+  toast('Opening ' + w.name + ' web UI ' + label + '... if nothing appears, check your browser blocked a pop-up.', 'var(--cyan)');
 }
 
 function doAction(action, wid){
@@ -2421,6 +2471,12 @@ function doAction(action, wid){
   } else if (action === 'factoryreset') {
     if (!confirm('Factory reset ' + w.name + '? This wipes all settings and cannot be undone.')) return;
     body.confirmed = true;
+  } else if (action === 'firmware') {
+    var fwUrl = document.getElementById('fwUrl'), fwVer = document.getElementById('fwVer');
+    if (!fwUrl || !fwUrl.value.trim()) { toast('Enter a firmware URL or file path first', 'var(--warn)'); return; }
+    if (!confirm('Upgrade firmware on ' + w.name + '? Do not power off during the process.')) return;
+    body.firmware_url = fwUrl.value.trim();
+    body.firmware_version = fwVer ? fwVer.value.trim() : '';
   } else if (action === 'delete') {
     if (!confirm('Permanently remove ' + w.name + ' from the fleet? This cannot be undone.')) return;
   }
