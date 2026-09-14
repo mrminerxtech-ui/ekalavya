@@ -1,15 +1,16 @@
 {
-  "version": "1.1.11",
-  "released_at": "2026-09-12T22:00:00Z",
+  "version": "1.1.12",
+  "released_at": "2026-09-13T09:00:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "Web UI tunnel now auto-retries with Digest authentication when a miner rejects Basic auth \u2014 some Antminer firmware (e.g. L9/L11) requires Digest, previously causing a silent login failure through the tunnel"
+    "Fixed restart/reboot/sleep/wake reporting success when the miner actually rejected the command \u2014 was only checking 'did we get a response' instead of 'did the miner confirm it worked', so the HTTP fallback never triggered when it should have",
+    "Added debug logging showing the miner's raw response for these actions"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "b342186cbc028b8e20c4ee3b45236b4e0e5bd5bc69d0d8693beca1f52878d238",
-      "size": 48816
+      "sha256": "c466012ab22c4af2dfc1697e21063c9527fe933afb5292c5c6c48ab0f6ca6d4c",
+      "size": 51223
     },
     {
       "name": "sonoff-th.js",
