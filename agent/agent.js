@@ -859,6 +859,13 @@ async function handleActionRequest(msg) {
         catch(e) { await reply(false, { error: e.message }); }
         break;
       }
+      case 'firmware': {
+        try {
+          await httpPost(ip, 80, '/cgi-bin/upgrade.cgi', JSON.stringify({ url: params.firmware_url }), 8000);
+          await reply(true, { message: 'Firmware upgrade started — do NOT power off, takes 3-5 minutes' });
+        } catch(e) { await reply(false, { error: e.message }); }
+        break;
+      }
       case 'fetchlogs':
       case 'downloadlogs': {
         const logText = await fetchBootLog(ip);
@@ -901,7 +908,7 @@ function handleWebuiProxyRequest(msg) {
         type: 'webui_proxy_response',
         request_id,
         status: res.statusCode,
-        headers: { 'content-type': contentType || 'text/html' },
+        headers: { 'content-type': contentType || 'text/html', 'location': res.headers['location'] || null },
         body: isText ? buf.toString('utf8') : buf.toString('base64'),
         encoding: isText ? 'utf8' : 'base64',
       });
