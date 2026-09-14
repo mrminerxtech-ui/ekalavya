@@ -883,50 +883,66 @@ async function handleActionRequest(msg) {
 
 function handleWebuiProxyRequest(msg) {
   const { request_id, ip, method, path: reqPath, headers, body } = msg;
+  const REQUEST_USER = 'root', REQUEST_PASS = 'root'; // every Antminer unit uses this
 
-  const options = {
-    hostname: ip,
-    port:     80,
-    path:     reqPath || '/',
-    method:   method || 'GET',
-    headers:  { 'Authorization': 'Basic ' + Buffer.from('root:root').toString('base64') },
-    timeout:  8000,
-  };
-  if (body) options.headers['Content-Length'] = Buffer.byteLength(body);
-  if (headers && headers['content-type']) options.headers['Content-Type'] = headers['content-type'];
-
-  const req = http.request(options, res => {
-    const chunks = [];
-    res.on('data', c => chunks.push(c));
-    res.on('end', () => {
-      const buf = Buffer.concat(chunks);
-      const contentType = res.headers['content-type'] || '';
-      // Text content goes over the wire as plain UTF-8; anything else
-      // (images, fonts, etc.) is base64-encoded so it survives JSON
-      const isText = /text|json|javascript|xml|css/i.test(contentType);
-      send({
-        type: 'webui_proxy_response',
-        request_id,
-        status: res.statusCode,
-        headers: { 'content-type': contentType || 'text/html', 'location': res.headers['location'] || null },
-        body: isText ? buf.toString('utf8') : buf.toString('base64'),
-        encoding: isText ? 'utf8' : 'base64',
-      });
+  function sendResponse(res, buf) {
+    const contentType = res.headers['content-type'] || '';
+    // Text content goes over the wire as plain UTF-8; anything else
+    // (images, fonts, etc.) is base64-encoded so it survives JSON
+    const isText = /text|json|javascript|xml|css/i.test(contentType);
+    send({
+      type: 'webui_proxy_response',
+      request_id,
+      status: res.statusCode,
+      headers: { 'content-type': contentType || 'text/html', 'location': res.headers['location'] || null },
+      body: isText ? buf.toString('utf8') : buf.toString('base64'),
+      encoding: isText ? 'utf8' : 'base64',
     });
-  });
+  }
 
-  req.on('error', e => {
-    send({ type: 'webui_proxy_response', request_id, status: 502,
-      headers: { 'content-type': 'text/plain' }, body: 'Cannot reach miner: ' + e.message, encoding: 'utf8' });
-  });
-  req.on('timeout', () => {
-    req.destroy();
-    send({ type: 'webui_proxy_response', request_id, status: 504,
-      headers: { 'content-type': 'text/plain' }, body: 'Miner did not respond in time', encoding: 'utf8' });
-  });
+  function sendError(status, text) {
+    send({ type: 'webui_proxy_response', request_id, status,
+      headers: { 'content-type': 'text/plain' }, body: text, encoding: 'utf8' });
+  }
 
-  if (body) req.write(body);
-  req.end();
+  // Some Antminer firmware wants Basic auth, some wants Digest — same
+  // root/root credentials either way. Try Basic first (cheap, no extra
+  // round-trip); if the miner replies 401 asking for Digest instead,
+  // automatically retry with it. The person browsing never sees any of
+  // this or has to type a password themselves.
+  function attempt(authHeader, isRetry) {
+    const options = {
+      hostname: ip, port: 80, path: reqPath || '/', method: method || 'GET',
+      headers: { 'Authorization': authHeader },
+      timeout: 8000,
+    };
+    if (body) options.headers['Content-Length'] = Buffer.byteLength(body);
+    if (headers && headers['content-type']) options.headers['Content-Type'] = headers['content-type'];
+
+    const req = http.request(options, res => {
+      if (res.statusCode === 401 && !isRetry && res.headers['www-authenticate']) {
+        const wa = res.headers['www-authenticate'];
+        res.resume(); // drain this response, we're retrying
+        if (wa.toLowerCase().startsWith('digest')) {
+          const params = parseDigestHeader(wa);
+          const digestHeader = buildDigestAuth(REQUEST_USER, REQUEST_PASS, method || 'GET', reqPath || '/', params);
+          attempt(digestHeader, true);
+          return;
+        }
+      }
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => sendResponse(res, Buffer.concat(chunks)));
+    });
+
+    req.on('error',   e => sendError(502, 'Cannot reach miner: ' + e.message));
+    req.on('timeout', () => { req.destroy(); sendError(504, 'Miner did not respond in time'); });
+    if (body) req.write(body);
+    req.end();
+  }
+
+  const basicAuth = 'Basic ' + Buffer.from(REQUEST_USER + ':' + REQUEST_PASS).toString('base64');
+  attempt(basicAuth, false);
 }
 
 async function pollLanli() {
