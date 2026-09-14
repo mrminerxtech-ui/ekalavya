@@ -777,6 +777,19 @@ function send(payload) {
 // ── Web UI tunnel — proxy a browser request to a miner's local
 // web dashboard, and send the raw response back to the backend
 // over the same WebSocket connection. ──────────────────────
+// ── CGMiner API responses can be "valid JSON" while still meaning
+// "command rejected" — e.g. {"STATUS":[{"STATUS":"E","Msg":"Invalid
+// command"}]}. Checking "did we get JSON back" isn't the same as
+// checking "did the miner actually confirm success" — this caused
+// action buttons to report success while doing nothing on the miner.
+function cgSuccess(r) {
+  const s = r?.STATUS?.[0]?.STATUS;
+  return s === 'S' || s === 'I'; // Success or Informational
+}
+function cgErrorMsg(r) {
+  return r?.STATUS?.[0]?.Msg || null;
+}
+
 // ── Miner control actions — restart, reboot, sleep, wake, led, etc ──
 // These run HERE on the agent (which has real LAN access to the miner)
 // rather than on the cloud backend, which has no path to a private
@@ -794,25 +807,66 @@ async function handleActionRequest(msg) {
     switch (action) {
       case 'restart': {
         const r = await cgCmd(ip, 'restart');
-        await reply(!!r, { message: 'Mining software restart sent' });
+        console.log(`[ACTION-DEBUG] ${ip} restart cgminer response:`, JSON.stringify(r).slice(0, 300));
+        const ok = cgSuccess(r);
+        if (!ok) {
+          // 'restart' via the CGMiner TCP API isn't supported by every
+          // firmware build — fall back to the miner's own hardware
+          // "restart mining software" HTTP endpoint instead.
+          try {
+            const httpResult = await httpPost(ip, 80, '/cgi-bin/reboot.cgi', JSON.stringify({ mode: 'restart' }), 5000);
+            await reply(true, { message: 'Mining software restart sent (via HTTP fallback)' });
+          } catch(e) {
+            await reply(false, { error: 'Miner rejected the command: ' + (cgErrorMsg(r) || e.message) });
+          }
+        } else {
+          await reply(true, { message: 'Mining software restart sent' });
+        }
         break;
       }
       case 'reboot': {
         let r = await cgCmd(ip, 'restart');
-        if (!r) { try { await httpPost(ip, 80, '/cgi-bin/reboot.cgi', '', 5000); r = true; } catch(e) {} }
-        await reply(!!r, { message: 'Hard reboot sent' });
+        console.log(`[ACTION-DEBUG] ${ip} reboot cgminer response:`, JSON.stringify(r).slice(0, 300));
+        if (!cgSuccess(r)) {
+          try {
+            await httpPost(ip, 80, '/cgi-bin/reboot.cgi', '', 5000);
+            await reply(true, { message: 'Hard reboot sent (via HTTP fallback)' });
+          } catch(e) {
+            await reply(false, { error: 'Miner rejected the command: ' + (cgErrorMsg(r) || e.message) });
+          }
+        } else {
+          await reply(true, { message: 'Hard reboot sent' });
+        }
         break;
       }
       case 'sleep': {
         let r = await cgCmd(ip, 'zero');
-        if (!r) { try { await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', JSON.stringify({ sleep: 1 }), 5000); r = true; } catch(e) {} }
-        await reply(!!r, { message: 'Sleep mode requested' });
+        console.log(`[ACTION-DEBUG] ${ip} sleep cgminer response:`, JSON.stringify(r).slice(0, 300));
+        if (!cgSuccess(r)) {
+          try {
+            await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', JSON.stringify({ sleep: 1 }), 5000);
+            await reply(true, { message: 'Sleep mode requested (via HTTP fallback)' });
+          } catch(e) {
+            await reply(false, { error: 'Miner rejected the command: ' + (cgErrorMsg(r) || e.message) });
+          }
+        } else {
+          await reply(true, { message: 'Sleep mode requested' });
+        }
         break;
       }
       case 'wake': {
         let r = await cgCmd(ip, 'resume');
-        if (!r) { try { await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', JSON.stringify({ sleep: 0 }), 5000); r = true; } catch(e) {} }
-        await reply(!!r, { message: 'Wake-up requested' });
+        console.log(`[ACTION-DEBUG] ${ip} wake cgminer response:`, JSON.stringify(r).slice(0, 300));
+        if (!cgSuccess(r)) {
+          try {
+            await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', JSON.stringify({ sleep: 0 }), 5000);
+            await reply(true, { message: 'Wake-up requested (via HTTP fallback)' });
+          } catch(e) {
+            await reply(false, { error: 'Miner rejected the command: ' + (cgErrorMsg(r) || e.message) });
+          }
+        } else {
+          await reply(true, { message: 'Wake-up requested' });
+        }
         break;
       }
       case 'led': {
@@ -825,7 +879,7 @@ async function handleActionRequest(msg) {
         // No universal ASIC self-test command exists across firmware —
         // 'check' is the closest CGMiner diagnostic available generically.
         const r = await cgCmd(ip, 'check');
-        await reply(!!r, { message: 'Diagnostic check requested', result: r });
+        await reply(cgSuccess(r), { message: 'Diagnostic check requested', result: r });
         break;
       }
       case 'setworkerid': {
