@@ -1,15 +1,16 @@
 {
-  "version": "1.1.8",
-  "released_at": "2026-09-12T19:00:00Z",
+  "version": "1.1.10",
+  "released_at": "2026-09-12T21:00:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "Added diagnostic logging to the action tunnel (both agent and backend sides) to pinpoint exactly where miner control commands are getting lost"
+    "Web UI tunnel: switched to relative-path resolution instead of prefix-rewriting \u2014 simpler, more robust technique inspired by studying how a competitor product handles this",
+    "Fixed redirect (Location header) forwarding, which was previously silently dropped"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "865e84e4d6cfbdee7f38de9035ff4b02302b3c6d9ac281e8b806a12515aaae77",
-      "size": 47445
+      "sha256": "f0316db7a46002952d76c9041098745422eb81976944415c8ec795f0e10d50e7",
+      "size": 47837
     },
     {
       "name": "sonoff-th.js",
