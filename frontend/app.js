@@ -797,6 +797,84 @@ function csvParseLine(line){
 }
 
 // ── Export fleet as CSV ────────────────────────────────────
+// ── Find & merge duplicate miners ───────────────────────────
+// For machines that were physically moved BEFORE this de-duplication
+// logic existed — finds any group of workers sharing the same MAC or
+// Serial number and merges them into one record, keeping whichever
+// is currently online (or most recently updated if none are), and
+// carrying over any customer assignment / manual edits from either.
+function findDuplicateMiners(){
+  const groups = {};
+  workers.forEach(function(w){
+    [w.mac, w.serial].filter(Boolean).forEach(function(key){
+      if(!groups[key]) groups[key] = [];
+      if(groups[key].indexOf(w) === -1) groups[key].push(w);
+    });
+  });
+  const dupGroups = [];
+  const seen = new Set();
+  Object.values(groups).forEach(function(group){
+    if(group.length < 2) return;
+    const ids = group.map(function(w){return w.id;}).sort().join(',');
+    if(seen.has(ids)) return;
+    seen.add(ids);
+    dupGroups.push(group);
+  });
+  return dupGroups;
+}
+
+function mergeDuplicateGroup(group){
+  // Prefer the one currently online; otherwise the most recently added/updated
+  const winner = group.slice().sort(function(a,b){
+    const aOn = effectiveStatus(a) === 'online' ? 1 : 0;
+    const bOn = effectiveStatus(b) === 'online' ? 1 : 0;
+    if (aOn !== bOn) return bOn - aOn;
+    return new Date(b.added_at||0) - new Date(a.added_at||0);
+  })[0];
+
+  // Carry over anything useful from the losing record(s) that the
+  // winner is missing — customer assignment, manual MAC/Serial, notes
+  group.forEach(function(w){
+    if(w === winner) return;
+    if(!winner.cid && w.cid) winner.cid = w.cid;
+    if(!winner.mac && w.mac) winner.mac = w.mac;
+    if(!winner.serial && w.serial) winner.serial = w.serial;
+    if(w.mac_manual) winner.mac_manual = true;
+    if(w.serial_manual) winner.serial_manual = true;
+  });
+
+  const losingIds = group.filter(function(w){ return w !== winner; }).map(function(w){ return w.id; });
+  workers = workers.filter(function(w){ return losingIds.indexOf(w.id) === -1; });
+  return { winner: winner, removed: losingIds.length };
+}
+
+function findAndMergeDuplicates(){
+  const dupGroups = findDuplicateMiners();
+  if(dupGroups.length === 0){
+    toast('No duplicate miners found \u2014 fleet is clean', 'var(--green)');
+    return;
+  }
+  const totalDupes = dupGroups.reduce(function(sum,g){ return sum + g.length - 1; }, 0);
+  const preview = dupGroups.slice(0,5).map(function(g){
+    return '\u2022 ' + (g[0].name||g[0].ip) + ' (' + g.length + ' copies across: ' + g.map(function(w){return w.farm||w.ip;}).join(', ') + ')';
+  }).join('\n');
+  const more = dupGroups.length > 5 ? '\n...and ' + (dupGroups.length-5) + ' more' : '';
+
+  if(!confirm('Found ' + dupGroups.length + ' duplicate miner(s), ' + totalDupes + ' extra record(s) to remove:\n\n' + preview + more + '\n\nMerge now? The most recently active copy of each is kept.')) return;
+
+  let totalRemoved = 0;
+  dupGroups.forEach(function(g){
+    const result = mergeDuplicateGroup(g);
+    totalRemoved += result.removed;
+  });
+
+  _fleetHash = ''; _workersHash = '';
+  saveFleet();
+  saveFleetToBackend();
+  renderWorkers(); renderDash();
+  toast('\u2713 Merged ' + dupGroups.length + ' duplicate(s) \u2014 removed ' + totalRemoved + ' extra record(s)', 'var(--green)');
+}
+
 function clearAllFleetData(){
   if(!confirm('Clear ALL workers and customers? This also deletes them from the server — this cannot be undone.')) return;
   workers = [];
@@ -1223,13 +1301,40 @@ function mergePollResults(farmId, minersFoundNow){
   const nowIps = new Set(minersFoundNow.map(function(m){ return m.ip; }));
   let changed = false;
 
+  // Find an existing worker record for this poll result — checking
+  // MAC and Serial FIRST, across the whole fleet (not just this farm).
+  // A machine physically moved between sites keeps its MAC/Serial but
+  // gets a new IP — matching by those hardware IDs first is what
+  // recognizes "this is the same miner, just relocated" instead of
+  // creating a duplicate entry under the new address.
+  function findExistingWorker(m){
+    if (m.mac) {
+      const byMac = workers.find(function(w){ return w.mac && w.mac === m.mac; });
+      if (byMac) return byMac;
+    }
+    if (m.serial) {
+      const bySerial = workers.find(function(w){ return w.serial && w.serial === m.serial; });
+      if (bySerial) return bySerial;
+    }
+    return workers.find(function(w){ return w.ip === m.ip && w.farm_id === farmId; }) || null;
+  }
+
   // Update or add every miner this poll found
   minersFoundNow.forEach(function(m){
-    const existing = workers.find(function(w){ return w.ip === m.ip; });
+    const existing = findExistingWorker(m);
     if(existing){
       if(!existing.disabled){
+        const moved = existing.ip !== m.ip || existing.farm_id !== farmId;
+        if (moved) {
+          const newFarmName = (agents.find(function(a){ return a.id === farmId; }) || {}).name || farmId;
+          console.log('[MERGE] ' + (existing.name||existing.ip) + ' moved: ' + existing.farm + '(' + existing.ip + ') \u2192 ' + newFarmName + '(' + m.ip + ')');
+          existing.ip      = m.ip;
+          existing.farm_id = farmId;
+          existing.farm    = newFarmName;
+          toast('\uD83D\uDCE6 ' + (existing.name||m.ip) + ' relocated to ' + newFarmName, 'var(--cyan)');
+        }
         // Only these fields refresh on every scan — everything else
-        // (name, model, brand, algo, MAC, serial, pool, farm, customer)
+        // (name, model, brand, algo, MAC, serial, pool, customer)
         // stays exactly as it was first detected or as manually edited.
         // Once a MAC/Serial is found, it's permanent — no re-detection needed.
         existing.hashrate   = m.hashrate   ?? existing.hashrate;
@@ -1279,7 +1384,9 @@ function mergePollResults(farmId, minersFoundNow){
   });
 
   // Anything under this farm that this poll DIDN'T see is now offline —
-  // it was either unplugged or is unreachable right now
+  // it was either unplugged, moved to another farm (handled above,
+  // its farm_id already changed so it won't match here), or is
+  // unreachable right now
   workers.forEach(function(w){
     if(w.farm_id === farmId && !w.disabled && !nowIps.has(w.ip) && w.status !== 'offline'){
       w.status = 'offline';
