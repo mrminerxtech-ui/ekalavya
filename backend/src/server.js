@@ -1,4 +1,20 @@
 require('dotenv').config();
+
+// ── Global safety net ──────────────────────────────────────────
+// All farm agents share this ONE backend process. Without this,
+// a single unexpected error while handling one farm's message
+// (an unhandled promise rejection, a bad field in one poll result,
+// etc.) can crash the entire Node process — disconnecting every
+// other farm at the same moment, even though their own agents and
+// connections were completely fine. This makes that impossible:
+// any otherwise-fatal error is logged and the server keeps running.
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL-CAUGHT] Uncaught exception (server stays up):', err.message, err.stack);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL-CAUGHT] Unhandled promise rejection (server stays up):', reason);
+});
+
 const express     = require('express');
 const http        = require('http');
 const WebSocket   = require('ws');
@@ -127,9 +143,15 @@ agentWss.on('connection', (ws, req) => {
 
   agentMgr.registerAgent(ws, { farm_id: farmId, farm_name: farmName, subnet, hostname, agent_version: version });
 
-  ws.on('message', raw => {
-    try { agentMgr.handleAgentMessage(farmId, JSON.parse(raw)); }
-    catch (e) { console.error('[AGENT] Parse error:', e.message); }
+  ws.on('message', async (raw) => {
+    try {
+      const msg = JSON.parse(raw);
+      await agentMgr.handleAgentMessage(farmId, msg);
+    } catch (e) {
+      // Isolated to this one farm's message — never lets a problem
+      // with one agent's data affect any other agent's connection
+      console.error(`[AGENT][${farmId}] Message handling error (isolated, other farms unaffected):`, e.message);
+    }
   });
   ws.on('close', () => agentMgr.unregisterAgent(farmId));
   ws.on('error', err => console.error(`[AGENT][${farmId}]`, err.message));
