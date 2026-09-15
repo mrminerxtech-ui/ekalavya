@@ -175,9 +175,12 @@ function renderWorkers() {
     const agentDown = w.farm_id && !isAgentOnline(w.farm_id) && !w.disabled;
     const st   = w.disabled ? 'REPAIR' : agentDown ? 'AGENT OFFLINE' : eSt.toUpperCase();
     const sb   = w.disabled ? 'bor' : eSt === 'online' ? 'bgn' : 'brn';
-    return '<tr>'
+    // Disabled machines get a distinct amber-tinted row so they stand
+    // out at a glance in a long list, not just via the small badge text
+    const rowStyle = w.disabled ? ' style="background:rgba(255,107,53,.06)"' : '';
+    return '<tr' + rowStyle + '>'
       + '<td><input type="checkbox" class="worker-check" data-wid="' + w.id + '" style="accent-color:var(--cyan)"></td>'
-      + '<td><div style="font-family:Share Tech Mono,monospace;font-weight:700;font-size:12px;color:var(--cyan)">' + (w.name || '—') + '</div>'
+      + '<td><div style="font-family:Share Tech Mono,monospace;font-weight:700;font-size:12px;color:' + (w.disabled ? 'var(--orange)' : 'var(--cyan)') + '">' + (w.name || '—') + '</div>'
       + '<span class="sdot ' + sdot(w) + '" style="margin-right:4px"></span><span style="font-size:9px;color:var(--mute)">' + (w.algo || '') + '</span>'
       + '</td>'
       + '<td title="MAC: ' + (w.mac || 'unknown') + ' — click to edit" class="sn-edit-cell" data-wid="' + w.id + '" style="font-family:Share Tech Mono,monospace;font-size:10px;cursor:pointer">'
