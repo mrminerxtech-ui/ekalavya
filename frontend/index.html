@@ -576,6 +576,7 @@ tr:last-child td{border-bottom:none;}
             <button class="btn btn-sm btn-g" onclick="exportFleet()">⬇ Export CSV</button>
             <button class="btn btn-sm" onclick="document.getElementById('importFile').click()">⬆ Import CSV</button>
             <input type="file" id="importFile" accept=".csv" style="display:none" onchange="importFleet(event)">
+            <button class="btn btn-sm" onclick="findAndMergeDuplicates()">&#x1F517; Find &amp; Merge Duplicates</button>
             <button class="btn btn-sm btn-r" onclick="clearAllFleetData()">✕ Clear All</button>
           </div>
         </div>
