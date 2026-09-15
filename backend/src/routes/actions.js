@@ -172,14 +172,14 @@ router.post('/setpool', authMiddleware, requireRole('admin','manager','customer'
 
 // ── Disable / Enable / Delete — staff-only repair & fleet
 // management workflow, no agent tunnel needed for disable/enable ──
-router.post('/disable', authMiddleware, requireRole('admin','manager'), async (req, res) => {
+router.post('/disable', authMiddleware, requireRole('admin','manager','technician'), async (req, res) => {
   const w = await getWorkerOr404(req, res); if (!w) return;
   const { reason = 'Taken for repair' } = req.body;
   await persistWorkerUpdate(w.id, { disabled: true, disabled_reason: reason, disabled_at: new Date().toISOString(), status: 'disabled', last_action: 'disable' });
   res.json({ ok: true, action: 'disable', message: `${w.name} disabled: ${reason}` });
 });
 
-router.post('/enable', authMiddleware, requireRole('admin','manager'), async (req, res) => {
+router.post('/enable', authMiddleware, requireRole('admin','manager','technician'), async (req, res) => {
   const w = await getWorkerOr404(req, res); if (!w) return;
   await persistWorkerUpdate(w.id, { disabled: false, disabled_reason: null, disabled_at: null, status: 'offline', last_action: 'enable' });
   res.json({ ok: true, action: 'enable', message: `${w.name} re-enabled` });
