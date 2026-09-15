@@ -467,8 +467,16 @@ function refreshCtrl() { if (activeWid) openCtrl(activeWid); }
 
 // ── Quick assign ──────────────────────────────────────────
 function quickAssign(cid) {
-  const sh = document.getElementById('assignSheet');
-  if (sh) { document.getElementById('assignSel').value = cid; renderAssign(); openSheet('assignSheet'); }
+  // Previously guarded behind checking for a "assignSheet" overlay
+  // element that doesn't exist anywhere in the page — that guard
+  // always failed silently, so this function never did anything at
+  // all when the button was clicked. The real Assign panel lives
+  // directly on the Customers page itself, no overlay needed.
+  const sel = document.getElementById('assignSel');
+  if (sel) sel.value = cid;
+  renderAssign();
+  const panel = document.getElementById('assignPanel');
+  if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 function renderAssign() {
   const cid = document.getElementById('assignSel')?.value;
@@ -507,9 +515,31 @@ function applyAssign() {
   const cid = document.getElementById('assignSel')?.value;
   const c   = customers.find(x => x.id === cid);
   if (!c) return;
+
+  // A miner can only belong to one customer — remove it from any
+  // OTHER customer's list before assigning it here
   customers.forEach(x => { if (x.id !== cid) x.miners = x.miners.filter(id => !pendingAssign.includes(id)); });
+
+  const previouslyAssigned = c.miners || [];
   c.miners = [...pendingAssign];
+
+  // Keep each worker's OWN cid field in sync — this is what the
+  // Workers page's Customer column and the customer portal actually
+  // read. Without this, an assignment made here would only ever
+  // update the customer's own miners[] list and never show up
+  // anywhere else in the app.
+  pendingAssign.forEach(function(wid){
+    const w = workers.find(function(x){ return x.id === wid; });
+    if (w) w.cid = cid;
+  });
+  previouslyAssigned.forEach(function(wid){
+    if (pendingAssign.includes(wid)) return; // still assigned, leave it
+    const w = workers.find(function(x){ return x.id === wid; });
+    if (w && w.cid === cid) w.cid = ''; // unchecked this time — clear it
+  });
+
   saveFleet();
+  saveFleetToBackend();
   toast('✓ ' + c.name + ': ' + pendingAssign.length + ' miners assigned', 'var(--green)');
   renderCustomers(); renderWorkers(); renderDash();
 }
