@@ -298,6 +298,24 @@ function renderCustomers() {
         + '<div class="card-row"><span class="ck">Online</span><span class="cv g">' + onl + ' / ' + c.miners.length + '</span></div></div>'
         + '<div class="card-foot"><button class="btn btn-sm qa-btn" data-cid="' + c.id + '">&#x26CF; Assign Miners</button></div></div>';
     }).join('');
+
+  // Wire up each card's "Assign Miners" button (was rendered but never
+  // actually listened for — clicking it silently did nothing before)
+  el.querySelectorAll('.qa-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){ quickAssign(this.dataset.cid); });
+  });
+
+  // Populate the "Select Customer" dropdown in the Assign panel with
+  // every real customer — it previously only ever had the placeholder
+  // "Choose customer..." option and nothing else, so there was never
+  // anything selectable there at all.
+  const sel = document.getElementById('assignSel');
+  if (sel) {
+    const prevValue = sel.value;
+    sel.innerHTML = '<option value="">Choose customer...</option>'
+      + customers.map(function(c){ return '<option value="' + c.id + '">' + c.name + '</option>'; }).join('');
+    if (customers.some(function(c){ return c.id === prevValue; })) sel.value = prevValue;
+  }
 }
 
 // Build the current live alert list — used by both the badge and the Alerts page
