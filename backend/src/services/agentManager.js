@@ -51,46 +51,54 @@ function unregisterAgent(farmId) {
 }
 
 function handleAgentMessage(farmId, msg) {
-  const agent = connectedAgents.get(farmId);
-  if (!agent) return;
+  // Wraps the ENTIRE handler — any error anywhere in here (now or in
+  // anything added later) is caught and logged per-farm, and can
+  // never propagate up to crash the shared backend process that
+  // every other farm's connection also depends on.
+  try {
+    const agent = connectedAgents.get(farmId);
+    if (!agent) return;
 
-  agent.last_seen   = new Date().toISOString();
-  agent.miner_count = msg.miner_count || msg.miners?.length || agent.miner_count;
+    agent.last_seen   = new Date().toISOString();
+    agent.miner_count = msg.miner_count || msg.miners?.length || agent.miner_count;
 
-  // Heartbeat — reply to agent
-  if (msg.type === 'heartbeat' && agent.ws.readyState === 1) {
-    try { agent.ws.send(JSON.stringify({ type: 'heartbeat_ack' })); } catch(e) {}
-  }
+    // Heartbeat — reply to agent
+    if (msg.type === 'heartbeat' && agent.ws.readyState === 1) {
+      try { agent.ws.send(JSON.stringify({ type: 'heartbeat_ack' })); } catch(e) {}
+    }
 
-  // Web UI tunnel — resolve the matching pending request
-  if (msg.type === 'webui_proxy_response') {
-    resolveWebuiResponse(msg);
-    return; // nothing else needs this message
-  }
+    // Web UI tunnel — resolve the matching pending request
+    if (msg.type === 'webui_proxy_response') {
+      resolveWebuiResponse(msg);
+      return; // nothing else needs this message
+    }
 
-  // Miner action tunnel — resolve the matching pending request
-  if (msg.type === 'action_response') {
-    resolveActionResponse(msg);
-    return;
-  }
+    // Miner action tunnel — resolve the matching pending request
+    if (msg.type === 'action_response') {
+      resolveActionResponse(msg);
+      return;
+    }
 
-  // Broadcast scan events directly to frontend (no wrapping)
-  if (['scan_found','scan_progress','poll_result','scan_update'].includes(msg.type)) {
-    try {
-      const { broadcast } = require('../websocket');
-      broadcast({ ...msg, farm_id: farmId }); // spread msg directly — frontend reads msg.miner etc.
-      console.log(`[AGENT→FRONTEND] ${msg.type} from ${farmId}`);
-    } catch(e) { console.error('[BROADCAST]', e.message); }
-  }
+    // Broadcast scan events directly to frontend (no wrapping)
+    if (['scan_found','scan_progress','poll_result','scan_update'].includes(msg.type)) {
+      try {
+        const { broadcast } = require('../websocket');
+        broadcast({ ...msg, farm_id: farmId }); // spread msg directly — frontend reads msg.miner etc.
+        console.log(`[AGENT→FRONTEND] ${msg.type} from ${farmId}`);
+      } catch(e) { console.error('[BROADCAST]', e.message); }
+    }
 
-  // Persist auto-poll results into the fleet — this is what makes new
-  // machines appear automatically and unplugged ones show offline,
-  // independent of whether anyone has the app open right now.
-  if (msg.type === 'poll_result' && Array.isArray(msg.miners)) {
-    const db = require('./db');
-    db.upsertWorkersByIp(farmId, msg.miners).then(ok => {
-      if (ok) console.log(`[POLL→DB] ${farmId}: ${msg.miners.length} miners persisted`);
-    }).catch(e => console.error('[POLL→DB] error:', e.message));
+    // Persist auto-poll results into the fleet — this is what makes new
+    // machines appear automatically and unplugged ones show offline,
+    // independent of whether anyone has the app open right now.
+    if (msg.type === 'poll_result' && Array.isArray(msg.miners)) {
+      const db = require('./db');
+      db.upsertWorkersByIp(farmId, msg.miners).then(ok => {
+        if (ok) console.log(`[POLL→DB] ${farmId}: ${msg.miners.length} miners persisted`);
+      }).catch(e => console.error('[POLL→DB] error:', e.message));
+    }
+  } catch(e) {
+    console.error(`[AGENT][${farmId}] handleAgentMessage error (isolated — other farms unaffected):`, e.message);
   }
 }
 
