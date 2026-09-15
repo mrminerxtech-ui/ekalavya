@@ -88,33 +88,55 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
     // into the existing saved record so user-set fields (customer
     // assignment, disabled flag, farm/cid) are preserved, not overwritten
     for (const m of minersFoundNow) {
-      const existing = await client.query(
-        `SELECT data FROM workers WHERE data->>'ip' = $1 AND farm_id = $2`,
-        [m.ip, farmId]
-      );
-      let merged;
-      if (existing.rows.length > 0) {
-        const old = existing.rows[0].data;
-        merged = { ...old, ...m, id: old.id, cid: old.cid, disabled: old.disabled,
+      // A machine can be PHYSICALLY MOVED between farms for operational
+      // reasons — its IP changes, but its MAC and Serial never do.
+      // Check the WHOLE fleet (not just this farm) for a hardware match
+      // before assuming this IP represents a brand-new machine. This is
+      // what stops a moved miner from showing up as a duplicate under a
+      // second record at its new address.
+      let existing = null;
+      if (m.mac) {
+        const byMac = await client.query(`SELECT id, data FROM workers WHERE data->>'mac' = $1`, [m.mac]);
+        if (byMac.rows.length > 0) existing = byMac.rows[0];
+      }
+      if (!existing && m.serial) {
+        const bySerial = await client.query(`SELECT id, data FROM workers WHERE data->>'serial' = $1`, [m.serial]);
+        if (bySerial.rows.length > 0) existing = bySerial.rows[0];
+      }
+      if (!existing) {
+        const byIp = await client.query(`SELECT id, data FROM workers WHERE data->>'ip' = $1 AND farm_id = $2`, [m.ip, farmId]);
+        if (byIp.rows.length > 0) existing = byIp.rows[0];
+      }
+
+      if (existing) {
+        const old = existing.data;
+        const moved = old.ip !== m.ip || old.farm_id !== farmId;
+        const merged = { ...old, ...m, id: old.id, cid: old.cid, disabled: old.disabled,
                    disabled_reason: old.disabled_reason, disabled_at: old.disabled_at,
-                   farm: old.farm, farm_id: old.farm_id, status: m.status || 'online' };
+                   // If it moved, adopt the NEW farm/ip — that's genuinely
+                   // where it is now. Otherwise keep exactly as before.
+                   farm: moved ? (m.farm || old.farm) : old.farm,
+                   farm_id: moved ? farmId : old.farm_id,
+                   status: m.status || 'online' };
         await client.query(
-          `UPDATE workers SET data=$1, updated_at=NOW() WHERE data->>'ip'=$2 AND farm_id=$3`,
-          [JSON.stringify(merged), m.ip, farmId]
+          `UPDATE workers SET data=$1, farm_id=$2, updated_at=NOW() WHERE id=$3`,
+          [JSON.stringify(merged), merged.farm_id, old.id]
         );
+        if (moved) console.log(`[DB] Miner ${old.id} moved: ${old.farm_id}(${old.ip}) → ${farmId}(${m.ip})`);
       } else {
-        merged = { ...m, id: 'w-' + m.ip.replace(/\./g, '-'), farm_id: farmId, cid: '',
+        const fresh = { ...m, id: 'w-' + m.ip.replace(/\./g, '-'), farm_id: farmId, cid: '',
                    disabled: false, status: 'online', source: 'auto-poll',
                    added_at: new Date().toISOString() };
         await client.query(
           `INSERT INTO workers(id, data, farm_id) VALUES($1,$2,$3)`,
-          [merged.id, JSON.stringify(merged), farmId]
+          [fresh.id, JSON.stringify(fresh), farmId]
         );
       }
     }
 
     // Mark workers under this farm that WEREN'T in this poll as offline —
-    // they've either been unplugged or are unreachable right now
+    // they've either been unplugged, moved to another farm (handled
+    // above), or are unreachable right now
     const allForFarm = await client.query(`SELECT id, data FROM workers WHERE farm_id = $1`, [farmId]);
     for (const row of allForFarm.rows) {
       if (!nowIps.has(row.data.ip) && row.data.status !== 'offline' && !row.data.disabled) {
@@ -133,31 +155,42 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
 }
 
 function upsertWorkersFallback(farmId, minersFoundNow) {
-  // File-based fallback — simpler in-memory merge, same semantics
+  // File-based fallback — same MAC/Serial-first matching as above,
+  // simplified for the in-memory/file store
   const existing = loadFallback('workers');
   const nowIps = new Set(minersFoundNow.map(m => m.ip));
-  const byIp = new Map(existing.map(w => [w.ip, w]));
+  const byId = new Map(existing.map(w => [w.id, w]));
+
+  function findExisting(m) {
+    if (m.mac)    { const f = existing.find(w => w.mac === m.mac); if (f) return f; }
+    if (m.serial) { const f = existing.find(w => w.serial === m.serial); if (f) return f; }
+    return existing.find(w => w.ip === m.ip && w.farm_id === farmId) || null;
+  }
 
   minersFoundNow.forEach(m => {
-    const old = byIp.get(m.ip);
-    if (old && old.farm_id === farmId) {
-      byIp.set(m.ip, { ...old, ...m, id: old.id, cid: old.cid, disabled: old.disabled,
+    const old = findExisting(m);
+    if (old) {
+      const moved = old.ip !== m.ip || old.farm_id !== farmId;
+      byId.set(old.id, { ...old, ...m, id: old.id, cid: old.cid, disabled: old.disabled,
         disabled_reason: old.disabled_reason, disabled_at: old.disabled_at,
-        farm: old.farm, farm_id: old.farm_id, status: m.status || 'online' });
-    } else if (!old) {
-      byIp.set(m.ip, { ...m, id: 'w-' + m.ip.replace(/\./g, '-'), farm_id: farmId, cid: '',
+        farm: moved ? (m.farm || old.farm) : old.farm,
+        farm_id: moved ? farmId : old.farm_id,
+        status: m.status || 'online' });
+    } else {
+      const id = 'w-' + m.ip.replace(/\./g, '-');
+      byId.set(id, { ...m, id, farm_id: farmId, cid: '',
         disabled: false, status: 'online', source: 'auto-poll', added_at: new Date().toISOString() });
     }
   });
 
   // Mark missing-from-this-poll workers (for this farm) as offline
-  byIp.forEach((w, ip) => {
-    if (w.farm_id === farmId && !nowIps.has(ip) && w.status !== 'offline' && !w.disabled) {
-      byIp.set(ip, { ...w, status: 'offline' });
+  byId.forEach((w, id) => {
+    if (w.farm_id === farmId && !nowIps.has(w.ip) && w.status !== 'offline' && !w.disabled) {
+      byId.set(id, { ...w, status: 'offline' });
     }
   });
 
-  return saveFallback('workers', Array.from(byIp.values()));
+  return saveFallback('workers', Array.from(byId.values()));
 }
 
 async function saveWorkers(workersList) {
@@ -196,6 +229,11 @@ async function loadWorkers() {
 async function getWorkerById(id) {
   const all = await loadWorkers();
   return all.find(w => w.id === id) || null;
+}
+
+async function findWorkerByFarmAndIp(farmId, ip) {
+  const all = await loadWorkers();
+  return all.find(w => w.farm_id === farmId && w.ip === ip) || null;
 }
 
 // ── Customers CRUD ────────────────────────────────────────
@@ -285,4 +323,4 @@ function loadFallback(key) {
 
 function isUsingDB() { return !useFallback && pool !== null && pool !== undefined; }
 
-module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, upsertWorkersByIp, saveCustomers, loadCustomers, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB };
+module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, upsertWorkersByIp, saveCustomers, loadCustomers, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB };
