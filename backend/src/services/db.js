@@ -354,4 +354,21 @@ async function deleteWorker(id) {
   }
 }
 
-module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, upsertWorkersByIp, saveCustomers, loadCustomers, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB };
+async function deleteCustomer(id) {
+  if (useFallback || !pool) {
+    let store = {};
+    if (fs.existsSync(FALLBACK_FILE)) store = JSON.parse(fs.readFileSync(FALLBACK_FILE,'utf8'));
+    if (Array.isArray(store.customers)) store.customers = store.customers.filter(c => c.id !== id);
+    try { fs.writeFileSync(FALLBACK_FILE, JSON.stringify(store), 'utf8'); return true; }
+    catch(e) { return false; }
+  }
+  try {
+    await pool.query('DELETE FROM customers WHERE id=$1', [id]);
+    return true;
+  } catch(e) {
+    console.error('[DB] deleteCustomer error:', e.message);
+    return false;
+  }
+}
+
+module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, upsertWorkersByIp, saveCustomers, loadCustomers, deleteCustomer, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB };
