@@ -966,7 +966,7 @@ function clearAllFleetData(){
     fetch(API_BASE + '/api/fleet/save', {
       method: 'POST',
       headers: {'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body: JSON.stringify({ workers: [], customers: [] })
+      body: JSON.stringify({ workers: [], customers: [], clearAll: true })
     }).catch(function(){});
   }
   renderAll();
@@ -1085,6 +1085,19 @@ function deleteMiner(wid) {
   workers = workers.filter(x => x.id !== wid);
   customers.forEach(c => { c.miners = c.miners.filter(x => x !== wid); });
   saveFleet();
+  // This previously only cleared local storage — the backend was never
+  // told, so the "deleted" machine would silently reappear next time
+  // fleet data was reloaded from the server (its own poll cycle or any
+  // fresh page load would restore it, since nothing ever removed it
+  // from the database).
+  const token = localStorage.getItem('ekl_token');
+  if (token && API_BASE && !API_BASE.includes('localhost')) {
+    fetch(API_BASE + '/api/fleet/worker/' + encodeURIComponent(wid), {
+      method: 'DELETE',
+      headers: {'Authorization':'Bearer '+token}
+    }).catch(function(){});
+  }
+  saveFleetToBackend(); // also persist the customer.miners[] cleanup above
   closeCtrl();
   renderWorkers(); renderDash();
 }
