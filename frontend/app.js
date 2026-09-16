@@ -284,6 +284,7 @@ function renderCustomers() {
   const tot = customers.reduce((a, c) => a + c.miners.length, 0);
   const el2 = document.getElementById('ctTotal'); if (el2) el2.textContent = customers.length;
   const el3 = document.getElementById('ctMiners'); if (el3) el3.textContent = tot;
+  const el4 = document.getElementById('ctPortal'); if (el4) el4.textContent = customers.filter(function(c){ return c.portal; }).length;
   el.innerHTML = customers.length === 0
     ? '<div style="text-align:center;padding:40px;color:var(--mute)">No customers yet. Add a customer to assign miners.</div>'
     : customers.map((c, i) => {
