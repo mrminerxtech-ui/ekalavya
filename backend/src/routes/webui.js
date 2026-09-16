@@ -119,7 +119,18 @@ router.use('/:farmId/:ip', async (req, res) => {
     );
 
     // result: { status, headers, body, encoding }
-    const contentType = (result.headers && result.headers['content-type']) || 'text/html';
+    // Embedded miner web servers are notoriously inconsistent about
+    // sending a correct Content-Type header — defaulting a missing one
+    // straight to 'text/html' (as this used to do) meant an actual .js
+    // file with no clear header silently got treated as HTML instead,
+    // so JS-specific fixes below would never even run on it. Using the
+    // requested path's own extension as a second signal catches this.
+    const declaredType = (result.headers && result.headers['content-type']) || '';
+    const pathOnly      = minerPath.split('?')[0].toLowerCase();
+    const looksLikeJs   = pathOnly.endsWith('.js');
+    const isJs          = looksLikeJs || declaredType.includes('javascript');
+    const isHtml        = !isJs && (declaredType.includes('text/html') || (!declaredType && (pathOnly === '/' || pathOnly.endsWith('/') || pathOnly.endsWith('.html'))));
+    const contentType   = declaredType || (isJs ? 'application/javascript' : 'text/html');
     let bodyBuf = result.encoding === 'base64'
       ? Buffer.from(result.body || '', 'base64')
       : Buffer.from(result.body || '', 'utf8');
@@ -141,7 +152,7 @@ router.use('/:farmId/:ip', async (req, res) => {
     // every path with a known proxy address, plus patching fetch/XHR
     // to do the same) — fewer moving parts, fewer ways to break on a
     // miner firmware we haven't seen yet.
-    if (contentType.includes('text/html')) {
+    if (isHtml) {
       let html = bodyBuf.toString('utf8');
 
       // Safety net for JAVASCRIPT-constructed absolute paths (a script
@@ -178,6 +189,10 @@ router.use('/:farmId/:ip', async (req, res) => {
         'Object.defineProperty(proto,p,{get:d.get,configurable:true,' +
         'set:function(v){ d.set.call(this, fix(v)); }});' +
         '});});' +
+        'var oSA=Element.prototype.setAttribute;' +
+        'Element.prototype.setAttribute=function(name,value){' +
+        'if((name==="src"||name==="href")&&typeof value==="string") value=fix(value);' +
+        'return oSA.call(this,name,value);};' +
         '})();' +
         '</script>';
 
@@ -196,7 +211,7 @@ router.use('/:farmId/:ip', async (req, res) => {
     // never touching arbitrary JS strings — since blindly rewriting
     // any string starting with "/" in a JS file risks corrupting
     // unrelated code (regex literals, division, normal text).
-    if (contentType.includes('javascript')) {
+    if (isJs) {
       let js = bodyBuf.toString('utf8');
       js = js.replace(/(?<![a-zA-Z0-9_])url\((["']?)\/(?!\/)/g, 'url($1');
       bodyBuf = Buffer.from(js, 'utf8');
