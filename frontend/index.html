@@ -930,6 +930,22 @@ tr:last-child td{border-bottom:none;}
   </div>
 </div>
 
+<div class="overlay" id="editCustSheet">
+  <div class="sheet"><div class="sheet-handle"></div><div class="sheet-title">EDIT CUSTOMER</div>
+    <div class="sheet-body">
+    <input type="hidden" id="ecId">
+    <div class="two-col">
+      <div class="frow"><label>Full Name</label><input id="ecName" placeholder="Ahmad Al-Farsi"></div>
+      <div class="frow"><label>Email (login)</label><input id="ecEmail" type="email" placeholder="customer@email.com"></div>
+      <div class="frow"><label>Password</label><input id="ecPass" type="password" placeholder="Leave blank to keep current password"></div>
+      <div class="frow"><label>Country</label><input id="ecCountry" placeholder="Saudi Arabia"></div>
+    </div>
+    <div style="background:rgba(0,200,255,.05);border:1px solid rgba(0,200,255,.2);border-radius:6px;padding:12px;font-size:11px;color:var(--mute);margin-top:4px">Leave Password blank to keep the customer's current login password unchanged. Removing the email disables portal access entirely.</div>
+    </div>
+    <div class="sheet-foot"><button class="btn" onclick="closeSheet('editCustSheet')">Cancel</button><button class="btn btn-g" onclick="saveEditCustomer()">Save Changes</button></div>
+  </div>
+</div>
+
 <script>
 window.onerror = function(msg, src, line, col, err) {
   var div = document.createElement('div');
