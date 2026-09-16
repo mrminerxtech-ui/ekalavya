@@ -374,10 +374,38 @@ function renderBilling() {
 
 function renderPortal() {
   try { renderDash(); } catch(e) {}
-  const tb = document.getElementById('portalTable');
-  if (!tb || !currentUser) return;
+  if (!currentUser) return;
 
-  const mine = workers.filter(function(w){ return w.cid === currentUser.id; });
+  const mine   = workers.filter(function(w){ return w.cid === currentUser.id; });
+  const online = mine.filter(function(w){ return effectiveStatus(w) === 'online'; });
+  // Machines can report in GH/s or TH/s — normalize to TH/s for one
+  // combined total instead of nonsensically adding mixed units together
+  const totalHrTH = mine.reduce(function(sum, w){
+    const hr = w.hashrate || 0;
+    return sum + (w.hr_unit === 'GH/s' ? hr / 1000 : hr);
+  }, 0);
+  const custRecord = customers.find(function(c){ return c.id === currentUser.id; });
+
+  // Top summary cards — previously static placeholders that never
+  // actually reflected the real assigned machines below them
+  const avEl = document.getElementById('portalAv');
+  if (avEl) avEl.textContent = (currentUser.name || '?').split(' ').map(function(w){return w[0];}).join('').slice(0,2).toUpperCase();
+  const greetEl = document.getElementById('portalGreeting');
+  if (greetEl) greetEl.textContent = 'Welcome, ' + (currentUser.name || '').split(' ')[0] + '!';
+  const pTotal = document.getElementById('pTotal');   if (pTotal)  pTotal.textContent  = mine.length;
+  const pOnline = document.getElementById('pOnline'); if (pOnline) pOnline.textContent = online.length;
+  const pHR = document.getElementById('pHR');         if (pHR)     pHR.textContent     = totalHrTH.toFixed(1);
+  // Hosting fee uses the real per-machine rate set for this customer.
+  // Gross Earnings / Net Profit need real revenue-tracking data this
+  // app doesn't calculate yet, so they're left as-is rather than
+  // showing an invented number for what is real money to a customer.
+  const pFee = document.getElementById('pFee');
+  if (pFee && custRecord?.rate) pFee.textContent = '$' + (custRecord.rate * mine.length).toLocaleString();
+  const badge = document.getElementById('portalOnlineBadge');
+  if (badge) badge.textContent = online.length + ' Online';
+
+  const tb = document.getElementById('portalTable');
+  if (!tb) return;
 
   if (mine.length === 0) {
     tb.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--mute)">No machines assigned to your account yet.<br><span style="font-size:11px">Contact your farm operator to have machines linked to you.</span></td></tr>';
@@ -1239,20 +1267,38 @@ function loadFleetFromBackend(cb) {
             const existing = workers.find(lw => lw.ip === bw.ip);
             if (!existing) {
               workers.push(bw); added++;
-            } else if (!existing.disabled && existing.status !== bw.status) {
-              // Sync live status/readings from the server's poll-based record
-              // (which reflects whether the agent actually saw this machine
-              // in its last scan) — but never touch user-set fields
-              existing.status   = bw.status;
-              existing.hashrate = bw.hashrate ?? existing.hashrate;
-              existing.temp     = bw.temp     ?? existing.temp;
-              existing.fan      = bw.fan      ?? existing.fan;
-              existing.hr_display = bw.hr_display || existing.hr_display;
-              updated++;
+            } else if (!existing.disabled) {
+              let changedThis = false;
+              if (existing.status !== bw.status) {
+                // Sync live status/readings from the server's poll-based
+                // record (which reflects whether the agent actually saw
+                // this machine in its last scan) — but never touch
+                // user-set fields like name, model, or manual MAC/serial
+                existing.status   = bw.status;
+                existing.hashrate = bw.hashrate ?? existing.hashrate;
+                existing.temp     = bw.temp     ?? existing.temp;
+                existing.fan      = bw.fan      ?? existing.fan;
+                existing.hr_display = bw.hr_display || existing.hr_display;
+                changedThis = true;
+              }
+              // Customer assignment (cid) is authoritative from the
+              // backend, always — unlike hashrate/temp there's no
+              // legitimate reason a device's LOCAL cache would ever be
+              // "more correct" than the backend here. Previously this
+              // was never synced on an existing record at all, which
+              // meant a device that had loaded the app BEFORE an
+              // assignment was made would keep showing the old (empty)
+              // assignment forever — exactly why a customer's portal
+              // could work correctly on a fresh device but stay stuck
+              // showing nothing on one that had opened the app before.
+              if (existing.cid !== bw.cid) { existing.cid = bw.cid; changedThis = true; }
+              if (changedThis) updated++;
             }
           });
           (d.customers || []).forEach(bc => {
-            if (!customers.find(lc => lc.id === bc.id)) customers.push(bc);
+            const lc = customers.find(x => x.id === bc.id);
+            if (!lc) customers.push(bc);
+            else Object.assign(lc, bc); // keep miners[]/portal/email in sync too
           });
           if (added > 0 || updated > 0) {
             saveFleet();
