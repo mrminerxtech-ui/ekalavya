@@ -193,16 +193,20 @@ function upsertWorkersFallback(farmId, minersFoundNow) {
   return saveFallback('workers', Array.from(byId.values()));
 }
 
-async function saveWorkers(workersList) {
-  if (useFallback || !pool) return saveFallback('workers', workersList);
+async function saveWorkers(workersList, clearAll) {
+  if (useFallback || !pool) return saveFallback('workers', workersList, clearAll);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    // Delete all then re-insert (simplest for bulk replace)
-    await client.query('DELETE FROM workers');
+    // Only wipe the table when explicitly asked to (a real "Clear All"
+    // action) — never as a side effect of a normal save. See saveWorkers
+    // comment history: an unconditional delete-then-reinsert here used
+    // to silently destroy data from other sessions/agents on every save.
+    if (clearAll) await client.query('DELETE FROM workers');
     for (const w of workersList) {
       await client.query(
-        'INSERT INTO workers(id, data, farm_id) VALUES($1,$2,$3)',
+        `INSERT INTO workers(id, data, farm_id) VALUES($1,$2,$3)
+         ON CONFLICT (id) DO UPDATE SET data=$2, farm_id=$3, updated_at=NOW()`,
         [w.id, JSON.stringify(w), w.farm_id || null]
       );
     }
@@ -237,15 +241,16 @@ async function findWorkerByFarmAndIp(farmId, ip) {
 }
 
 // ── Customers CRUD ────────────────────────────────────────
-async function saveCustomers(customersList) {
-  if (useFallback || !pool) return saveFallback('customers', customersList);
+async function saveCustomers(customersList, clearAll) {
+  if (useFallback || !pool) return saveFallback('customers', customersList, clearAll);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('DELETE FROM customers');
+    if (clearAll) await client.query('DELETE FROM customers');
     for (const c of customersList) {
       await client.query(
-        'INSERT INTO customers(id, data) VALUES($1,$2)',
+        `INSERT INTO customers(id, data) VALUES($1,$2)
+         ON CONFLICT (id) DO UPDATE SET data=$2`,
         [c.id, JSON.stringify(c)]
       );
     }
@@ -302,11 +307,20 @@ async function loadAllAgentConfigs() {
 }
 
 // ── File fallback ─────────────────────────────────────────
-function saveFallback(key, data) {
+function saveFallback(key, data, clearAll) {
   try {
     let store = {};
     if (fs.existsSync(FALLBACK_FILE)) store = JSON.parse(fs.readFileSync(FALLBACK_FILE,'utf8'));
-    store[key] = data;
+    if (clearAll || !Array.isArray(store[key])) {
+      store[key] = data;
+    } else {
+      // Merge by id (upsert), matching the PostgreSQL path above —
+      // a plain overwrite here had the same silent-data-loss problem
+      // as the old saveWorkers/saveCustomers behavior.
+      const byId = new Map(store[key].map(item => [item.id, item]));
+      data.forEach(item => byId.set(item.id, item));
+      store[key] = Array.from(byId.values());
+    }
     store.saved = new Date().toISOString();
     fs.writeFileSync(FALLBACK_FILE, JSON.stringify(store), 'utf8');
     return true;
@@ -323,4 +337,21 @@ function loadFallback(key) {
 
 function isUsingDB() { return !useFallback && pool !== null && pool !== undefined; }
 
-module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, upsertWorkersByIp, saveCustomers, loadCustomers, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB };
+async function deleteWorker(id) {
+  if (useFallback || !pool) {
+    let store = {};
+    if (fs.existsSync(FALLBACK_FILE)) store = JSON.parse(fs.readFileSync(FALLBACK_FILE,'utf8'));
+    if (Array.isArray(store.workers)) store.workers = store.workers.filter(w => w.id !== id);
+    try { fs.writeFileSync(FALLBACK_FILE, JSON.stringify(store), 'utf8'); return true; }
+    catch(e) { return false; }
+  }
+  try {
+    await pool.query('DELETE FROM workers WHERE id=$1', [id]);
+    return true;
+  } catch(e) {
+    console.error('[DB] deleteWorker error:', e.message);
+    return false;
+  }
+}
+
+module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, upsertWorkersByIp, saveCustomers, loadCustomers, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB };
