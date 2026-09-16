@@ -1063,13 +1063,15 @@ function connect() {
   function heartbeatPing() {
     clearTimeout(pongTimeout);
     try { ws.ping(); } catch(e) {}
-    // Generous timeout — a busy sensor scan or a large miner poll can
-    // briefly delay the event loop; we only want to catch connections
-    // that are genuinely dead, not momentarily slow to respond.
+    // Same 32s overall tolerance as before, but checked far more often
+    // — if Railway's own network layer enforces an idle-connection
+    // timeout shorter than our old 25s/30s pacing, more frequent
+    // traffic keeps the connection active often enough that it never
+    // gets the chance to trigger, regardless of the exact cause.
     pongTimeout = setTimeout(() => {
-      console.log('[WARN] No pong from server in 30s — forcing reconnect');
+      console.log('[WARN] No pong from server in 32s — forcing reconnect');
       try { ws.terminate(); } catch(e) {}
-    }, 30000);
+    }, 32000);
   }
 
   ws.on('pong', () => { clearTimeout(pongTimeout); });
@@ -1078,9 +1080,9 @@ function connect() {
     reconnectMs = 3000;
     console.log(`[INFO] ✓ Connected | Farm: ${FARM_NAME}`);
     pollTimer = setInterval(pollMiners, POLL_MS);
-    setInterval(() => send({ type:'heartbeat', farm_id:FARM_ID }), 20000);
-    // Ping every 25s; only reconnect if truly unresponsive for 30s
-    pingInterval = setInterval(heartbeatPing, 25000);
+    setInterval(() => send({ type:'heartbeat', farm_id:FARM_ID }), 8000);
+    // Ping every 8s; only reconnect if truly unresponsive for 32s
+    pingInterval = setInterval(heartbeatPing, 8000);
     setTimeout(pollMiners, 5000);
     // Start Lanli RS485 polling if enabled
     if (LANLI_ENABLED && lanli) {
