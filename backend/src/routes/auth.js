@@ -1,6 +1,8 @@
 const express = require('express');
 const router  = express.Router();
 const jwt     = require('jsonwebtoken');
+const db      = require('../services/db');
+const { verifyPassword } = require('../services/passwords');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'ekalavya-secret-change-me';
 
@@ -11,13 +13,8 @@ const USERS = [
   { id: 'view-1',   username: 'viewer', password: 'view123',   role: 'viewer'      },
 ];
 
-const CUSTOMERS = [
-  { id: 'cust-001', email: 'ahmad@example.com', password: 'ahmad123', name: 'Ahmad Al-Farsi', role: 'customer' },
-  { id: 'cust-002', email: 'sarah@example.com', password: 'sarah123', name: 'Sarah Chen',     role: 'customer' },
-];
-
 // POST /api/auth/login
-router.post('/login', (req, res) => {
+router.post('/login', async (req, res) => {
   const { username, email, password } = req.body;
 
   // Check admin/team users
@@ -33,11 +30,11 @@ router.post('/login', (req, res) => {
     return res.json({ ok: true, token, role: user.role, name: user.username });
   }
 
-  // Check customers
-  const cust = CUSTOMERS.find(c =>
-    (c.email === username || c.email === email) && c.password === password
-  );
-  if (cust) {
+  // Check REAL customers — the ones actually created in the app,
+  // not a hardcoded demo list. Passwords are stored hashed.
+  const customers = await db.loadCustomers();
+  const cust = customers.find(c => c.email && (c.email === username || c.email === email));
+  if (cust && cust.portal && verifyPassword(password, cust.password)) {
     const token = jwt.sign(
       { id: cust.id, role: 'customer', name: cust.name },
       JWT_SECRET,
