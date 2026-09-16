@@ -287,8 +287,6 @@ tr:last-child td{border-bottom:none;}
     <div id="custNav" style="display:none">
       <div class="ssec">My Mining</div>
       <div class="nav-item active" onclick="nav('portal-home',this)"><span class="ni">&#x1F4CA;</span><span class="nl">My Dashboard</span></div>
-      <div class="nav-item" onclick="nav('portal-miners',this)"><span class="ni">&#x26CF;&#xFE0F;</span><span class="nl">My Miners</span></div>
-      <div class="nav-item" onclick="nav('portal-billing',this)"><span class="ni">&#x1F4B3;</span><span class="nl">My Billing</span></div>
       <div class="ssec">Info</div>
       <div class="nav-item" onclick="nav('pools',this)"><span class="ni">&#x1F3CA;</span><span class="nl">Pools</span></div>
       <div class="nav-item" onclick="nav('profitability',this)"><span class="ni">&#x1F4B0;</span><span class="nl">Profitability</span></div>
@@ -467,15 +465,6 @@ tr:last-child td{border-bottom:none;}
       </div>
     </div>
 
-    <!-- BILLING -->
-    <div id="page-billing" class="page">
-      <div class="page-title">Billing Overview</div>
-      <div class="panel">
-        <div class="ph"><div class="phd">All Customer Bills</div><div class="pa"><button class="btn btn-sm">Export All</button></div></div>
-        <div class="tw"><table><thead><tr><th>Customer</th><th>Plan</th><th>Miners</th><th>Monthly Fee</th><th>Est. Earnings</th><th>Net Profit</th><th>Status</th><th>Action</th></tr></thead><tbody id="billingTbody"></tbody></table></div>
-      </div>
-    </div>
-
     <!-- POOLS -->
     <div id="page-pools" class="page">
       <div class="page-title">World Pools</div>
@@ -626,18 +615,6 @@ tr:last-child td{border-bottom:none;}
         <div class="tw"><table><thead><tr><th></th><th>Machine</th><th>Model</th><th>Hashrate</th><th>Temp</th><th>Fan</th><th>Pool</th><th>Status</th><th>Action</th></tr></thead><tbody id="portalTable"></tbody></table></div>
       </div>
     </div>
-    <div id="page-portal-miners" class="page"><div class="page-title">My Miners</div><div class="card-grid" id="portalMinersGrid"></div></div>
-    <div id="page-portal-billing" class="page">
-      <div class="page-title">My Billing</div>
-      <div class="panel">
-        <div class="ph"><div class="phd">Current Period</div><span class="badge bc" id="billPeriod"></span></div>
-        <div style="padding:20px">
-          <div style="font-family:'Share Tech Mono',monospace;font-size:36px;color:var(--green)" id="billNet">$0</div>
-          <div style="font-size:11px;color:var(--mute);margin-bottom:20px">Estimated net profit this month</div>
-          <div id="billRows"></div>
-        </div>
-      </div>
-    </div>
 
   </div>
 </div>
@@ -767,8 +744,6 @@ tr:last-child td{border-bottom:none;}
   </div>
   <div class="bnav" id="bnavCust" style="display:none">
     <div class="bi active" onclick="nav('portal-home',null)"><div class="bi-icon">&#x1F4CA;</div><div class="bi-lbl">Dashboard</div></div>
-    <div class="bi" onclick="nav('portal-miners',null)"><div class="bi-icon">&#x26CF;&#xFE0F;</div><div class="bi-lbl">My Miners</div></div>
-    <div class="bi" onclick="nav('portal-billing',null)"><div class="bi-icon">&#x1F4B3;</div><div class="bi-lbl">Billing</div></div>
     <div class="bi" onclick="nav('pools',null)"><div class="bi-icon">&#x1F3CA;</div><div class="bi-lbl">Pools</div></div>
   </div>
 </div>
