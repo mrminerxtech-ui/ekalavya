@@ -149,6 +149,14 @@ router.use('/:farmId/:ip', async (req, res) => {
       // attribute) — same strip-the-slash idea, applied at request time
       // instead of by rewriting the HTML text, since we can't safely
       // rewrite arbitrary JS source without risking breaking it.
+      //
+      // Also catches a THIRD pattern found in the wild: some libraries
+      // (e.g. the jquery.i18n.properties plugin used by some Antminer
+      // firmware) load resources by directly creating an element and
+      // assigning its .src, bypassing both fetch() and XMLHttpRequest
+      // entirely — neither override above ever sees this happen. This
+      // patches the property itself so ANY assignment gets fixed, no
+      // matter which mechanism sets it.
       const interceptShim = '<script>' +
         '(function(){' +
         'function fix(u){if(typeof u==="string"&&u.charAt(0)==="/"&&u.charAt(1)!=="/"){return u.slice(1);}return u;}' +
@@ -161,6 +169,15 @@ router.use('/:farmId/:ip', async (req, res) => {
         'XMLHttpRequest.prototype.open=function(m,u){' +
         'arguments[1]=fix(u);' +
         'return oO.apply(this,arguments);};' +
+        '["src","href"].forEach(function(p){' +
+        '["HTMLScriptElement","HTMLImageElement","HTMLLinkElement"].forEach(function(t){' +
+        'var C=window[t]; if(!C) return;' +
+        'var proto=C.prototype;' +
+        'var d=Object.getOwnPropertyDescriptor(proto,p)||Object.getOwnPropertyDescriptor(HTMLElement.prototype,p);' +
+        'if(!d||!d.set) return;' +
+        'Object.defineProperty(proto,p,{get:d.get,configurable:true,' +
+        'set:function(v){ d.set.call(this, fix(v)); }});' +
+        '});});' +
         '})();' +
         '</script>';
 
@@ -168,6 +185,21 @@ router.use('/:farmId/:ip', async (req, res) => {
         .replace(/(href|src|action)=(["'])\/(?!\/)/gi, '$1=$2')
         .replace(/<head([^>]*)>/i, `<head$1>${interceptShim}`);
       bodyBuf = Buffer.from(html, 'utf8');
+    }
+
+    // Same leading-slash problem, but for CSS background-image/font
+    // references INSIDE JavaScript — this page's styling is injected
+    // by a script at runtime (not a separate .css file), so any
+    // absolute-path url(/static/foo.png) baked into that script would
+    // otherwise always resolve against our own domain's root instead
+    // of the miner. Scoped narrowly to the CSS url(...) syntax only —
+    // never touching arbitrary JS strings — since blindly rewriting
+    // any string starting with "/" in a JS file risks corrupting
+    // unrelated code (regex literals, division, normal text).
+    if (contentType.includes('javascript')) {
+      let js = bodyBuf.toString('utf8');
+      js = js.replace(/(?<![a-zA-Z0-9_])url\((["']?)\/(?!\/)/g, 'url($1');
+      bodyBuf = Buffer.from(js, 'utf8');
     }
 
     res.status(result.status || 200);
