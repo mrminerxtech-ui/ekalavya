@@ -193,6 +193,13 @@ router.use('/:farmId/:ip', async (req, res) => {
         'Element.prototype.setAttribute=function(name,value){' +
         'if((name==="src"||name==="href")&&typeof value==="string") value=fix(value);' +
         'return oSA.call(this,name,value);};' +
+        'function fixCss(s){' +
+        'return s.replace(/([^a-zA-Z0-9_]|^)url\\((["\']?)\\/(?!\\/)/g, "$1url($2");' +
+        '}' +
+        'var oCTN=document.createTextNode.bind(document);' +
+        'document.createTextNode=function(data){' +
+        'if(typeof data==="string"&&data.indexOf("url(")!==-1) data=fixCss(data);' +
+        'return oCTN(data);};' +
         '})();' +
         '</script>';
 
