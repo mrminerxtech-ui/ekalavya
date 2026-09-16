@@ -5,13 +5,22 @@ const express = require('express');
 const router  = express.Router();
 const { authMiddleware } = require('../middleware/auth');
 const db = require('../services/db');
+const { hashPassword, isHashed } = require('../services/passwords');
 
 // GET /api/fleet/load — load all workers + customers
 router.get('/load', authMiddleware, async (req, res) => {
-  const [workers, customers] = await Promise.all([
+  const [workers, customersRaw] = await Promise.all([
     db.loadWorkers(),
     db.loadCustomers(),
   ]);
+  // Never send the password hash to the browser — just tell the
+  // frontend whether one is set, so the Edit form can show
+  // "leave blank to keep current password" instead of implying
+  // there's no password at all.
+  const customers = customersRaw.map(c => {
+    const { password, ...rest } = c;
+    return { ...rest, has_password: !!password };
+  });
   res.json({
     ok: true,
     workers,
@@ -26,13 +35,33 @@ router.post('/save', authMiddleware, async (req, res) => {
   const { workers, customers } = req.body;
   if (!Array.isArray(workers)) return res.status(400).json({ error: 'workers array required' });
 
+  let processedCustomers = customers || [];
+  if (processedCustomers.length > 0) {
+    const existing = await db.loadCustomers();
+    const existingById = new Map(existing.map(c => [c.id, c]));
+    processedCustomers = processedCustomers.map(c => {
+      const old = existingById.get(c.id);
+      if (c.password && !isHashed(c.password)) {
+        // A real new password was typed in — hash it before storing
+        return { ...c, password: hashPassword(c.password) };
+      }
+      if (!c.password && old && old.password) {
+        // No password sent this time (e.g. editing other fields, or
+        // the browser never received the real hash back) — keep
+        // whatever is already stored rather than wiping it out
+        return { ...c, password: old.password };
+      }
+      return c;
+    });
+  }
+
   const [wOk, cOk] = await Promise.all([
     db.saveWorkers(workers),
-    db.saveCustomers(customers || []),
+    db.saveCustomers(processedCustomers),
   ]);
 
-  console.log(`[FLEET] Saved ${workers.length} workers, ${customers?.length || 0} customers → ${db.isUsingDB() ? 'PostgreSQL' : 'file'}`);
-  res.json({ ok: wOk, workers: workers.length, customers: customers?.length || 0 });
+  console.log(`[FLEET] Saved ${workers.length} workers, ${processedCustomers.length} customers → ${db.isUsingDB() ? 'PostgreSQL' : 'file'}`);
+  res.json({ ok: wOk, workers: workers.length, customers: processedCustomers.length });
 });
 
 // POST /api/fleet/worker — upsert single worker (called after poll updates)
