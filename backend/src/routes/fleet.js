@@ -80,6 +80,21 @@ router.delete('/worker/:id', authMiddleware, async (req, res) => {
   res.json({ ok: true });
 });
 
+// DELETE /api/fleet/customer/:id — delete a customer AND unassign
+// any miners that were pointing at them (so they don't end up
+// orphaned, referencing a customer that no longer exists)
+router.delete('/customer/:id', authMiddleware, async (req, res) => {
+  const cid = req.params.id;
+  const workers = await db.loadWorkers();
+  const affected = workers.filter(w => w.cid === cid);
+  if (affected.length > 0) {
+    const unassigned = affected.map(w => ({ ...w, cid: '' }));
+    await db.saveWorkers(unassigned); // upsert — only touches these specific machines
+  }
+  await db.deleteCustomer(cid);
+  res.json({ ok: true, unassigned: affected.length });
+});
+
 // GET /api/fleet/status
 router.get('/status', authMiddleware, async (req, res) => {
   const [workers, customers] = await Promise.all([db.loadWorkers(), db.loadCustomers()]);
