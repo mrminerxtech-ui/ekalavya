@@ -1,15 +1,15 @@
 {
-  "version": "1.1.17",
-  "released_at": "2026-09-16T14:30:00Z",
+  "version": "1.1.19",
+  "released_at": "2026-09-17T10:00:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "Hardened WebSocket keepalive \u2014 ping every 8s instead of 25s (same 32s overall tolerance) to defend against a possible network-level idle timeout shorter than our previous pacing, which may explain agents disconnecting/reconnecting repeatedly despite the backend itself running healthy"
+    "Web UI tunnel: requests to the same miner are now queued and sent one at a time instead of simultaneously \u2014 many embedded miner web servers can only handle one connection at once, and the miner's own dashboard commonly fires 4 data requests at the same instant on every refresh, which was causing most of them to fail with a false '502 Cannot reach miner' even though the miner was fully reachable"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "2a1ad56432fe360ad7e8d63e105f6018ad7c8b1df1b0c8ee95bb1c0d1f1fcf52",
-      "size": 54291
+      "sha256": "cb89ba739306b4b9351b39853897d90d8f0b09468ea8355e2d2260493e886c10",
+      "size": 57086
     },
     {
       "name": "sonoff-th.js",
