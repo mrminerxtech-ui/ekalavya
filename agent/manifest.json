@@ -1,16 +1,15 @@
 {
-  "version": "1.1.16",
-  "released_at": "2026-09-13T12:00:00Z",
+  "version": "1.1.17",
+  "released_at": "2026-09-16T14:30:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "Fixed Factory Reset endpoint \u2014 was calling a made-up path (factory_reset.cgi), confirmed the real one directly from this Antminer firmware's own dashboard code: reset_conf.cgi",
-    "Confirmed Reboot (reboot.cgi via GET) and LED Blink (blink.cgi via POST) already match this firmware's real, native implementation exactly"
+    "Hardened WebSocket keepalive \u2014 ping every 8s instead of 25s (same 32s overall tolerance) to defend against a possible network-level idle timeout shorter than our previous pacing, which may explain agents disconnecting/reconnecting repeatedly despite the backend itself running healthy"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "077151e4fa0e65fea193100b72faa99766c54acb599c42a0a514dff8c8e94d5f",
-      "size": 54159
+      "sha256": "2a1ad56432fe360ad7e8d63e105f6018ad7c8b1df1b0c8ee95bb1c0d1f1fcf52",
+      "size": 54291
     },
     {
       "name": "sonoff-th.js",
