@@ -296,13 +296,16 @@ function renderCustomers() {
         + '<span class="badge ' + (c.portal ? 'bc' : 'bwn') + '" style="margin-left:auto">' + (c.portal ? 'PORTAL' : 'NO PORTAL') + '</span></div>'
         + '<div class="card-body"><div class="card-row"><span class="ck">Miners</span><span class="cv g">' + c.miners.length + '</span></div>'
         + '<div class="card-row"><span class="ck">Online</span><span class="cv g">' + onl + ' / ' + c.miners.length + '</span></div></div>'
-        + '<div class="card-foot"><button class="btn btn-sm qa-btn" data-cid="' + c.id + '">&#x26CF; Assign Miners</button></div></div>';
+        + '<div class="card-foot"><button class="btn btn-sm qa-btn" data-cid="' + c.id + '">&#x26CF; Assign Miners</button><button class="btn btn-sm edit-cust-btn" data-cid="' + c.id + '" style="margin-left:6px">&#x270E; Edit</button></div></div>';
     }).join('');
 
   // Wire up each card's "Assign Miners" button (was rendered but never
   // actually listened for — clicking it silently did nothing before)
   el.querySelectorAll('.qa-btn').forEach(function(btn){
     btn.addEventListener('click', function(){ quickAssign(this.dataset.cid); });
+  });
+  el.querySelectorAll('.edit-cust-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){ openEditCustomer(this.dataset.cid); });
   });
 
   // Populate the "Select Customer" dropdown in the Assign panel with
@@ -998,18 +1001,53 @@ function togglePortalFields() { const el = document.getElementById('portalFields
 function addCustomer() {
   const n = document.getElementById('cName')?.value.trim();
   if (!n) { alert('Customer name required'); return; }
-  const hasPortal = document.getElementById('cPortalToggle')?.checked;
-  const email = hasPortal ? (document.getElementById('cEmail')?.value.trim() || '') : '';
-  const pass  = hasPortal ? (document.getElementById('cPass')?.value || '') : '';
-  if (hasPortal && !email) { alert('Email required for portal access'); return; }
-  const c = { id:'cust-'+Date.now(), name:n, email, country:document.getElementById('cCountry')?.value||'', notes:document.getElementById('cNotes')?.value||'', plan:'Standard', rate:0, miners:[], active:true, portal:hasPortal };
+  // Previously gated behind a "cPortalToggle" checkbox that doesn't
+  // exist anywhere in the page — that check always silently failed,
+  // so email/password were discarded no matter what was typed here.
+  // The form always shows these fields, so just use them directly.
+  const email = document.getElementById('cEmail')?.value.trim() || '';
+  const pass  = document.getElementById('cPass')?.value || '';
+  const hasPortal = !!email;
+  if (hasPortal && !pass) { alert('Set a temporary password for portal access'); return; }
+  const c = { id:'cust-'+Date.now(), name:n, email, password: pass, country:document.getElementById('cCountry')?.value||'', notes:'', plan:'Standard', rate:0, miners:[], active:true, portal:hasPortal };
   customers.push(c);
   closeSheet('addCustSheet');
-  ['cName','cEmail','cPass','cCountry','cNotes'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
-  const pt = document.getElementById('cPortalToggle'); if (pt) pt.checked = false;
-  togglePortalFields();
+  ['cName','cEmail','cPass','cCountry'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   saveFleet(); saveFleetToBackend(); renderAll();
-  toast(hasPortal ? '✓ Customer added with portal' : '✓ Customer added', 'var(--green)');
+  toast(hasPortal ? '✓ Customer added with portal access' : '✓ Customer added', 'var(--green)');
+}
+
+// ── Edit Customer — portal email/password/details ──────────
+function openEditCustomer(cid) {
+  const c = customers.find(x => x.id === cid);
+  if (!c) return;
+  document.getElementById('ecId').value = cid;
+  document.getElementById('ecName').value = c.name || '';
+  document.getElementById('ecEmail').value = c.email || '';
+  document.getElementById('ecPass').value = ''; // never pre-filled — blank means "keep current"
+  document.getElementById('ecPass').placeholder = c.has_password ? 'Leave blank to keep current password' : 'Set a password for portal access';
+  document.getElementById('ecCountry').value = c.country || '';
+  openSheet('editCustSheet');
+}
+
+function saveEditCustomer() {
+  const cid = document.getElementById('ecId').value;
+  const c = customers.find(x => x.id === cid);
+  if (!c) return;
+  const n = document.getElementById('ecName')?.value.trim();
+  if (!n) { alert('Customer name required'); return; }
+  const email = document.getElementById('ecEmail')?.value.trim() || '';
+  const newPass = document.getElementById('ecPass')?.value || '';
+
+  c.name = n;
+  c.email = email;
+  c.country = document.getElementById('ecCountry')?.value || '';
+  c.portal = !!email;
+  if (newPass) { c.password = newPass; c.has_password = true; } // only touch password if a new one was actually typed
+
+  closeSheet('editCustSheet');
+  saveFleet(); saveFleetToBackend(); renderAll();
+  toast('✓ ' + c.name + ' updated', 'var(--green)');
 }
 
 // ── Delete miner ──────────────────────────────────────────
@@ -1273,7 +1311,7 @@ const profitModels=[
 const teamData=[{name:'Alex T.',col:'#e74c3c',role:'Admin',email:'alex@ekalavya.io',last:'2 min ago'},{name:'Sam Lee',col:'#3498db',role:'Manager',email:'sam@ekalavya.io',last:'1h ago'},{name:'Jamie R.',col:'#2ecc71',role:'Technician',email:'jamie@ekalavya.io',last:'3h ago'}];
 
 // LOGIN
-function setLTab(t,el){loginTab=t;document.querySelectorAll('.ltab').forEach(x=>x.classList.remove('active'));el.classList.add('active');const b=document.getElementById('lBtn'),h=document.getElementById('lHint');if(t==='customer'){b.className='login-btn customer';b.textContent='ENTER CUSTOMER PORTAL';h.textContent='Demo: ahmad@example.com / ahmad123';}else{b.className='login-btn admin';b.textContent='ACCESS PLATFORM';h.innerHTML='Admin: admin / admin123<br>Customer: ahmad@example.com / ahmad123';}}
+function setLTab(t,el){loginTab=t;document.querySelectorAll('.ltab').forEach(x=>x.classList.remove('active'));el.classList.add('active');const b=document.getElementById('lBtn'),h=document.getElementById('lHint');if(t==='customer'){b.className='login-btn customer';b.textContent='ENTER CUSTOMER PORTAL';h.textContent='Use the email/password set for this customer in Customers → Edit';}else{b.className='login-btn admin';b.textContent='ACCESS PLATFORM';h.innerHTML='Admin: admin / admin123';}}
 function doLogin(){
   const u=document.getElementById('lUser').value.trim();
   const p=document.getElementById('lPass').value;
@@ -1281,26 +1319,41 @@ function doLogin(){
   e.style.display='none';
   if(!u||!p){e.textContent='Enter credentials';e.style.display='block';return;}
 
-  if(loginTab==='customer'){
-    const c=customers.find(x=>x.email.toLowerCase()===u.toLowerCase());
-    if(!c){e.textContent='Customer not found. Contact your administrator.';e.style.display='block';return;}
-    isCustomer=true;
-    currentUser={...c,role:'customer'};
-  } else {
-    isCustomer=false;
-    currentUser={id:'admin-1',name:u==='admin'?'Admin User':u,role:loginTab==='team'?'technician':'admin'};
-  }
+  // Previously this granted access immediately based only on a
+  // username/email existing somewhere, without ever actually waiting
+  // for the backend to confirm the password was correct — meaning
+  // ANY password could log in as ANY user, admin included. Login now
+  // waits for a genuine, verified response before entering the app.
+  e.textContent = 'Signing in...'; e.style.display='block'; e.style.color = 'var(--mute)';
 
-  // Get JWT token from backend (non-blocking)
   fetch(API_BASE+'/api/auth/login',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({username:u,password:p})
-  }).then(r=>r.json()).then(d=>{
-    if(d.token) localStorage.setItem('ekl_token',d.token);
-  }).catch(()=>{});
-
-  launchApp();
+    body:JSON.stringify({username:u,email:u,password:p})
+  }).then(function(r){ return r.json(); })
+  .then(function(d){
+    if(!d.ok || !d.token){
+      e.style.color = 'var(--red)';
+      e.textContent = d.error || 'Invalid credentials';
+      e.style.display='block';
+      return;
+    }
+    localStorage.setItem('ekl_token', d.token);
+    if(d.role === 'customer'){
+      isCustomer = true;
+      currentUser = { id: d.customer_id, name: d.name, role: 'customer' };
+    } else {
+      isCustomer = false;
+      currentUser = { id: d.role + '-1', name: d.name, role: d.role };
+    }
+    e.style.display='none';
+    launchApp();
+  })
+  .catch(function(){
+    e.style.color = 'var(--red)';
+    e.textContent = 'Could not reach server — check your connection';
+    e.style.display='block';
+  });
 }
 function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).style.display='none');['ticker','topbar','appBody','bottomNav'].forEach(id=>document.getElementById(id).style.display=id==='appBody'?'flex':id==='bottomNav'?'block':'flex');const ini=currentUser.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();document.getElementById('sideAv').textContent=ini;document.getElementById('sideName').textContent=currentUser.name;document.getElementById('sideRole').textContent=isCustomer?'Customer Portal':currentUser.role==='admin'?'Super Admin':'Team Member';document.getElementById('topBadge').textContent=isCustomer?'PORTAL':'ADMIN';if(isCustomer){document.getElementById('adminNav').style.display='none';document.getElementById('custNav').style.display='block';document.getElementById('agentPill').style.display='none';document.getElementById('bnavAdmin').style.display='none';document.getElementById('bnavCust').style.display='flex';showPage('portal-home');document.getElementById('custNav').querySelector('.nav-item').classList.add('active');renderPortal();}else{populateDropdowns();renderAll();}initTicker();// updateTicker removed — was demo data onlysetInterval(liveUpdate,30000);fetchAgents();setInterval(fetchAgents,30000);
   // WebSocket for real-time scan results
