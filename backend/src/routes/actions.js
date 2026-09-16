@@ -189,8 +189,12 @@ router.post('/enable', authMiddleware, requireRole('admin','manager','technician
 // calling convention — separate from any REST-style DELETE route) ──
 router.post('/delete', authMiddleware, requireRole('admin'), async (req, res) => {
   const w = await getWorkerOr404(req, res); if (!w) return;
-  const all = await db.loadWorkers();
-  await db.saveWorkers(all.filter(x => x.id !== w.id));
+  // Deletion must be an explicit, targeted removal — not achieved by
+  // simply omitting the worker from a bulk save. saveWorkers() now
+  // upserts by id and never removes records absent from the list it's
+  // given, which is what keeps normal saves from other sessions safe;
+  // an actual delete needs its own explicit operation instead.
+  await db.deleteWorker(w.id);
   res.json({ ok: true, action: 'delete', message: `${w.name} removed from fleet` });
 });
 
