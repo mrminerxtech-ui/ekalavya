@@ -157,16 +157,19 @@ agentWss.on('connection', (ws, req) => {
   ws.on('error', err => console.error(`[AGENT][${farmId}]`, err.message));
 });
 
-// ── Server-side keepalive: ping every 20s, drop anyone that misses
-// TWO consecutive pongs (40s total) — one miss can just be a busy agent
-// mid-scan, not necessarily a dead connection.
+// ── Server-side keepalive: ping every 8s, drop anyone that misses
+// FOUR consecutive pongs (32s total) — same overall tolerance window
+// as before, but far more frequent traffic in between. If Railway's
+// own network layer (separate from our app) enforces a shorter idle-
+// connection timeout than we expect, this keeps the connection
+// active often enough that it never has a chance to trigger.
 setInterval(() => {
   agentWss.clients.forEach(ws => {
     if (ws.missedPongs === undefined) ws.missedPongs = 0;
     if (ws.isAlive === false) {
       ws.missedPongs++;
-      if (ws.missedPongs >= 2) {
-        console.log('[AGENT] No pong for 2 cycles — terminating dead connection');
+      if (ws.missedPongs >= 4) {
+        console.log('[AGENT] No pong for 4 cycles — terminating dead connection');
         return ws.terminate();
       }
     } else {
@@ -175,7 +178,7 @@ setInterval(() => {
     ws.isAlive = false;
     try { ws.ping(); } catch(e) {}
   });
-}, 20000);
+}, 8000);
 
 // ── Start ──────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
