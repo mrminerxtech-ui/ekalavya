@@ -358,7 +358,95 @@ function renderAlerts() {
 function renderPools() {
   const el = document.getElementById('poolsGrid');
   if (!el) return;
-  el.innerHTML = '<div style="text-align:center;padding:30px;color:var(--mute)">Pool data available after connecting miners.</div>';
+
+  // Real, verified stratum connection details. Pool operators change
+  // server addresses occasionally — if a miner fails to connect,
+  // check the pool's own help center for the current address before
+  // assuming something else is wrong. Where a pool genuinely doesn't
+  // offer 3 separate addresses (or doesn't publish one publicly at
+  // all), that's noted honestly rather than filled in with a guess.
+  const pools = [
+    {
+      name: 'F2Pool', color: '#00d4ff',
+      coins: [
+        { coin: 'BTC', urls: ['stratum+tcp://btc.f2pool.com:1314', 'stratum+tcp://btc.f2pool.com:25', 'stratum+tcp://btc.f2pool.com:3333'] },
+        { coin: 'LTC', urls: ['stratum+tcp://ltc.f2pool.com:8888', 'stratum+tcp://ltc.f2pool.com:5200', 'stratum+tcp://ltc.f2pool.com:3335'] },
+      ],
+      note: 'Regional servers also available (Asia/EU/NA) — see f2pool.com for the closest one.'
+    },
+    {
+      name: 'AntPool', color: '#e67e22',
+      coins: [
+        { coin: 'BTC', urls: ['stratum+tcp://stratum.antpool.com:3333', 'stratum+tcp://stratum.antpool.com:443', 'stratum+tcp://stratum.antpool.com:25'] },
+        { coin: 'LTC', urls: ['stratum+tcp://stratum-ltc.antpool.com:8888', 'stratum+tcp://stratum-ltc.antpool.com:443', 'stratum+tcp://stratum-ltc.antpool.com:25'] },
+      ],
+      note: 'Enter the same worker name across all three — as long as one address is reachable, mining continues uninterrupted.'
+    },
+    {
+      name: 'ViaBTC', color: '#00c896',
+      coins: [
+        { coin: 'BTC', urls: ['stratum+tcp://btc.viabtc.io:3333', 'stratum+tcp://btc.viabtc.cc:3333', 'stratum+tcp://btc.viabtc.top:3333'] },
+        { coin: 'LTC', urls: ['stratum+tcp://ltc.viabtc.io:3333', 'stratum+tcp://ltc.viabtc.io:443'], partial: true },
+      ],
+      note: ''
+    },
+    {
+      name: 'Luxor', color: '#a855f7',
+      coins: [
+        { coin: 'BTC', urls: ['stratum+tcp://btc.global.luxor.tech:700'], single: true },
+        { coin: 'LTC/DOGE (merged)', urls: ['stratum+tcp://ltc.global.luxor.tech:700'], single: true },
+      ],
+      note: 'Luxor uses one global address per coin by design — it automatically routes to the nearest region internally, so there\'s no separate Pool 2/3 to enter.'
+    },
+    {
+      name: 'Binance Pool', color: '#f0b90b',
+      coins: [
+        { coin: 'BTC', urls: ['stratum+tcp://sha256.poolbinance.com:8888', 'stratum+tcp://sha256.poolbinance.com:3333', 'stratum+tcp://sha256.poolbinance.com:443'] },
+      ],
+      note: 'BTC only — Binance Pool does not currently offer a public LTC pool.'
+    },
+    {
+      name: 'Foundry USA', color: '#3b82f6',
+      coins: [
+        { coin: 'BTC', urls: ['Provided only after KYC-approved account setup'], unavailable: true },
+      ],
+      note: 'Foundry USA is institutional-grade and requires an approved account (KYC/AML) before it discloses any stratum address — nothing is published publicly. Contact Foundry directly to onboard.'
+    },
+    {
+      name: 'BitFuFu', color: '#ff6b35',
+      coins: [
+        { coin: 'BTC', urls: ['Shown inside your account dashboard after logging in'], unavailable: true },
+      ],
+      note: 'BitFuFu does not publish a fixed public stratum address — log in at bitfufu.com to find yours. BTC only.'
+    },
+  ];
+
+  el.innerHTML = '<div style="grid-column:1/-1;background:rgba(255,45,85,.06);border:1px solid rgba(255,45,85,.25);border-radius:6px;padding:10px 14px;font-size:11px;color:var(--red);margin-bottom:4px">'
+    + '⚠ <strong>Poolin</strong> is not listed — it filed for Chapter 11 bankruptcy and fully shut down mining operations in July 2026. Any stored connection to it will not work.'
+    + '</div>'
+    + pools.map(function(p){
+    return '<div class="card">'
+      + '<div class="card-head"><div class="av" style="background:' + p.color + ';width:38px;height:38px;font-size:13px">' + p.name.slice(0,2).toUpperCase() + '</div>'
+      + '<div><div style="font-family:Exo 2,sans-serif;font-weight:700;font-size:14px">' + p.name + '</div></div></div>'
+      + '<div class="card-body">'
+      + p.coins.map(function(c){
+          if (c.unavailable) {
+            return '<div style="margin-bottom:10px">'
+              + '<div style="font-size:10px;color:var(--mute);text-transform:uppercase;letter-spacing:1px;margin-bottom:2px">' + c.coin + '</div>'
+              + '<div style="font-size:11px;color:var(--warn);font-style:italic">' + c.urls[0] + '</div></div>';
+          }
+          return '<div style="margin-bottom:10px">'
+            + '<div style="font-size:10px;color:var(--mute);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">' + c.coin + '</div>'
+            + c.urls.map(function(u, i){
+                return '<div style="font-family:Share Tech Mono,monospace;font-size:11px;color:var(--cyan);word-break:break-all;margin-bottom:2px">'
+                  + '<span style="color:var(--mute)">Pool ' + (i+1) + ':</span> ' + u + '</div>';
+              }).join('')
+            + (c.partial ? '<div style="font-size:10px;color:var(--mute);margin-top:2px">Only 2 verified addresses for this coin — no separate 3rd server confirmed.</div>' : '')
+            + '</div>';
+        }).join('')
+      + (p.note ? '<div style="font-size:10px;color:var(--mute);margin-top:6px;padding-top:8px;border-top:1px solid var(--b1)">' + p.note + '</div>' : '')
+      + '</div></div>';
+  }).join('');
 }
 
 function renderProfit() {
@@ -367,10 +455,6 @@ function renderProfit() {
   el.innerHTML = '<div style="text-align:center;padding:30px;color:var(--mute)">Add miners to see profitability calculations.</div>';
 }
 
-function renderBilling() {
-  const el = document.getElementById('billingTable');
-  if (!el) return;
-}
 
 function renderPortal() {
   try { renderDash(); } catch(e) {}
@@ -1640,6 +1724,7 @@ function showPage(n){
     if(n==='alerts')        { renderAlerts(); }
     if(n==='scanner')       { populateDropdowns(); }
     if(n==='scada')         { checkScadaSession(); }
+    if(n==='pools')         { renderPools(); }
     if(n==='settings')      { updateFleetStat(); renderSensorEntryGrid(); const tt=document.getElementById('tailscaleToggle'); if(tt) tt.checked = localStorage.getItem('use_tailscale_webui') === 'true'; const rr=document.getElementById('ewRedirectUrl'); if(rr && !rr.value) rr.value = window.location.origin + window.location.pathname; }
   } catch(e) { console.error('showPage render error:', e); }
 }
