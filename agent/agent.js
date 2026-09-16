@@ -81,6 +81,29 @@ const CGPORT    = parseInt(process.env.CGMINER_PORT || '4028');
 
 let ws = null, reconnectMs = 3000, pollTimer = null;
 
+// ── Independent watchdog — a safety net completely separate from the
+// per-connection ping/pong logic below. That mechanism depends on the
+// WebSocket library correctly firing a 'close' event when a connection
+// dies — which can silently fail to happen at all if the connection is
+// cut by an intermediate network layer (a proxy, a load balancer)
+// without a clean close signal ever reaching this process. If that
+// happens, the agent can be left permanently stuck, believing it's
+// still connected, with no 'close' event ever arriving to trigger a
+// reconnect — exactly matching a farm going offline for 30+ minutes
+// until someone manually restarts it. This watchdog doesn't rely on
+// the ws object's own event system at all: it just tracks "was there
+// ANY successful activity recently," and if not, forces a full,
+// clean process restart — precisely what a manual restart already
+// does and already reliably fixes.
+let lastActivity = Date.now();
+setInterval(() => {
+  const idleFor = Date.now() - lastActivity;
+  if (idleFor > 60000) {
+    console.log(`[WATCHDOG] No successful server activity in ${Math.round(idleFor/1000)}s — restarting process for a clean reconnect`);
+    process.exit(1); // the supervisor (update-check.js) restarts agent.js fresh
+  }
+}, 15000);
+
 // ── HTTP helper ────────────────────────────────────────────
 // ── Parse WWW-Authenticate header for Digest auth ──────────
 function parseDigestHeader(header) {
@@ -958,7 +981,30 @@ async function handleActionRequest(msg) {
   }
 }
 
+// ── Per-IP request queue for the Web UI tunnel ──────────────────
+// Many embedded miner web servers (this class of firmware included)
+// can only handle ONE connection at a time. The miner's own dashboard
+// commonly refreshes itself by firing several data requests (pools,
+// stats, warnings, system info) all at the same instant — if we send
+// all of those to the miner simultaneously, its tiny web server
+// rejects most of them outright, which looked like a genuine
+// connection failure (502) even though the miner was perfectly
+// reachable. Queuing requests per-IP so only one is ever in flight
+// to a given miner at a time avoids this entirely.
+const webuiQueues = new Map();
+function queueForIp(ip, task) {
+  const prev = webuiQueues.get(ip) || Promise.resolve();
+  const next = prev.then(task, task).catch(() => {}); // one failure never blocks the queue
+  webuiQueues.set(ip, next);
+  return next;
+}
+
 function handleWebuiProxyRequest(msg) {
+  queueForIp(msg.ip, () => handleWebuiProxyRequestNow(msg));
+}
+
+function handleWebuiProxyRequestNow(msg) {
+  return new Promise(resolveQueue => {
   const { request_id, ip, method, path: reqPath, headers, body } = msg;
   const REQUEST_USER = 'root', REQUEST_PASS = 'root'; // every Antminer unit uses this
 
@@ -975,11 +1021,13 @@ function handleWebuiProxyRequest(msg) {
       body: isText ? buf.toString('utf8') : buf.toString('base64'),
       encoding: isText ? 'utf8' : 'base64',
     });
+    resolveQueue();
   }
 
   function sendError(status, text) {
     send({ type: 'webui_proxy_response', request_id, status,
       headers: { 'content-type': 'text/plain' }, body: text, encoding: 'utf8' });
+    resolveQueue();
   }
 
   // Some Antminer firmware wants Basic auth, some wants Digest — same
@@ -1020,6 +1068,7 @@ function handleWebuiProxyRequest(msg) {
 
   const basicAuth = 'Basic ' + Buffer.from(REQUEST_USER + ':' + REQUEST_PASS).toString('base64');
   attempt(basicAuth, false);
+  });
 }
 
 async function pollLanli() {
@@ -1038,6 +1087,7 @@ async function pollLanli() {
 
 // ── Connect to server ──────────────────────────────────────
 function connect() {
+  lastActivity = Date.now(); // reset so the watchdog doesn't fire mid-reconnect
   console.log('\n╔══════════════════════════════════════════╗');
   console.log('║     EKALAVYA — FARM AGENT v1.0.0        ║');
   console.log('╠══════════════════════════════════════════╣');
@@ -1074,24 +1124,28 @@ function connect() {
     }, 32000);
   }
 
-  ws.on('pong', () => { clearTimeout(pongTimeout); });
+  ws.on('pong', () => { clearTimeout(pongTimeout); lastActivity = Date.now(); });
+
+  let heartbeatMsgInterval = null, lanliInterval = null;
 
   ws.on('open', () => {
     reconnectMs = 3000;
+    lastActivity = Date.now();
     console.log(`[INFO] ✓ Connected | Farm: ${FARM_NAME}`);
     pollTimer = setInterval(pollMiners, POLL_MS);
-    setInterval(() => send({ type:'heartbeat', farm_id:FARM_ID }), 8000);
+    heartbeatMsgInterval = setInterval(() => send({ type:'heartbeat', farm_id:FARM_ID }), 8000);
     // Ping every 8s; only reconnect if truly unresponsive for 32s
     pingInterval = setInterval(heartbeatPing, 8000);
     setTimeout(pollMiners, 5000);
     // Start Lanli RS485 polling if enabled
     if (LANLI_ENABLED && lanli) {
-      setInterval(pollLanli, 30000);
+      lanliInterval = setInterval(pollLanli, 30000);
       setTimeout(pollLanli, 8000);
     }
   });
 
   ws.on('message', raw => {
+    lastActivity = Date.now();
     try {
       const msg = JSON.parse(raw.toString());
       if (msg.type === 'welcome') {
@@ -1163,6 +1217,8 @@ function connect() {
   ws.on('close', code => {
     clearInterval(pollTimer);
     clearInterval(pingInterval);
+    clearInterval(heartbeatMsgInterval);
+    clearInterval(lanliInterval);
     clearTimeout(pongTimeout);
     console.log(`[WARN] Disconnected (${code}) — retry in ${reconnectMs/1000}s`);
     setTimeout(connect, reconnectMs);
