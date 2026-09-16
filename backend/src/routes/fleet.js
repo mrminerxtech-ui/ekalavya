@@ -32,7 +32,7 @@ router.get('/load', authMiddleware, async (req, res) => {
 
 // POST /api/fleet/save — save entire fleet
 router.post('/save', authMiddleware, async (req, res) => {
-  const { workers, customers } = req.body;
+  const { workers, customers, clearAll } = req.body;
   if (!Array.isArray(workers)) return res.status(400).json({ error: 'workers array required' });
 
   let processedCustomers = customers || [];
@@ -56,11 +56,11 @@ router.post('/save', authMiddleware, async (req, res) => {
   }
 
   const [wOk, cOk] = await Promise.all([
-    db.saveWorkers(workers),
-    db.saveCustomers(processedCustomers),
+    db.saveWorkers(workers, !!clearAll),
+    db.saveCustomers(processedCustomers, !!clearAll),
   ]);
 
-  console.log(`[FLEET] Saved ${workers.length} workers, ${processedCustomers.length} customers → ${db.isUsingDB() ? 'PostgreSQL' : 'file'}`);
+  console.log(`[FLEET] Saved ${workers.length} workers, ${processedCustomers.length} customers${clearAll ? ' (full clear)' : ' (upsert)'} → ${db.isUsingDB() ? 'PostgreSQL' : 'file'}`);
   res.json({ ok: wOk, workers: workers.length, customers: processedCustomers.length });
 });
 
@@ -68,17 +68,15 @@ router.post('/save', authMiddleware, async (req, res) => {
 router.post('/worker', authMiddleware, async (req, res) => {
   const { worker } = req.body;
   if (!worker?.id) return res.status(400).json({ error: 'worker.id required' });
-  const existing = await db.loadWorkers();
-  const updated  = existing.filter(w => w.id !== worker.id);
-  updated.push(worker);
-  await db.saveWorkers(updated);
+  // saveWorkers() now upserts by id internally, so a single-item array
+  // correctly updates just this one record without touching any other
+  await db.saveWorkers([worker]);
   res.json({ ok: true });
 });
 
 // DELETE /api/fleet/worker/:id — delete single worker
 router.delete('/worker/:id', authMiddleware, async (req, res) => {
-  const existing = await db.loadWorkers();
-  await db.saveWorkers(existing.filter(w => w.id !== req.params.id));
+  await db.deleteWorker(req.params.id);
   res.json({ ok: true });
 });
 
