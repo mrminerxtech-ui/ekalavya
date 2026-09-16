@@ -48,13 +48,24 @@ router.use('/:farmId/:ip', async (req, res) => {
   // The FIRST request (from window.open) carries the token as a
   // query param, since a plain browser navigation can't send a
   // custom header. We verify it once here, then set a short-lived
-  // cookie scoped to this exact farm+ip path — every subsequent
-  // request within the miner's own page (link clicks, its own
-  // fetch/XHR calls) then carries auth automatically via that
-  // cookie, with no need to rewrite every possible URL pattern.
-  const cookies      = parseCookies(req.headers.cookie);
-  const cookieName   = 'ekl_webui_' + Buffer.from(proxyBase).toString('base64url').slice(0, 24);
-  const token        = req.query.token || cookies[cookieName];
+  // cookie so every subsequent request within the miner's own page
+  // (link clicks, its own fetch/XHR calls) carries auth automatically,
+  // with no need to rewrite every possible URL pattern.
+  //
+  // The cookie uses ONE fixed name and path (/api/webui/) shared
+  // across every tunnel, rather than one derived from this specific
+  // farmId/ip — a farm name containing a space (e.g. "Farm 3") gets
+  // URL-encoded differently in the browser's actual request path
+  // than in a raw JS string, so a cookie path built from it silently
+  // never matches the real outgoing request, and every follow-up
+  // resource (JS, CSS, images) fails as unauthenticated even though
+  // the person is genuinely logged in. The cookie doesn't need to be
+  // tunnel-specific anyway — it only identifies WHO is asking, and
+  // authorization for WHICH machine is re-checked fresh below on
+  // every single request regardless.
+  const cookies    = parseCookies(req.headers.cookie);
+  const cookieName = 'ekl_webui_auth';
+  const token      = req.query.token || cookies[cookieName];
 
   let user;
   if (!token) return res.status(401).send(tunnelErrorPage('Not logged in — please open this from inside the app.'));
@@ -72,7 +83,7 @@ router.use('/:farmId/:ip', async (req, res) => {
 
   // Re-issue the cookie on every verified request — cheap, and keeps
   // the session alive for as long as the tab stays open and active.
-  res.cookie(cookieName, token, { path: proxyBase, maxAge: 30 * 60 * 1000, httpOnly: true, sameSite: 'lax' });
+  res.cookie(cookieName, token, { path: '/api/webui/', maxAge: 30 * 60 * 1000, httpOnly: true, sameSite: 'lax' });
 
   // Once mounted this way, req.url is already everything AFTER
   // /:farmId/:ip — exactly the sub-path + querystring to forward
