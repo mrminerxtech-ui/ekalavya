@@ -1079,6 +1079,40 @@ function saveEditCustomer() {
   toast('✓ ' + c.name + ' updated', 'var(--green)');
 }
 
+function deleteCustomer() {
+  const cid = document.getElementById('ecId').value;
+  const c = customers.find(x => x.id === cid);
+  if (!c) return;
+  const affected = workers.filter(function(w){ return w.cid === cid; });
+  const warning = affected.length > 0
+    ? 'Delete ' + c.name + '? Their ' + affected.length + ' assigned miner(s) will become unassigned (not deleted) and the customer will lose portal access immediately. This cannot be undone.'
+    : 'Delete ' + c.name + '? This cannot be undone.';
+  if (!confirm(warning)) return;
+
+  // Unassign their miners locally rather than leaving them pointing
+  // at a customer id that no longer exists
+  affected.forEach(function(w){ w.cid = ''; });
+  customers = customers.filter(function(x){ return x.id !== cid; });
+
+  saveFleet();
+  saveFleetToBackend(); // persists the cid='' clearing on affected workers
+
+  // The bulk save above is upsert-only (by design — see saveWorkers),
+  // so it never removes the customer record itself. Deletion needs
+  // its own explicit call, same reasoning as single-worker delete.
+  const token = localStorage.getItem('ekl_token');
+  if (token && API_BASE && !API_BASE.includes('localhost')) {
+    fetch(API_BASE + '/api/fleet/customer/' + encodeURIComponent(cid), {
+      method: 'DELETE',
+      headers: {'Authorization':'Bearer '+token}
+    }).catch(function(){});
+  }
+
+  closeSheet('editCustSheet');
+  renderAll();
+  toast('✓ ' + c.name + ' deleted' + (affected.length > 0 ? ' — ' + affected.length + ' miner(s) unassigned' : ''), 'var(--red)');
+}
+
 // ── Delete miner ──────────────────────────────────────────
 function deleteMiner(wid) {
   if (!confirm('Remove this miner from fleet?')) return;
