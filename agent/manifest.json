@@ -1,15 +1,16 @@
 {
-  "version": "1.1.19",
-  "released_at": "2026-09-17T10:00:00Z",
+  "version": "1.1.20",
+  "released_at": "2026-09-17T12:00:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "Web UI tunnel: requests to the same miner are now queued and sent one at a time instead of simultaneously \u2014 many embedded miner web servers can only handle one connection at once, and the miner's own dashboard commonly fires 4 data requests at the same instant on every refresh, which was causing most of them to fail with a false '502 Cannot reach miner' even though the miner was fully reachable"
+    "Recover MAC addresses from the local ARP table for miners whose firmware doesn't report one, so every machine has a permanent hardware ID that survives a DHCP address change",
+    "Guard against router/gateway MACs: any MAC seen for more than one IP is discarded rather than used as identity, so machines on a routed subnet are never collapsed into a single record"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "cb89ba739306b4b9351b39853897d90d8f0b09468ea8355e2d2260493e886c10",
-      "size": 57086
+      "sha256": "39aa13215609c0df831d1456787606592de962ea5c3f8f69055206ae2764361f",
+      "size": 60490
     },
     {
       "name": "sonoff-th.js",
