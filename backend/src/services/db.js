@@ -77,6 +77,21 @@ async function createTables() {
 // this updates only the given workers by IP — used for the automatic
 // 30-second poll cycle so we're not rewriting the entire fleet table
 // every time a farm agent reports in.
+// A worker's id is its PERMANENT identity — it's what customer
+// assignments and every other reference point at, so it must never
+// change for the life of the machine. Deriving it from the IP address
+// (as this used to) breaks completely on DHCP: the moment a lease
+// renews or a machine is moved between sites, it gets a new id, is
+// treated as a brand new machine with no customer attached, and the
+// old record is orphaned. MAC and serial are burned into the hardware
+// and never change, so they make a correct identity; IP is only a
+// last resort for machines that expose neither.
+function stableWorkerId(m) {
+  if (m.mac)    return 'w-mac-' + String(m.mac).toUpperCase().replace(/[^0-9A-F]/g, '');
+  if (m.serial) return 'w-sn-'  + String(m.serial).replace(/[^0-9A-Za-z]/g, '');
+  return 'w-ip-' + String(m.ip).replace(/\./g, '-');
+}
+
 async function upsertWorkersByIp(farmId, minersFoundNow) {
   if (useFallback || !pool) return upsertWorkersFallback(farmId, minersFoundNow);
   const client = await pool.connect();
@@ -124,7 +139,7 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
         );
         if (moved) console.log(`[DB] Miner ${old.id} moved: ${old.farm_id}(${old.ip}) → ${farmId}(${m.ip})`);
       } else {
-        const fresh = { ...m, id: 'w-' + m.ip.replace(/\./g, '-'), farm_id: farmId, cid: '',
+        const fresh = { ...m, id: stableWorkerId(m), farm_id: farmId, cid: '',
                    disabled: false, status: 'online', source: 'auto-poll',
                    added_at: new Date().toISOString() };
         await client.query(
@@ -177,7 +192,7 @@ function upsertWorkersFallback(farmId, minersFoundNow) {
         farm_id: moved ? farmId : old.farm_id,
         status: m.status || 'online' });
     } else {
-      const id = 'w-' + m.ip.replace(/\./g, '-');
+      const id = stableWorkerId(m);
       byId.set(id, { ...m, id, farm_id: farmId, cid: '',
         disabled: false, status: 'online', source: 'auto-poll', added_at: new Date().toISOString() });
     }
