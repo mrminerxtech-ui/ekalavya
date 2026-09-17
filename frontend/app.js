@@ -355,6 +355,33 @@ function renderAlerts() {
       }).join('');
 }
 
+// Copy a pool address to the clipboard. Uses the modern API where
+// available and falls back for older/non-secure contexts, since a
+// silent failure here means someone pastes nothing into a miner.
+function copyPoolUrl(btn, url) {
+  function done(ok) {
+    const original = btn.textContent;
+    btn.textContent = ok ? 'Copied' : 'Failed';
+    setTimeout(function(){ btn.textContent = original; }, 1400);
+    if (ok) toast('Copied: ' + url, 'var(--green)');
+    else    toast('Could not copy \u2014 long-press the address to select it instead', 'var(--warn)');
+  }
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(url).then(function(){ done(true); }, function(){ done(false); });
+    return;
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = url;
+    ta.style.position = 'fixed'; ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    done(ok);
+  } catch(e) { done(false); }
+}
+
 function renderPools() {
   const el = document.getElementById('poolsGrid');
   if (!el) return;
@@ -438,8 +465,14 @@ function renderPools() {
           return '<div style="margin-bottom:10px">'
             + '<div style="font-size:10px;color:var(--mute);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">' + c.coin + '</div>'
             + c.urls.map(function(u, i){
-                return '<div style="font-family:Share Tech Mono,monospace;font-size:11px;color:var(--cyan);word-break:break-all;margin-bottom:2px">'
-                  + '<span style="color:var(--mute)">Pool ' + (i+1) + ':</span> ' + u + '</div>';
+                // Tap-to-copy: these get typed into a miner's config by
+                // hand otherwise, where one wrong character means the
+                // machine silently mines to nothing.
+                return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">'
+                  + '<div style="flex:1;font-family:Share Tech Mono,monospace;font-size:11px;color:var(--cyan);word-break:break-all">'
+                  +   '<span style="color:var(--mute)">Pool ' + (i+1) + ':</span> ' + u + '</div>'
+                  + '<button class="abtn" style="flex:none" onclick="copyPoolUrl(this,\'' + u.replace(/'/g, "\\'") + '\')">Copy</button>'
+                  + '</div>';
               }).join('')
             + (c.partial ? '<div style="font-size:10px;color:var(--mute);margin-top:2px">Only 2 verified addresses for this coin — no separate 3rd server confirmed.</div>' : '')
             + '</div>';
@@ -455,6 +488,72 @@ function renderProfit() {
   el.innerHTML = '<div style="text-align:center;padding:30px;color:var(--mute)">Add miners to see profitability calculations.</div>';
 }
 
+
+// ── Live market data & mining revenue ───────────────────────
+// market.ok stays false until real data actually arrives. Nothing
+// here ever substitutes a placeholder price or difficulty: if the
+// live figures aren't available, the UI shows a dash instead of a
+// number, because these end up on a customer's earnings screen.
+let market = { ok: false };
+
+// F2Pool's PPS fee for SHA-256. Revenue quoted to a customer should
+// be what the pool actually pays out, not the theoretical gross.
+const POOL_FEE_PCT = 2.5;
+
+function fetchMarketData(cb) {
+  const base = (typeof API_BASE !== 'undefined') ? API_BASE : '';
+  if (!base || base.includes('localhost')) { if (cb) cb(); return; }
+  fetch(base + '/api/market')
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if (d && d.ok) market = d;
+      else market = { ok: false };
+      if (cb) cb();
+    })
+    .catch(function(){ market = { ok: false }; if (cb) cb(); });
+}
+
+// SHA-256 (Bitcoin) machines only. A Scrypt/LTC machine's hashrate
+// fed into a Bitcoin formula produces a meaningless figure, so those
+// are excluded from BTC earnings entirely rather than miscounted.
+function isShaMiner(w) {
+  const algo = (w.algo || '').toLowerCase();
+  if (algo) return algo.indexOf('sha') !== -1;
+  // No algo recorded — infer from unit. SHA-256 ASICs are quoted in
+  // TH/s or PH/s; Scrypt machines are quoted in MH/s or GH/s.
+  const unit = (w.hr_unit || '').toUpperCase();
+  return unit.indexOf('TH') === 0 || unit.indexOf('PH') === 0;
+}
+
+function hashrateToHashesPerSec(w) {
+  const v = Number(w.hashrate) || 0;
+  if (v <= 0) return 0;
+  const unit = (w.hr_unit || 'TH/s').toUpperCase();
+  const mult = unit.indexOf('PH') === 0 ? 1e15
+             : unit.indexOf('TH') === 0 ? 1e12
+             : unit.indexOf('GH') === 0 ? 1e9
+             : unit.indexOf('MH') === 0 ? 1e6
+             : 1e12; // default TH/s — the common case for SHA-256
+  return v * mult;
+}
+
+// Standard mining revenue maths, the same basis a pool calculator uses:
+//   expected BTC = hashrate ÷ (network hashrate) × blocks × reward
+// expressed via difficulty, since difficulty × 2^32 is the expected
+// number of hashes per block found.
+function estimateGrossUsd(hashesPerSec, days) {
+  if (!market.ok || !hashesPerSec || hashesPerSec <= 0) return null;
+  const d = Number(market.difficulty), reward = Number(market.block_reward), price = Number(market.btc_usd);
+  if (!isFinite(d) || d <= 0 || !isFinite(reward) || reward <= 0 || !isFinite(price) || price <= 0) return null;
+  const btcPerSec = (hashesPerSec * reward) / (d * 4294967296);
+  const btc = btcPerSec * 86400 * days;
+  return btc * price * (1 - POOL_FEE_PCT / 100);
+}
+
+function fmtUsd(v) {
+  if (v === null || !isFinite(v)) return '—';
+  return '$' + Math.round(v).toLocaleString();
+}
 
 function renderPortal() {
   try { renderDash(); } catch(e) {}
@@ -479,12 +578,44 @@ function renderPortal() {
   const pTotal = document.getElementById('pTotal');   if (pTotal)  pTotal.textContent  = mine.length;
   const pOnline = document.getElementById('pOnline'); if (pOnline) pOnline.textContent = online.length;
   const pHR = document.getElementById('pHR');         if (pHR)     pHR.textContent     = totalHrTH.toFixed(1);
-  // Hosting fee uses the real per-machine rate set for this customer.
-  // Gross Earnings / Net Profit need real revenue-tracking data this
-  // app doesn't calculate yet, so they're left as-is rather than
-  // showing an invented number for what is real money to a customer.
-  const pFee = document.getElementById('pFee');
-  if (pFee && custRecord?.rate) pFee.textContent = '$' + (custRecord.rate * mine.length).toLocaleString();
+
+  // ── Earnings ────────────────────────────────────────────
+  // Real revenue from live BTC price + live network difficulty.
+  // Only machines that are actually hashing RIGHT NOW earn anything,
+  // and only SHA-256 machines earn BTC — a Scrypt (LTC) machine's
+  // hashrate must never be fed into a Bitcoin revenue formula, or
+  // the figure comes out wildly wrong.
+  const shaHashesPerSec = online.reduce(function(sum, w){
+    if (!isShaMiner(w)) return sum;
+    return sum + hashrateToHashesPerSec(w);
+  }, 0);
+  const nonShaOnline = online.filter(function(w){ return !isShaMiner(w); }).length;
+
+  const gross30 = estimateGrossUsd(shaHashesPerSec, 30);
+  const fee30   = (custRecord && custRecord.rate) ? custRecord.rate * mine.length : null;
+
+  const pGross = document.getElementById('pGross');
+  const pFee   = document.getElementById('pFee');
+  const pNet   = document.getElementById('pNet');
+  // A dash — never a zero or a guess — whenever the live market data
+  // isn't available or the hosting rate hasn't been set. These are
+  // real money figures; a blank is honest, a wrong number is not.
+  if (pGross) pGross.textContent = gross30 === null ? '—' : fmtUsd(gross30);
+  if (pFee)   pFee.textContent   = fee30   === null ? '—' : fmtUsd(fee30);
+  if (pNet)   pNet.textContent   = (gross30 === null || fee30 === null) ? '—' : fmtUsd(gross30 - fee30);
+
+  const note = document.getElementById('pEarnNote');
+  if (note) {
+    if (!market.ok) {
+      note.textContent = 'Live market data unavailable — earnings cannot be calculated right now.';
+    } else {
+      note.textContent = 'Est. at $' + Math.round(market.btc_usd).toLocaleString()
+        + '/BTC, difficulty ' + (market.difficulty / 1e12).toFixed(1) + 'T'
+        + (market.stale ? ' (data ' + market.age_minutes + ' min old)' : '')
+        + (nonShaOnline ? ' · excludes ' + nonShaOnline + ' non-SHA-256 machine(s)' : '');
+    }
+  }
+
   const badge = document.getElementById('portalOnlineBadge');
   if (badge) badge.textContent = online.length + ' Online';
 
@@ -1533,7 +1664,7 @@ function doLogin(){
     e.style.display='block';
   });
 }
-function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).style.display='none');['ticker','topbar','appBody','bottomNav'].forEach(id=>document.getElementById(id).style.display=id==='appBody'?'flex':id==='bottomNav'?'block':'flex');const ini=currentUser.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();document.getElementById('sideAv').textContent=ini;document.getElementById('sideName').textContent=currentUser.name;document.getElementById('sideRole').textContent=isCustomer?'Customer Portal':currentUser.role==='admin'?'Super Admin':'Team Member';document.getElementById('topBadge').textContent=isCustomer?'PORTAL':'ADMIN';if(isCustomer){document.getElementById('adminNav').style.display='none';document.getElementById('custNav').style.display='block';document.getElementById('agentPill').style.display='none';document.getElementById('bnavAdmin').style.display='none';document.getElementById('bnavCust').style.display='flex';showPage('portal-home');document.getElementById('custNav').querySelector('.nav-item').classList.add('active');renderPortal();try{ loadFleetFromBackend(function(){ try{ renderPortal(); }catch(e){} }); }catch(e){}}else{populateDropdowns();renderAll();}initTicker();// updateTicker removed — was demo data onlysetInterval(liveUpdate,30000);fetchAgents();setInterval(fetchAgents,30000);
+function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).style.display='none');['ticker','topbar','appBody','bottomNav'].forEach(id=>document.getElementById(id).style.display=id==='appBody'?'flex':id==='bottomNav'?'block':'flex');const ini=currentUser.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();document.getElementById('sideAv').textContent=ini;document.getElementById('sideName').textContent=currentUser.name;document.getElementById('sideRole').textContent=isCustomer?'Customer Portal':currentUser.role==='admin'?'Super Admin':'Team Member';document.getElementById('topBadge').textContent=isCustomer?'PORTAL':'ADMIN';if(isCustomer){document.getElementById('adminNav').style.display='none';document.getElementById('custNav').style.display='block';document.getElementById('agentPill').style.display='none';document.getElementById('bnavAdmin').style.display='none';document.getElementById('bnavCust').style.display='flex';showPage('portal-home');document.getElementById('custNav').querySelector('.nav-item').classList.add('active');renderPortal();try{ fetchMarketData(function(){ try{ renderPortal(); }catch(e){} }); loadFleetFromBackend(function(){ try{ renderPortal(); }catch(e){} }); }catch(e){}}else{populateDropdowns();renderAll();}initTicker();// updateTicker removed — was demo data onlysetInterval(liveUpdate,30000);fetchAgents();setInterval(fetchAgents,30000);
   // WebSocket for real-time scan results
   try {
     const wsUrl = API_BASE.replace('https://','wss://').replace('http://','ws://') + '/ws';
@@ -2534,7 +2665,7 @@ function assignSensor(deviceId){
   .then(d=>{ if(d.ok) toast('✓ Sensor assigned to farm','var(--green)'); })
   .catch(e=>toast('Error: '+e.message,'var(--red)'));
 }
-function liveUpdate(){if(isCustomer)renderPortal();}
+function liveUpdate(){if(isCustomer){ fetchMarketData(function(){ try{ renderPortal(); }catch(e){} }); renderPortal(); }}
 
 // ════════════════════════════════════════════════════════════
 // SCADA — Lanli Hydro System (SP Cloud Integration)
