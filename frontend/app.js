@@ -1575,6 +1575,17 @@ function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).sty
 } // end launchApp
 
 // ── Merge live poll results into the local fleet ───────────
+// Mirror of the backend's stableWorkerId() — both sides MUST generate
+// the same id for the same machine, or the browser and the server will
+// each invent a different identity for it and create duplicate records.
+// MAC/serial are permanent hardware ids; IP is a last resort only,
+// because on DHCP it changes and would silently re-identify the machine.
+function stableWorkerId(m) {
+  if (m.mac)    return 'w-mac-' + String(m.mac).toUpperCase().replace(/[^0-9A-F]/g, '');
+  if (m.serial) return 'w-sn-'  + String(m.serial).replace(/[^0-9A-Za-z]/g, '');
+  return 'w-ip-' + String(m.ip).replace(/\./g, '-');
+}
+
 function mergePollResults(farmId, minersFoundNow){
   if(!farmId || !Array.isArray(minersFoundNow)) return;
   const nowIps = new Set(minersFoundNow.map(function(m){ return m.ip; }));
@@ -1645,7 +1656,7 @@ function mergePollResults(farmId, minersFoundNow){
       const hrUnit  = m.hr_unit || (ghAlgos.includes(algo) ? 'GH/s' : 'TH/s');
       const farmName= (agents.find(function(a){ return a.id === farmId; }) || {}).name || farmId;
       workers.push({
-        id: 'w-' + m.ip.replace(/\./g,'-'), name: m.worker || m.ip.replace(/\./g,'-'),
+        id: stableWorkerId(m), name: m.worker || m.ip.replace(/\./g,'-'),
         worker_id: m.worker_id || m.worker || '—', model: m.model || 'ASIC Miner',
         brand: brand, algo: algo, ip: m.ip,
         hashrate: m.hashrate || 0, hr_unit: hrUnit, hr_display: (m.hashrate > 0) ? (m.hr_display || '—') : '—',
@@ -2961,7 +2972,7 @@ function addToFleetDirect(ip, model, farmId, farmName){
   const keptMac    = existing && (existing.mac_manual    || existing.mac)    ? existing.mac    : (miner.mac    || null);
 
   workers.push({
-    id: 'w-' + ip.replace(/\./g, '-'),
+    id: stableWorkerId({ mac: keptMac, serial: keptSerial, ip: ip }),
     name: miner.worker || ip.replace(/\./g, '-'),
     worker_id: miner.worker_id || miner.worker || '—',   // full wallet.worker string
     mac: keptMac, mac_manual: existing?.mac_manual || false,
