@@ -5,6 +5,7 @@ const net       = require('net');
 const http      = require('http');
 const https     = require('https');
 const os        = require('os');
+const { execFile } = require('child_process');
 
 // ── Sonoff TH16 — Live LAN Sensors ───────────────────────
 const th16 = require('./sonoff-th');
@@ -779,6 +780,74 @@ async function scanNetwork(subnet, ports, timeout, sessionId, isLast=true) {
 
 // ── Poll miners ────────────────────────────────────────────
 let pollInProgress = false;
+// ── ARP-based MAC lookup ────────────────────────────────────────
+// Many miners don't expose their MAC through their web API at all
+// (agent logs show plenty of "MAC: not found"). But the agent sits on
+// the same LAN, so the operating system's own ARP table already knows
+// the MAC of every device it has actually talked to. This gives a
+// stable hardware ID for machines whose firmware won't tell us one —
+// which matters enormously on DHCP, where the IP address changes and
+// is therefore useless as a permanent identity.
+function runArp() {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve(''), 4000);
+    execFile('arp', ['-a'], { timeout: 4000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+      clearTimeout(timer);
+      resolve(err ? '' : stdout);
+    });
+  });
+}
+
+function findMacInArpOutput(output, ip) {
+  for (const line of output.split('\n')) {
+    // Match the IP as a whole token — a bare includes() would match
+    // 19.3.19.1 inside 19.3.19.15 and return the wrong device's MAC.
+    if (!new RegExp('(^|[^0-9.])' + ip.replace(/\./g, '\\.') + '([^0-9.]|$)').test(line)) continue;
+    const macMatch = line.match(/([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}/);
+    if (macMatch) return macMatch[0].toUpperCase().replace(/-/g, ':');
+  }
+  return null;
+}
+
+// Fill in missing MACs from the ARP table, with a critical safety guard.
+// If miners sit on a subnet the agent reaches THROUGH A ROUTER, the ARP
+// table returns the ROUTER's MAC for every one of them — identical for
+// all. Using that as identity would collapse an entire subnet into a
+// single machine record. So any MAC that turns up for more than one IP
+// is treated as shared network infrastructure and discarded outright.
+async function enrichMacsFromArp(miners) {
+  const needMac = miners.filter(m => !m.mac);
+  if (needMac.length === 0) return;
+
+  const arp = await runArp();
+  if (!arp) { console.log('[ARP] Table unavailable — skipping MAC enrichment this cycle'); return; }
+
+  const candidates = new Map(); // ip -> mac
+  const macCount   = new Map(); // mac -> how many IPs claim it
+  for (const m of needMac) {
+    const mac = findMacInArpOutput(arp, m.ip);
+    if (!mac) continue;
+    candidates.set(m.ip, mac);
+    macCount.set(mac, (macCount.get(mac) || 0) + 1);
+  }
+
+  // Also refuse any MAC already reported directly by a different miner
+  const claimed = new Set(miners.filter(m => m.mac).map(m => m.mac.toUpperCase()));
+
+  let applied = 0, rejected = 0;
+  for (const m of needMac) {
+    const mac = candidates.get(m.ip);
+    if (!mac) continue;
+    if (macCount.get(mac) > 1 || claimed.has(mac)) { rejected++; continue; }
+    m.mac = mac;
+    m.mac_source = 'arp';
+    applied++;
+  }
+  if (applied || rejected) {
+    console.log(`[ARP] MACs recovered: ${applied}${rejected ? ` (${rejected} rejected as shared/router MACs)` : ''}`);
+  }
+}
+
 async function pollMiners() {
   // Prevent overlapping cycles — scanning multiple subnets can take
   // longer than the poll interval on a large farm, and running two
@@ -814,6 +883,12 @@ async function doPollMiners() {
   }
 
   if (live.length > 0) {
+    // Recover MACs for machines whose firmware didn't report one, so
+    // the backend has a stable hardware ID to recognise them by after
+    // a DHCP address change. Failure here is non-fatal — worst case
+    // those machines simply keep their previous identity behaviour.
+    try { await enrichMacsFromArp(live); } catch(e) { console.log('[ARP] enrichment error (non-fatal):', e.message); }
+
     console.log(`[POLL] ${live.length} miners online across ${SUBNETS.length} subnet(s)`);
     send({ type:'poll_result', miners:live, miner_count:live.length });
   }
