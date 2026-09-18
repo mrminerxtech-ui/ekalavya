@@ -282,8 +282,7 @@ tr:last-child td{border-bottom:none;}
       <div class="nav-item active" onclick="nav('dashboard',this)"><span class="ni">&#x1F4CA;</span><span class="nl">Dashboard</span></div>
       <div class="nav-item" onclick="nav('workers',this)"><span class="ni">&#x26CF;&#xFE0F;</span><span class="nl">Workers</span></div>
       <div class="ssec">Remote Access</div>
-      <div class="nav-item" onclick="nav('agents',this)"><span class="ni">&#x1F4E1;</span><span class="nl">Farm Agents</span><span class="nc ncg" id="agentNavBadge">0</span></div>
-      <div class="nav-item" onclick="nav('scanner',this)"><span class="ni">&#x1F50D;</span><span class="nl">Network Scanner</span></div>
+      <div class="nav-item" onclick="nav('agents',this)"><span class="ni">&#x1F4E1;</span><span class="nl">Remote Access</span><span class="nc ncg" id="agentNavBadge">0</span></div>
       <div class="ssec">Business</div>
       <div class="nav-item" onclick="nav('customers',this)"><span class="ni">&#x1F465;</span><span class="nl">Customers</span></div>
       <div class="nav-item" onclick="nav('pools',this)"><span class="ni">&#x1F3CA;</span><span class="nl">World Pools</span></div>
@@ -337,7 +336,7 @@ tr:last-child td{border-bottom:none;}
         </div>
       </div>
       <div class="panel">
-        <div class="ph"><div class="phd">Farm Agents</div><span class="badge bgn" id="agentStripBadge">0 Online</span><div class="pa"><button class="btn btn-sm" onclick="nav('agents')">Manage</button></div></div>
+        <div class="ph"><div class="phd">Farm Agents</div><span class="badge bgn" id="agentStripBadge">0 Online</span><div class="pa"><button class="btn btn-sm" onclick="nav('agents');setRemoteAccessTab('agents')">Manage</button></div></div>
         <div id="agentStrip" style="padding:14px"></div>
       </div>
       <!-- Fleet Status per Farm -->
@@ -390,31 +389,39 @@ tr:last-child td{border-bottom:none;}
 
     <!-- AGENTS -->
     <div id="page-agents" class="page">
-      <div class="page-title">Farm Agents <span>Remote Connections</span></div>
-      <div class="panel">
-        <div class="ph"><div class="phd">Quick Setup</div><span class="badge bc">One command per farm</span></div>
-        <div style="padding:16px">
-          <div style="font-size:12px;color:var(--txt);margin-bottom:12px">Run on any PC inside the farm. Dials <em>outward</em> &mdash; no port forwarding, works through NAT.</div>
-          <div style="background:var(--bg);border:1px solid var(--b1);border-radius:6px;padding:14px;font-family:'Share Tech Mono',monospace;font-size:11px;line-height:2;color:var(--green)">
-            <span style="color:var(--mute)"># Install</span><br>
-            git clone https://github.com/yourrepo/mmx-agent &amp;&amp; cd mmx-agent &amp;&amp; npm install<br>
-            <span style="color:var(--mute)"># Configure .env</span><br>
-            <span style="color:var(--mute)">MMX_SERVER=wss://your-server.com/agent &nbsp; AGENT_KEY=your-secret</span><br>
-            <span style="color:var(--mute)">FARM_NAME="Farm Dubai" &nbsp; LOCAL_SUBNET=192.168.1.0/24</span><br>
-            <span style="color:var(--mute)"># Start (auto-reconnects forever)</span><br>
-            npm start
+      <div class="page-title">Remote Access <span>Farm Agents &amp; Network Scanner</span></div>
+
+      <!-- In-page section tabs — both halves live on one page now, this
+           just scrolls/switches which panel set is visible so the page
+           doesn't become one long scroll on mobile. -->
+      <div class="toolbar" style="margin-bottom:14px">
+        <button class="fbtn active" id="raTabAgentsBtn" onclick="setRemoteAccessTab('agents')">&#x1F4E1; Farm Agents</button>
+        <button class="fbtn" id="raTabScannerBtn" onclick="setRemoteAccessTab('scanner')">&#x1F50D; Network Scanner</button>
+      </div>
+
+      <div id="raSectionAgents">
+        <div class="panel">
+          <div class="ph"><div class="phd">Quick Setup</div><span class="badge bc">One command per farm</span></div>
+          <div style="padding:16px">
+            <div style="font-size:12px;color:var(--txt);margin-bottom:12px">Run on any PC inside the farm. Dials <em>outward</em> &mdash; no port forwarding, works through NAT.</div>
+            <div style="background:var(--bg);border:1px solid var(--b1);border-radius:6px;padding:14px;font-family:'Share Tech Mono',monospace;font-size:11px;line-height:2;color:var(--green)">
+              <span style="color:var(--mute)"># Install</span><br>
+              git clone https://github.com/yourrepo/mmx-agent &amp;&amp; cd mmx-agent &amp;&amp; npm install<br>
+              <span style="color:var(--mute)"># Configure .env</span><br>
+              <span style="color:var(--mute)">MMX_SERVER=wss://your-server.com/agent &nbsp; AGENT_KEY=your-secret</span><br>
+              <span style="color:var(--mute)">FARM_NAME="Farm Dubai" &nbsp; LOCAL_SUBNET=192.168.1.0/24</span><br>
+              <span style="color:var(--mute)"># Start (auto-reconnects forever)</span><br>
+              npm start
+            </div>
           </div>
         </div>
+        <div class="panel">
+          <div class="ph"><div class="phd">Connected Agents</div><span class="badge bgn" id="agentCountBadge">0 Online</span></div>
+          <div class="card-grid" style="padding:14px" id="agentGrid"></div>
+        </div>
       </div>
-      <div class="panel">
-        <div class="ph"><div class="phd">Connected Agents</div><span class="badge bgn" id="agentCountBadge">0 Online</span></div>
-        <div class="card-grid" style="padding:14px" id="agentGrid"></div>
-      </div>
-    </div>
 
-    <!-- SCANNER -->
-    <div id="page-scanner" class="page">
-      <div class="page-title">Network Scanner</div>
+      <div id="raSectionScanner" style="display:none">
       <div class="scan-hero">
         <div style="font-family:'Orbitron',sans-serif;font-size:15px;font-weight:900;color:var(--cyan);margin-bottom:4px;letter-spacing:2px">SCAN ANY NETWORK</div>
         <div style="font-size:12px;color:var(--mute);margin-bottom:16px">Select a farm agent to scan its local network remotely</div>
@@ -449,7 +456,8 @@ tr:last-child td{border-bottom:none;}
         </div>
         <div class="card-grid" id="foundGrid" style="border:1px solid var(--b1);border-top:none;padding:14px;background:var(--s1);border-radius:0 0 8px 8px"></div>
       </div>
-    </div>
+      </div><!-- /raSectionScanner -->
+    </div><!-- /page-agents -->
 
     <!-- CUSTOMERS -->
     <div id="page-customers" class="page">
@@ -487,12 +495,23 @@ tr:last-child td{border-bottom:none;}
 
     <!-- PROFITABILITY -->
     <div id="page-profitability" class="page">
-      <div class="page-title">Profitability Calculator</div>
+      <div class="page-title">Profitability Calculator <span>20 of 50 models &mdash; synced from asicminervalue.com</span></div>
       <div class="panel">
         <div class="ph"><div class="phd">Miner Models</div>
           <div class="pa" style="font-size:11px;color:var(--mute)">Electricity: <input class="si" type="number" value="0.06" step="0.01" id="elec" onchange="renderProfit()" style="width:55px"> $/kWh</div>
         </div>
-        <div class="tw"><table><thead><tr><th>Model</th><th>Algo</th><th>Hashrate</th><th>Power</th><th>Daily Revenue</th><th>Daily Profit</th><th>Monthly</th><th>ROI</th></tr></thead><tbody id="profitTbody"></tbody></table></div>
+        <div id="profitNote" style="font-size:10px;color:var(--mute);padding:0 14px 10px"></div>
+        <div class="tw"><table><thead><tr>
+          <th class="sortable-th" onclick="sortProfitBy('model')">Model</th>
+          <th class="sortable-th" onclick="sortProfitBy('algo')">Algo</th>
+          <th>Hashrate</th>
+          <th class="sortable-th" onclick="sortProfitBy('power')">Power</th>
+          <th class="sortable-th" onclick="sortProfitBy('eff')">Efficiency</th>
+          <th class="sortable-th" onclick="sortProfitBy('revenue')">Daily Revenue</th>
+          <th>Power Cost</th>
+          <th class="sortable-th" onclick="sortProfitBy('profit')">Daily Profit</th>
+          <th>Monthly</th>
+        </tr></thead><tbody id="profitTbody"></tbody></table></div>
       </div>
     </div>
 
@@ -753,7 +772,7 @@ tr:last-child td{border-bottom:none;}
   <div class="bnav" id="bnavAdmin">
     <div class="bi active" onclick="nav('dashboard',null)"><div class="bi-icon">&#x1F4CA;</div><div class="bi-lbl">Dashboard</div></div>
     <div class="bi" onclick="nav('workers',null)"><div class="bi-icon">&#x26CF;&#xFE0F;</div><div class="bi-lbl">Workers</div></div>
-    <div class="bi" onclick="nav('agents',null)"><div class="bi-icon">&#x1F4E1;</div><div class="bi-lbl">Agents</div></div>
+    <div class="bi" onclick="nav('agents',null)"><div class="bi-icon">&#x1F4E1;</div><div class="bi-lbl">Remote</div></div>
     <div class="bi" onclick="nav('customers',null)"><div class="bi-icon">&#x1F465;</div><div class="bi-lbl">Customers</div></div>
     <div class="bi" onclick="nav('alerts',null)"><div class="bi-icon">&#x1F514;</div><div class="bi-lbl">Alerts</div><div class="bi-badge" id="alertBadgeBn" style="display:none">0</div></div>
     <div class="bi" onclick="nav('scada',null)"><div class="bi-icon">💧</div><div class="bi-lbl">SCADA</div></div>
