@@ -4,6 +4,20 @@
 const connectedAgents = new Map();
 
 function registerAgent(ws, info) {
+  // If this farm already has a socket registered, it's a stale one that
+  // hasn't finished dying yet — the agent only opens a second connection
+  // because it believes the first is gone. Close the old one explicitly
+  // so its close event fires NOW, while the map still points at it,
+  // rather than arriving later and deleting this new registration
+  // (see unregisterAgent — that race is what left agents showing offline
+  // in the UI while their own logs said "connected").
+  const existing = connectedAgents.get(info.farm_id);
+  if (existing && existing.ws !== ws) {
+    console.log(`[AGENT] ${info.farm_name}: replacing previous connection`);
+    try { existing.ws.close(4002, 'Superseded by a newer connection'); } catch(e) {}
+    try { existing.ws.terminate(); } catch(e) {}
+  }
+
   const agent = {
     farm_id:       info.farm_id,
     farm_name:     info.farm_name,
@@ -38,8 +52,18 @@ function registerAgent(ws, info) {
   } catch(e) {}
 }
 
-function unregisterAgent(farmId) {
+// `ws` is the socket whose close event fired. It matters: a late close
+// from an OLD socket must not delete the entry belonging to the NEW one
+// the agent has since opened. Without this check the agent would sit
+// there with a perfectly healthy connection while the backend had no
+// record of it — online in its own log, offline in the software, until
+// someone restarted it by hand.
+function unregisterAgent(farmId, ws) {
   const agent = connectedAgents.get(farmId);
+  if (agent && ws && agent.ws !== ws) {
+    console.log(`[AGENT] ${agent.farm_name}: ignoring close from a superseded connection (current one is still live)`);
+    return;
+  }
   if (agent) {
     console.log(`[AGENT] Disconnected: ${agent.farm_name}`);
     connectedAgents.delete(farmId);
