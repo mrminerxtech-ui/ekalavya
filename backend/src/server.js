@@ -69,6 +69,13 @@ app.use('/api/scada',     scadaRoutes);
 app.use('/api/fleet',     fleetRoutes);
 app.use('/api/webui',     require('./routes/webui'));
 app.use('/api/market',    require('./routes/market'));
+app.use('/api/earnings',  require('./routes/earnings'));
+
+// Accrues each customer's mining earnings every 10 minutes from the
+// machines that are actually hashing. Runs on a server-side timer,
+// never on page view, so totals reflect observed uptime rather than
+// who happened to open the portal.
+require('./services/earnings').start();
 
 app.get('/health', (_, res) => res.json({
   status:    'ok',
