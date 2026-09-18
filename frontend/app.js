@@ -513,10 +513,123 @@ function renderPools() {
   }).join('');
 }
 
+// ── Profitability Calculator ─────────────────────────────────
+// Model/algo/hashrate/power specs below were read directly from
+// asicminervalue.com (the top 20 models it server-renders by
+// default, sorted by profitability). The site paginates the rest
+// behind a "Show more" button that needs a live browser to drive —
+// this session doesn't have one connected, so this is 20 of the 50
+// requested, not fabricated to fill the gap. Ask to extend it once
+// the rest of the list is pasted in or a browser session is available.
+//
+// Daily profit is NOT copied from the site (their numbers go stale
+// the moment you load the page) — it's computed live here from the
+// same CoinGecko price + mempool.space difficulty feed the rest of
+// the app uses, so this table, the ticker and a customer's earnings
+// all agree with each other.
+const MINER_CATALOG = [
+  { model: 'Antminer Z15 Pro',         algo: 'Equihash', hr: 840,  hrUnit: 'kh/s', power: 2780 },
+  { model: 'Antminer Z15K',            algo: 'Equihash', hr: 525,  hrUnit: 'kh/s', power: 2483 },
+  { model: 'Antminer X9',              algo: 'RandomX',  hr: 1,    hrUnit: 'Mh/s', power: 2472 },
+  { model: 'Antminer Z15',             algo: 'Equihash', hr: 420,  hrUnit: 'kh/s', power: 1510 },
+  { model: 'Antminer S23 Hyd 3U',      algo: 'SHA-256',  hr: 1.16, hrUnit: 'Ph/s', power: 11020 },
+  { model: 'SealMiner A4 Ultra Hydro', algo: 'SHA-256',  hr: 886,  hrUnit: 'Th/s', power: 8372 },
+  { model: 'Antminer S23e Hyd 2U',     algo: 'SHA-256',  hr: 865,  hrUnit: 'Th/s', power: 8650 },
+  { model: 'SealMiner DL1 Hydro',      algo: 'Scrypt',   hr: 52.5, hrUnit: 'Gh/s', power: 7823 },
+  { model: 'Antminer S23 XP Hyd',      algo: 'SHA-256',  hr: 600,  hrUnit: 'Th/s', power: 5340 },
+  { model: 'Antminer S23 Hyd',         algo: 'SHA-256',  hr: 580,  hrUnit: 'Th/s', power: 5510 },
+  { model: 'SealMiner A4 Pro Hydro',   algo: 'SHA-256',  hr: 680,  hrUnit: 'Th/s', power: 7412 },
+  { model: 'A9++ ZMaster',             algo: 'Equihash', hr: 140,  hrUnit: 'kh/s', power: 1550 },
+  { model: 'Antminer Z11',             algo: 'Equihash', hr: 135,  hrUnit: 'kh/s', power: 1418 },
+  { model: 'Antminer S21e XP Hyd 3U',  algo: 'SHA-256',  hr: 860,  hrUnit: 'Th/s', power: 11180 },
+  { model: 'Antminer S21 XP+ Hyd',     algo: 'SHA-256',  hr: 500,  hrUnit: 'Th/s', power: 5500 },
+  { model: 'Antminer L11 Hyd 2U',      algo: 'Scrypt',   hr: 35,   hrUnit: 'Gh/s', power: 5775 },
+  { model: 'SealMiner A3 Pro Hydro',   algo: 'SHA-256',  hr: 660,  hrUnit: 'Th/s', power: 8250 },
+  { model: 'A9+ ZMaster',              algo: 'Equihash', hr: 120,  hrUnit: 'kh/s', power: 1550 },
+  { model: 'SealMiner DL1 Air',        algo: 'Scrypt',   hr: 25,   hrUnit: 'Gh/s', power: 3725 },
+  { model: 'Antminer L11 Hyd 6U',      algo: 'Scrypt',   hr: 33,   hrUnit: 'Gh/s', power: 5676 },
+];
+
+function catalogHashesPerSec(m) {
+  const mult = { 'kh/s': 1e3, 'Mh/s': 1e6, 'Gh/s': 1e9, 'Th/s': 1e12, 'Ph/s': 1e15 }[m.hrUnit] || 1;
+  return m.hr * mult;
+}
+
+// Human-readable hashrate at its OWN unit — never converted to TH/s,
+// since "0.00084 TH/s" for a 840 kh/s Equihash miner is meaningless
+// (different algorithms aren't comparable by raw hash count anyway).
+function catalogHrDisplay(m) {
+  return m.hr + ' ' + m.hrUnit;
+}
+
+let profitSortField = 'profit';
+let profitSortDir = -1; // most profitable first, matching the source site
+
+function sortProfitBy(field) {
+  if (profitSortField === field) profitSortDir *= -1;
+  else { profitSortField = field; profitSortDir = field === 'model' ? 1 : -1; }
+  renderProfit();
+}
+
 function renderProfit() {
-  const el = document.getElementById('profitGrid');
-  if (!el) return;
-  el.innerHTML = '<div style="text-align:center;padding:30px;color:var(--mute)">Add miners to see profitability calculations.</div>';
+  const tb = document.getElementById('profitTbody');
+  if (!tb) return;
+
+  const elecInput = document.getElementById('elec');
+  const elecRate  = elecInput ? parseFloat(elecInput.value) : NaN;
+  const validElec = isFinite(elecRate) && elecRate >= 0;
+
+  const rows = MINER_CATALOG.map(function(m){
+    const isSha = m.algo === 'SHA-256';
+    // Only SHA-256 gets a live figure: that's the only network we
+    // hold both a price AND a difficulty for (CoinGecko + mempool.space).
+    // Scrypt/Equihash/RandomX would need their own coin's difficulty,
+    // which this app doesn't fetch — showing a number for those would
+    // mean guessing it, so they show "—" instead.
+    const dailyRevenue = isSha ? estimateGrossUsd(catalogHashesPerSec(m), 1) : null;
+    const dailyPowerCost = validElec ? (m.power / 1000) * 24 * elecRate : null;
+    const dailyProfit = (dailyRevenue !== null && dailyPowerCost !== null) ? (dailyRevenue - dailyPowerCost) : null;
+    const efficiency = isSha ? (m.power / (catalogHashesPerSec(m) / 1e12)) : null; // J/TH
+    return { m, dailyRevenue, dailyPowerCost, dailyProfit, efficiency };
+  });
+
+  rows.sort(function(a, b){
+    let va, vb;
+    switch (profitSortField) {
+      case 'model':  va = a.m.model.toLowerCase(); vb = b.m.model.toLowerCase(); break;
+      case 'algo':   va = a.m.algo;  vb = b.m.algo; break;
+      case 'power':  va = a.m.power; vb = b.m.power; break;
+      case 'eff':    va = a.efficiency  === null ? Infinity : a.efficiency;  vb = b.efficiency  === null ? Infinity : b.efficiency; break;
+      case 'revenue':va = a.dailyRevenue=== null ? -Infinity: a.dailyRevenue;vb = b.dailyRevenue=== null ? -Infinity: b.dailyRevenue; break;
+      default:       va = a.dailyProfit === null ? -Infinity : a.dailyProfit; vb = b.dailyProfit === null ? -Infinity : b.dailyProfit;
+    }
+    if (va < vb) return -1 * profitSortDir;
+    if (va > vb) return  1 * profitSortDir;
+    return 0;
+  });
+
+  tb.innerHTML = rows.map(function(r){
+    const m = r.m;
+    return '<tr>'
+      + '<td style="font-size:11px;font-weight:700;color:var(--cyan)">' + escHtml(m.model) + '</td>'
+      + '<td style="font-size:10px;color:var(--mute)">' + escHtml(m.algo) + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + catalogHrDisplay(m) + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + m.power.toLocaleString() + 'W</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (r.efficiency !== null ? r.efficiency.toFixed(1) + ' J/TH' : '—') + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;color:var(--green)">' + fmtUsd2(r.dailyRevenue) + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;color:var(--warn)">' + (r.dailyPowerCost !== null ? '-' + fmtUsd2(r.dailyPowerCost) : '—') + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:12px;font-weight:700;' + (r.dailyProfit !== null && r.dailyProfit < 0 ? 'color:var(--red)' : 'color:var(--gold)') + '">' + fmtUsd2(r.dailyProfit) + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (r.dailyProfit !== null ? fmtUsd2(r.dailyProfit * 30) : '—') + '</td>'
+      + '</tr>';
+  }).join('');
+
+  const note = document.getElementById('profitNote');
+  if (note) {
+    note.textContent = market.ok
+      ? 'Live at $' + Math.round(market.btc_usd).toLocaleString() + '/BTC, difficulty ' + (market.difficulty / 1e12).toFixed(1) + 'T'
+        + (market.stale ? ' (data ' + market.age_minutes + ' min old)' : '') + '. Scrypt/Equihash/RandomX show "—" — this app only tracks Bitcoin network difficulty.'
+      : 'Live market data unavailable right now — profit figures cannot be calculated.';
+  }
 }
 
 
@@ -933,7 +1046,8 @@ function setApiBase(v) {
 function triggerScan(farmId) {
   const agent = agents.find(a => a.id === farmId);
   if (!agent) return;
-  nav('scanner', null);
+  nav('agents', null);
+  setRemoteAccessTab('scanner');
   setTimeout(() => {
     const sv = document.getElementById('scanVia');
     if (sv) { sv.value = farmId; onAgentSelect(sv); }
@@ -976,7 +1090,8 @@ function scanFromConfig() {
   const subnets = getAgentSubnets(_cfgAgentId);
   const sr = document.getElementById('scanRange'); if (sr) sr.value = subnets.join('\n');
   const sv = document.getElementById('scanVia'); if (sv) sv.value = _cfgAgentId;
-  nav('scanner', null);
+  nav('agents', null);
+  setRemoteAccessTab('scanner');
   toast('Agent and ranges loaded — click Scan', 'var(--cyan)');
 }
 
@@ -1959,16 +2074,33 @@ function showPage(n){
   try {
     if(n==='dashboard')     { renderDash(); }
     if(n==='workers')       { renderWorkers(); attachSortHandlers(); }
-    if(n==='agents')        { renderAgents(); }
+    if(n==='agents')        { renderAgents(); populateDropdowns(); }
     if(n==='customers')     { renderCustomers(); }
     if(n==='alerts')        { renderAlerts(); }
-    if(n==='scanner')       { populateDropdowns(); }
     if(n==='scada')         { checkScadaSession(); }
     if(n==='pools')         { renderPools(); }
+    if(n==='profitability') { fetchMarketData(function(){ renderProfit(); }); renderProfit(); }
     if(n==='settings')      { updateFleetStat(); renderSensorEntryGrid(); const tt=document.getElementById('tailscaleToggle'); if(tt) tt.checked = localStorage.getItem('use_tailscale_webui') === 'true'; const rr=document.getElementById('ewRedirectUrl'); if(rr && !rr.value) rr.value = window.location.origin + window.location.pathname; }
   } catch(e) { console.error('showPage render error:', e); }
 }
 function nav(page,el){showPage(page);document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));if(el)el.classList.add('active');}
+
+// ── Remote Access page: Farm Agents / Network Scanner tabs ──
+// Farm Agents and Network Scanner used to be two separate nav pages;
+// they're now two sections of one "Remote Access" page, toggled here
+// instead of navigated to, since a scan in progress shouldn't be torn
+// down just because a page switch unmounted it.
+function setRemoteAccessTab(which){
+  const agentsSec  = document.getElementById('raSectionAgents');
+  const scannerSec = document.getElementById('raSectionScanner');
+  const agentsBtn  = document.getElementById('raTabAgentsBtn');
+  const scannerBtn = document.getElementById('raTabScannerBtn');
+  if (agentsSec)  agentsSec.style.display  = (which === 'agents')  ? '' : 'none';
+  if (scannerSec) scannerSec.style.display = (which === 'scanner') ? '' : 'none';
+  if (agentsBtn)  agentsBtn.classList.toggle('active', which === 'agents');
+  if (scannerBtn) scannerBtn.classList.toggle('active', which === 'scanner');
+  if (which === 'scanner') populateDropdowns();
+}
 
 // TICKER
 // Sub-dollar coins (KAS) need more decimals or they'd all read "$0".
