@@ -94,6 +94,17 @@ th{padding:8px 12px;text-align:left;font-family:"Exo 2",sans-serif;font-weight:7
 td{padding:9px 12px;border-bottom:1px solid rgba(26,42,58,.5);font-family:"Share Tech Mono",monospace;font-size:11px;white-space:nowrap;}
 tr:hover td{background:rgba(0,200,255,.02);}
 tr:last-child td{border-bottom:none;}
+/* Alternating row bands. Set on the ROW, not the cell, so the hover
+   tint above (which sits on td) still composites visibly on top of it. */
+#workersTbody tr:nth-child(even){background:rgba(255,255,255,.03);}
+/* Disabled machines read as grey and dimmed — the previous 6%-alpha
+   orange tint was effectively invisible against the dark background.
+   The :nth-child(even) variant is spelled out so a disabled row on an
+   even band doesn't lose the grey to the stripe rule. */
+#workersTbody tr.wdis,
+#workersTbody tr.wdis:nth-child(even){background:rgba(138,155,172,.30);}
+#workersTbody tr.wdis td{color:var(--mute);}
+#workersTbody tr.wdis:hover td{background:rgba(138,155,172,.08);}
 .sdot{width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0;}
 .sdot.on{background:var(--green);box-shadow:0 0 5px var(--green);}
 .sdot.off{background:var(--red);}.sdot.wn{background:var(--warn);box-shadow:0 0 5px var(--warn);}
@@ -349,6 +360,9 @@ tr:last-child td{border-bottom:none;}
         <div class="ph"><div class="phd">All Machines</div><div class="pa"><button class="btn btn-sm btn-r" onclick="bulkReboot()">&#x27F3; Bulk Reboot</button></div></div>
         <div class="toolbar">
           <input class="si" placeholder="Search name/IP/model..." id="wSearch" oninput="onWorkerSearchInput()" style="width:180px">
+          <select class="si" id="wAgentFilter" onchange="onWorkerAgentFilterChange()" style="width:160px" title="Show only one site's machines">
+            <option value="all">All sites</option>
+          </select>
           <button class="fbtn active" onclick="setWF('all',this)">All</button>
           <button class="fbtn" onclick="setWF('online',this)">Online</button>
           <button class="fbtn" onclick="setWF('offline',this)">Offline</button>
