@@ -152,7 +152,12 @@ function renderWorkers() {
   const C = function(id){ return customers.find(function(x){ return x.id === id; }); };
 
   // Apply active filter + search first, then sort
+  refreshAgentFilterOptions();
+
   let displayWorkers = workers.filter(function(w){ return matchesWorkerFilter(w, workerFilter); });
+  if (workerAgentFilter !== 'all') {
+    displayWorkers = displayWorkers.filter(function(w){ return w.farm_id === workerAgentFilter; });
+  }
   displayWorkers = filterWorkersBySearch(displayWorkers);
   if (workerSortField) {
     displayWorkers.sort(function(a, b){
@@ -173,6 +178,18 @@ function renderWorkers() {
     return;
   }
 
+  // Filters can legitimately match nothing. Without this the table just
+  // goes blank, which looks like the machines were lost rather than
+  // hidden by a filter the user forgot was on.
+  if (displayWorkers.length === 0) {
+    tb.innerHTML = '<tr><td colspan="12" style="text-align:center;padding:36px;color:var(--mute)">'
+      + 'No machines match the current filters.'
+      + '<br><span style="font-size:11px">' + workers.length + ' machine(s) in the fleet — '
+      + '<a href="#" onclick="clearWorkerFilters();return false" style="color:var(--cyan)">clear filters</a></span>'
+      + '</td></tr>';
+    return;
+  }
+
   tb.innerHTML = displayWorkers.map(function(w) {
     const ag  = A(w.farm_id);
     const cust= C(w.cid);
@@ -181,12 +198,13 @@ function renderWorkers() {
     const agentDown = w.farm_id && !isAgentOnline(w.farm_id) && !w.disabled;
     const st   = w.disabled ? 'REPAIR' : agentDown ? 'AGENT OFFLINE' : eSt.toUpperCase();
     const sb   = w.disabled ? 'bor' : eSt === 'online' ? 'bgn' : 'brn';
-    // Disabled machines get a distinct amber-tinted row so they stand
-    // out at a glance in a long list, not just via the small badge text
-    const rowStyle = w.disabled ? ' style="background:rgba(255,107,53,.06)"' : '';
-    return '<tr' + rowStyle + '>'
+    // Disabled machines are greyed out via the .wdis class rather than
+    // an inline style, so the row banding in CSS can be overridden
+    // cleanly instead of the two fighting each other.
+    const rowClass = w.disabled ? ' class="wdis"' : '';
+    return '<tr' + rowClass + '>'
       + '<td><input type="checkbox" class="worker-check" data-wid="' + w.id + '" style="accent-color:var(--cyan)"></td>'
-      + '<td><div style="font-family:Share Tech Mono,monospace;font-weight:700;font-size:12px;color:' + (w.disabled ? 'var(--orange)' : 'var(--cyan)') + '">' + (w.name || '—') + '</div>'
+      + '<td><div style="font-family:Share Tech Mono,monospace;font-weight:700;font-size:12px;color:' + (w.disabled ? 'var(--mute)' : 'var(--cyan)') + '">' + (w.name || '—') + '</div>'
       + '<span class="sdot ' + sdot(w) + '" style="margin-right:4px"></span><span style="font-size:9px;color:var(--mute)">' + (w.algo || '') + '</span>'
       + '</td>'
       + '<td title="MAC: ' + (w.mac || 'unknown') + ' — click to edit" class="sn-edit-cell" data-wid="' + w.id + '" style="font-family:Share Tech Mono,monospace;font-size:10px;cursor:pointer">'
@@ -213,10 +231,17 @@ function renderWorkers() {
     td.addEventListener('click', function(){ editSerialAndMac(this.dataset.wid); });
   });
 
-  // Update badge counts (accounts for agent connectivity)
-  const on  = workers.filter(function(w){ return effectiveStatus(w) === 'online'; }).length;
-  const off = workers.filter(function(w){ return effectiveStatus(w) !== 'online' && !w.disabled; }).length;
-  const dis = workers.filter(function(w){ return w.disabled; }).length;
+  // Update badge counts (accounts for agent connectivity).
+  // Scoped to the selected site so the counts describe what's on
+  // screen — a fleet-wide "212 online" above one site's 40 machines
+  // is just confusing. Status filter and search are deliberately NOT
+  // applied here: these badges ARE the status breakdown.
+  const scope = workerAgentFilter === 'all'
+    ? workers
+    : workers.filter(function(w){ return w.farm_id === workerAgentFilter; });
+  const on  = scope.filter(function(w){ return effectiveStatus(w) === 'online'; }).length;
+  const off = scope.filter(function(w){ return effectiveStatus(w) !== 'online' && !w.disabled; }).length;
+  const dis = scope.filter(function(w){ return w.disabled; }).length;
   const eOn = document.getElementById('wOnlineBadge');  if (eOn) eOn.textContent = on;
   const eOf = document.getElementById('wOfflineBadge'); if (eOf) eOf.textContent = off;
   const eDs = document.getElementById('wDisBadge');     if (eDs) { eDs.textContent = dis; eDs.style.display = dis ? '' : 'none'; }
@@ -3108,6 +3133,79 @@ function onWorkerSearchInput(){
   _workersHash = '';
   renderWorkers();
 }
+
+// ── Filter by site / agent ──────────────────────────────────
+// Independent of the status buttons, so "Ghummadh + Offline" works.
+let workerAgentFilter = 'all';
+
+function clearWorkerFilters(){
+  workerFilter = 'all';
+  workerAgentFilter = 'all';
+  const sel = document.getElementById('wAgentFilter'); if (sel) sel.value = 'all';
+  const box = document.getElementById('wSearch');      if (box) box.value = '';
+  // Put the highlight back on the "All" status button. Scoped to the
+  // workers page — other pages have their own .fbtn toolbars.
+  document.querySelectorAll('#page-workers .toolbar .fbtn').forEach(function(b, i){
+    b.classList.toggle('active', i === 0);
+  });
+  _workersHash = '';
+  renderWorkers();
+}
+
+function onWorkerAgentFilterChange(){
+  const sel = document.getElementById('wAgentFilter');
+  workerAgentFilter = sel ? sel.value : 'all';
+  _workersHash = '';
+  renderWorkers();
+}
+
+// Rebuilt whenever the fleet or agent list changes. Options come from
+// the farm ids actually present on workers UNIONed with the connected
+// agents — a site whose agent is currently offline still has machines
+// worth filtering to, and a freshly-connected agent with no machines
+// yet should still be selectable.
+function refreshAgentFilterOptions(){
+  const sel = document.getElementById('wAgentFilter');
+  if (!sel) return;
+
+  const ids = {};
+  workers.forEach(function(w){
+    if (w.farm_id) ids[w.farm_id] = w.farm || null;
+  });
+  agents.forEach(function(a){
+    if (a && a.id && !(a.id in ids)) ids[a.id] = a.name || null;
+  });
+
+  const list = Object.keys(ids).map(function(id){
+    const ag = agents.find(function(a){ return a.id === id; });
+    return { id: id, name: (ag && ag.name) || ids[id] || id };
+  }).sort(function(a, b){ return a.name.localeCompare(b.name); });
+
+  // Don't rebuild if nothing changed — doing so would reset the user's
+  // current selection on every 30-second refresh.
+  const sig = list.map(function(x){ return x.id + '|' + x.name; }).join(',');
+  if (sel.dataset.sig === sig) return;
+  sel.dataset.sig = sig;
+
+  const prev = workerAgentFilter;
+  sel.innerHTML = '<option value="all">All sites</option>'
+    + list.map(function(x){
+        const count = workers.filter(function(w){ return w.farm_id === x.id; }).length;
+        return '<option value="' + escAttr(x.id) + '">' + escHtml(x.name) + ' (' + count + ')</option>';
+      }).join('');
+
+  // Keep the selection if that site still exists; otherwise fall back
+  // to All rather than silently showing a different site's machines.
+  if (prev !== 'all' && list.some(function(x){ return x.id === prev; })) sel.value = prev;
+  else { sel.value = 'all'; workerAgentFilter = 'all'; }
+}
+
+function escHtml(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+function escAttr(s){ return escHtml(s); }
 function bulkReboot(){
   const checked = Array.from(document.querySelectorAll('.worker-check:checked')).map(function(c){ return c.dataset.wid; });
   if(checked.length === 0){ alert('Select miners first'); return; }
