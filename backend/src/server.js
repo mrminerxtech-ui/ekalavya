@@ -161,7 +161,10 @@ agentWss.on('connection', (ws, req) => {
       console.error(`[AGENT][${farmId}] Message handling error (isolated, other farms unaffected):`, e.message);
     }
   });
-  ws.on('close', () => agentMgr.unregisterAgent(farmId));
+  // Pass the socket itself — unregisterAgent needs to know whether the
+  // socket that just closed is still the registered one, or a stale
+  // predecessor whose close arrived after the agent already reconnected.
+  ws.on('close', () => agentMgr.unregisterAgent(farmId, ws));
   ws.on('error', err => console.error(`[AGENT][${farmId}]`, err.message));
 });
 
