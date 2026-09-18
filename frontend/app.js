@@ -6,13 +6,19 @@ const API_BASE = sanitizeUrl(window.EKL_API_BASE)
   || sanitizeUrl(localStorage.getItem('ekl_api_base'))
   || 'http://localhost:3001';
 
-// ── Coin ticker data ─────────────────────────────────────
-const coins = {
-  BTC: {p:67420, c:2.1,  ico:'₿', col:'#f7931a'},
-  ETH: {p:3480,  c:-0.8, ico:'Ξ', col:'#627eea'},
-  LTC: {p:82,    c:1.2,  ico:'Ł', col:'#bfbbbb'},
-  KAS: {p:0.14,  c:3.1,  ico:'⬡', col:'#49dbc0'},
+// ── Coin ticker ──────────────────────────────────────────
+// Symbols, icons and colours only. Prices are NOT stored here —
+// they come live from CoinGecko via /api/market/prices. There is
+// deliberately no fallback price: an out-of-date number that looks
+// current is worse than no number at all, so an unavailable feed
+// shows "—" instead.
+const COIN_META = {
+  BTC: {ico:'₿', col:'#f7931a'},
+  ETH: {ico:'Ξ', col:'#627eea'},
+  LTC: {ico:'Ł', col:'#bfbbbb'},
+  KAS: {ico:'⬡', col:'#49dbc0'},
 };
+let coinPrices = null;   // {BTC:{usd,change_24h}, …} once loaded
 const CC = ['#e74c3c','#3498db','#2ecc71','#9b59b6','#e67e22','#1abc9c','#f39c12','#34495e'];
 
 // App state
@@ -555,6 +561,57 @@ function fmtUsd(v) {
   return '$' + Math.round(v).toLocaleString();
 }
 
+// Daily figures are small enough that rounding to whole dollars would
+// turn a real $7.40/day into "$7" — or a small account into "$0".
+function fmtUsd2(v) {
+  if (v === null || !isFinite(v)) return '—';
+  if (Math.abs(v) >= 1000) return '$' + Math.round(v).toLocaleString();
+  return '$' + v.toFixed(2);
+}
+
+// ── Cumulative earnings ─────────────────────────────────────
+// Read-only. The running total is accrued by the BACKEND every 10
+// minutes from the machines that are actually hashing; the browser
+// never adds to it. That matters: if the total were computed on page
+// view, two people opening the portal would double it, and nothing
+// would accrue while nobody was looking.
+let earningsSummary = null;
+
+function fetchEarnings(cb) {
+  const base = (typeof API_BASE !== 'undefined') ? API_BASE : '';
+  if (!base || base.includes('localhost') || !currentUser || !currentUser.id) { if (cb) cb(); return; }
+  const token = localStorage.getItem('ekl_token') || '';
+  fetch(base + '/api/earnings/summary/' + encodeURIComponent(currentUser.id),
+        { headers: { 'Authorization': 'Bearer ' + token } })
+    .then(function(r){ return r && r.ok ? r.json() : null; })
+    .then(function(d){
+      earningsSummary = (d && d.ok) ? d : null;
+      renderTotalEarned();
+      if (cb) cb();
+    })
+    .catch(function(){ earningsSummary = null; renderTotalEarned(); if (cb) cb(); });
+}
+
+function renderTotalEarned() {
+  const el  = document.getElementById('pTotalEarned');
+  const sub = document.getElementById('pTotalEarnedSub');
+  if (!el) return;
+  if (!earningsSummary) {
+    el.textContent = '—';
+    if (sub) sub.textContent = 'not available';
+    return;
+  }
+  // Net of hosting — the number that means something to a customer.
+  const net = Number(earningsSummary.total_gross_usd) - Number(earningsSummary.total_hosting_usd);
+  el.textContent = isFinite(net) ? fmtUsd2(net) : '—';
+  if (sub) {
+    const days = Number(earningsSummary.days_recorded) || 0;
+    sub.textContent = earningsSummary.since
+      ? 'since ' + earningsSummary.since + ' (' + days + ' day' + (days === 1 ? '' : 's') + ')'
+      : 'since start';
+  }
+}
+
 function renderPortal() {
   try { renderDash(); } catch(e) {}
   if (!currentUser) return;
@@ -591,8 +648,13 @@ function renderPortal() {
   }, 0);
   const nonShaOnline = online.filter(function(w){ return !isShaMiner(w); }).length;
 
-  const gross30 = estimateGrossUsd(shaHashesPerSec, 30);
-  const fee30   = (custRecord && custRecord.rate) ? custRecord.rate * mine.length : null;
+  // PER DAY, not per month. This is the run-rate at the hashrate the
+  // machines are producing right now — what they'd earn over 24h if
+  // they kept running exactly as they are.
+  const grossDay = estimateGrossUsd(shaHashesPerSec, 1);
+  // Hosting is quoted monthly per machine, so the daily share is the
+  // monthly rate ÷ 30 — matching how the accrual service bills it.
+  const feeDay   = (custRecord && custRecord.rate) ? (custRecord.rate * mine.length) / 30 : null;
 
   const pGross = document.getElementById('pGross');
   const pFee   = document.getElementById('pFee');
@@ -600,19 +662,24 @@ function renderPortal() {
   // A dash — never a zero or a guess — whenever the live market data
   // isn't available or the hosting rate hasn't been set. These are
   // real money figures; a blank is honest, a wrong number is not.
-  if (pGross) pGross.textContent = gross30 === null ? '—' : fmtUsd(gross30);
-  if (pFee)   pFee.textContent   = fee30   === null ? '—' : fmtUsd(fee30);
-  if (pNet)   pNet.textContent   = (gross30 === null || fee30 === null) ? '—' : fmtUsd(gross30 - fee30);
+  if (pGross) pGross.textContent = grossDay === null ? '—' : fmtUsd2(grossDay);
+  if (pFee)   pFee.textContent   = feeDay   === null ? '—' : fmtUsd2(feeDay);
+  if (pNet)   pNet.textContent   = (grossDay === null || feeDay === null) ? '—' : fmtUsd2(grossDay - feeDay);
+
+  // Cumulative total — read from the backend, never computed here.
+  // See fetchEarnings() for why.
+  renderTotalEarned();
 
   const note = document.getElementById('pEarnNote');
   if (note) {
     if (!market.ok) {
       note.textContent = 'Live market data unavailable — earnings cannot be calculated right now.';
     } else {
-      note.textContent = 'Est. at $' + Math.round(market.btc_usd).toLocaleString()
+      note.textContent = 'Daily run-rate at $' + Math.round(market.btc_usd).toLocaleString()
         + '/BTC, difficulty ' + (market.difficulty / 1e12).toFixed(1) + 'T'
         + (market.stale ? ' (data ' + market.age_minutes + ' min old)' : '')
-        + (nonShaOnline ? ' · excludes ' + nonShaOnline + ' non-SHA-256 machine(s)' : '');
+        + (nonShaOnline ? ' · excludes ' + nonShaOnline + ' non-SHA-256 machine(s)' : '')
+        + ' · Total Earned accrues every 10 min from machines actually running; estimate, not pool payout.';
     }
   }
 
@@ -1664,7 +1731,13 @@ function doLogin(){
     e.style.display='block';
   });
 }
-function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).style.display='none');['ticker','topbar','appBody','bottomNav'].forEach(id=>document.getElementById(id).style.display=id==='appBody'?'flex':id==='bottomNav'?'block':'flex');const ini=currentUser.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();document.getElementById('sideAv').textContent=ini;document.getElementById('sideName').textContent=currentUser.name;document.getElementById('sideRole').textContent=isCustomer?'Customer Portal':currentUser.role==='admin'?'Super Admin':'Team Member';document.getElementById('topBadge').textContent=isCustomer?'PORTAL':'ADMIN';if(isCustomer){document.getElementById('adminNav').style.display='none';document.getElementById('custNav').style.display='block';document.getElementById('agentPill').style.display='none';document.getElementById('bnavAdmin').style.display='none';document.getElementById('bnavCust').style.display='flex';showPage('portal-home');document.getElementById('custNav').querySelector('.nav-item').classList.add('active');renderPortal();try{ fetchMarketData(function(){ try{ renderPortal(); }catch(e){} }); loadFleetFromBackend(function(){ try{ renderPortal(); }catch(e){} }); }catch(e){}}else{populateDropdowns();renderAll();}initTicker();// updateTicker removed — was demo data onlysetInterval(liveUpdate,30000);fetchAgents();setInterval(fetchAgents,30000);
+function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).style.display='none');['ticker','topbar','appBody','bottomNav'].forEach(id=>document.getElementById(id).style.display=id==='appBody'?'flex':id==='bottomNav'?'block':'flex');const ini=currentUser.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();document.getElementById('sideAv').textContent=ini;document.getElementById('sideName').textContent=currentUser.name;document.getElementById('sideRole').textContent=isCustomer?'Customer Portal':currentUser.role==='admin'?'Super Admin':'Team Member';document.getElementById('topBadge').textContent=isCustomer?'PORTAL':'ADMIN';if(isCustomer){document.getElementById('adminNav').style.display='none';document.getElementById('custNav').style.display='block';document.getElementById('agentPill').style.display='none';document.getElementById('bnavAdmin').style.display='none';document.getElementById('bnavCust').style.display='flex';showPage('portal-home');document.getElementById('custNav').querySelector('.nav-item').classList.add('active');renderPortal();try{ fetchMarketData(function(){ try{ renderPortal(); }catch(e){} }); loadFleetFromBackend(function(){ try{ renderPortal(); }catch(e){} }); fetchEarnings(); setInterval(fetchEarnings, 10*60*1000); }catch(e){}}else{populateDropdowns();renderAll();}initTicker();
+// Live prices from CoinGecko. The old demo ticker invented prices with
+// Math.random() and is gone.
+fetchCoinPrices(); setInterval(fetchCoinPrices, 60000);
+// NOTE: this setInterval was previously swallowed by a single-line
+// comment on the same line, so liveUpdate never actually ran.
+setInterval(liveUpdate,30000);fetchAgents();setInterval(fetchAgents,30000);
   // WebSocket for real-time scan results
   try {
     const wsUrl = API_BASE.replace('https://','wss://').replace('http://','ws://') + '/ws';
@@ -1873,8 +1946,59 @@ function showPage(n){
 function nav(page,el){showPage(page);document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));if(el)el.classList.add('active');}
 
 // TICKER
-function initTicker(){let h='';Object.entries(coins).forEach(([k,d])=>{const dir=d.c>=0?'up':'dn',s=d.c>=0?'+':'';h+=`<div class="tick-item"><span class="t-sym" style="color:${d.col}">${d.ico} ${k}</span><span class="t-price">$${d.p.toLocaleString()}</span><span class="t-chg ${dir}">${s}${d.c}%</span></div>`;});document.getElementById('tickTrack').innerHTML=h+h;}
-function updateTicker(){Object.keys(coins).forEach(k=>{coins[k].p=parseFloat((coins[k].p*(1+(Math.random()-.5)*.003)).toFixed(k==='BTC'||k==='ETH'?2:4));coins[k].c=parseFloat((coins[k].c+(Math.random()-.5)*.4).toFixed(2));});initTicker();}
+// Sub-dollar coins (KAS) need more decimals or they'd all read "$0".
+function fmtCoinPrice(v) {
+  if (!isFinite(v) || v <= 0) return '—';
+  if (v >= 1000) return '$' + Math.round(v).toLocaleString();
+  if (v >= 1)    return '$' + v.toFixed(2);
+  return '$' + v.toFixed(4);
+}
+
+function initTicker() {
+  const track = document.getElementById('tickTrack');
+  if (!track) return;
+  let h = '';
+  Object.keys(COIN_META).forEach(function(k){
+    const meta = COIN_META[k];
+    const row  = coinPrices && coinPrices[k];
+    let priceHtml, chgHtml;
+    if (!row) {
+      // Feed down or this coin missing from the response — say so
+      // rather than showing the last price as if it were current.
+      priceHtml = '<span class="t-price">—</span>';
+      chgHtml   = '';
+    } else {
+      priceHtml = '<span class="t-price">' + fmtCoinPrice(row.usd) + '</span>';
+      // Guard against null explicitly: Number(null) is 0, which would
+      // render a missing 24h change as a confident "+0.00%".
+      const c = (row.change_24h === null || row.change_24h === undefined)
+        ? NaN : Number(row.change_24h);
+      chgHtml = isFinite(c)
+        ? '<span class="t-chg ' + (c >= 0 ? 'up' : 'dn') + '">' + (c >= 0 ? '+' : '') + c.toFixed(2) + '%</span>'
+        : '';
+    }
+    h += '<div class="tick-item"><span class="t-sym" style="color:' + meta.col + '">'
+       + meta.ico + ' ' + k + '</span>' + priceHtml + chgHtml + '</div>';
+  });
+  // Duplicated once so the marquee animation loops seamlessly
+  track.innerHTML = h + h;
+}
+
+// Real prices from CoinGecko, cached server-side so every logged-in
+// user shares one upstream call. Polled on a 60s cadence to match
+// the backend cache — polling faster would just re-serve the same
+// cached figures.
+function fetchCoinPrices() {
+  const base = (typeof API_BASE !== 'undefined') ? API_BASE : '';
+  if (!base || base.includes('localhost')) return;
+  fetch(base + '/api/market/prices')
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      coinPrices = (d && d.ok && d.prices) ? d.prices : null;
+      initTicker();
+    })
+    .catch(function(){ coinPrices = null; initTicker(); });
+}
 
 // HELPERS
 // Is this worker's farm agent currently connected?
