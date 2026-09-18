@@ -67,6 +67,27 @@ async function createTables() {
       name        TEXT,
       updated_at  TIMESTAMPTZ DEFAULT NOW()
     );
+
+    -- Cumulative customer earnings, accrued in short slots by the
+    -- backend rather than calculated on the fly when someone opens a
+    -- page. Accruing on view would double-count with two viewers and
+    -- count nothing while nobody is looking.
+    --
+    -- One row per customer per day. last_slot is what makes accrual
+    -- idempotent: a restart or a duplicate tick re-sends the same slot
+    -- id, the WHERE clause on the upsert sees it already credited, and
+    -- the row is left alone rather than counted twice.
+    CREATE TABLE IF NOT EXISTS customer_earnings (
+      customer_id TEXT NOT NULL,
+      day         DATE NOT NULL,
+      btc         DOUBLE PRECISION NOT NULL DEFAULT 0,
+      gross_usd   DOUBLE PRECISION NOT NULL DEFAULT 0,
+      hosting_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+      slots       INTEGER NOT NULL DEFAULT 0,
+      last_slot   TEXT,
+      updated_at  TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (customer_id, day)
+    );
   `);
   console.log('[DB] Tables ready');
 }
@@ -386,4 +407,118 @@ async function deleteCustomer(id) {
   }
 }
 
-module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, upsertWorkersByIp, saveCustomers, loadCustomers, deleteCustomer, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB };
+// ── Customer earnings accrual ───────────────────────────────────
+// Credits one slot's worth of earnings to a customer. Returns true if
+// it was actually credited, false if that slot was already counted
+// (a restart, a duplicate tick, two backend instances) — the caller
+// can log the difference rather than silently double-paying.
+async function accrueEarnings(customerId, day, slot, btc, grossUsd, hostingUsd) {
+  if (useFallback || !pool) {
+    let store = {};
+    if (fs.existsSync(FALLBACK_FILE)) store = JSON.parse(fs.readFileSync(FALLBACK_FILE, 'utf8'));
+    store.earnings = store.earnings || {};
+    const key = customerId + '|' + day;
+    const row = store.earnings[key] || { customer_id: customerId, day, btc: 0, gross_usd: 0, hosting_usd: 0, slots: 0, last_slot: null };
+    if (row.last_slot === slot) return false;
+    row.btc += btc; row.gross_usd += grossUsd; row.hosting_usd += hostingUsd;
+    row.slots += 1; row.last_slot = slot;
+    store.earnings[key] = row;
+    try { fs.writeFileSync(FALLBACK_FILE, JSON.stringify(store), 'utf8'); return true; }
+    catch(e) { return false; }
+  }
+  try {
+    const r = await pool.query(
+      `INSERT INTO customer_earnings (customer_id, day, btc, gross_usd, hosting_usd, slots, last_slot)
+       VALUES ($1,$2,$3,$4,$5,1,$6)
+       ON CONFLICT (customer_id, day) DO UPDATE SET
+         btc         = customer_earnings.btc         + EXCLUDED.btc,
+         gross_usd   = customer_earnings.gross_usd   + EXCLUDED.gross_usd,
+         hosting_usd = customer_earnings.hosting_usd + EXCLUDED.hosting_usd,
+         slots       = customer_earnings.slots + 1,
+         last_slot   = EXCLUDED.last_slot,
+         updated_at  = NOW()
+       WHERE customer_earnings.last_slot IS DISTINCT FROM EXCLUDED.last_slot
+       RETURNING customer_id`,
+      [customerId, day, btc, grossUsd, hostingUsd, slot]
+    );
+    return r.rowCount > 0;
+  } catch(e) {
+    console.error('[DB] accrueEarnings error:', e.message);
+    return false;
+  }
+}
+
+// Lifetime totals plus today's, for one customer.
+async function getEarningsSummary(customerId) {
+  const today = new Date().toISOString().slice(0, 10);
+  const empty = { total_btc: 0, total_gross_usd: 0, total_hosting_usd: 0,
+                  today_btc: 0, today_gross_usd: 0, today_hosting_usd: 0,
+                  since: null, days_recorded: 0 };
+  if (useFallback || !pool) {
+    let store = {};
+    if (fs.existsSync(FALLBACK_FILE)) store = JSON.parse(fs.readFileSync(FALLBACK_FILE, 'utf8'));
+    const rows = Object.values(store.earnings || {}).filter(r => r.customer_id === customerId);
+    if (rows.length === 0) return empty;
+    const t = rows.find(r => r.day === today);
+    return {
+      total_btc:         rows.reduce((a, r) => a + (r.btc || 0), 0),
+      total_gross_usd:   rows.reduce((a, r) => a + (r.gross_usd || 0), 0),
+      total_hosting_usd: rows.reduce((a, r) => a + (r.hosting_usd || 0), 0),
+      today_btc:         t ? t.btc : 0,
+      today_gross_usd:   t ? t.gross_usd : 0,
+      today_hosting_usd: t ? t.hosting_usd : 0,
+      since:             rows.map(r => r.day).sort()[0],
+      days_recorded:     rows.length,
+    };
+  }
+  try {
+    const [all, today_] = await Promise.all([
+      pool.query(`SELECT COALESCE(SUM(btc),0) btc, COALESCE(SUM(gross_usd),0) g,
+                         COALESCE(SUM(hosting_usd),0) h, MIN(day) since, COUNT(*) n
+                  FROM customer_earnings WHERE customer_id=$1`, [customerId]),
+      pool.query(`SELECT btc, gross_usd, hosting_usd FROM customer_earnings
+                  WHERE customer_id=$1 AND day=$2`, [customerId, today]),
+    ]);
+    const a = all.rows[0] || {};
+    const t = today_.rows[0] || {};
+    return {
+      total_btc:         Number(a.btc) || 0,
+      total_gross_usd:   Number(a.g)   || 0,
+      total_hosting_usd: Number(a.h)   || 0,
+      today_btc:         Number(t.btc) || 0,
+      today_gross_usd:   Number(t.gross_usd) || 0,
+      today_hosting_usd: Number(t.hosting_usd) || 0,
+      since:             a.since ? new Date(a.since).toISOString().slice(0, 10) : null,
+      days_recorded:     Number(a.n) || 0,
+    };
+  } catch(e) {
+    console.error('[DB] getEarningsSummary error:', e.message);
+    return empty;
+  }
+}
+
+// Per-day history for one customer, newest first.
+async function getEarningsHistory(customerId, limit) {
+  limit = Math.min(Number(limit) || 90, 400);
+  if (useFallback || !pool) {
+    let store = {};
+    if (fs.existsSync(FALLBACK_FILE)) store = JSON.parse(fs.readFileSync(FALLBACK_FILE, 'utf8'));
+    return Object.values(store.earnings || {})
+      .filter(r => r.customer_id === customerId)
+      .sort((a, b) => (a.day < b.day ? 1 : -1))
+      .slice(0, limit);
+  }
+  try {
+    const r = await pool.query(
+      `SELECT to_char(day,'YYYY-MM-DD') day, btc, gross_usd, hosting_usd, slots
+       FROM customer_earnings WHERE customer_id=$1 ORDER BY day DESC LIMIT $2`,
+      [customerId, limit]
+    );
+    return r.rows;
+  } catch(e) {
+    console.error('[DB] getEarningsHistory error:', e.message);
+    return [];
+  }
+}
+
+module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, upsertWorkersByIp, saveCustomers, loadCustomers, deleteCustomer, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory };
