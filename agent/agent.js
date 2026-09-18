@@ -96,12 +96,44 @@ let ws = null, reconnectMs = 3000, pollTimer = null;
 // ANY successful activity recently," and if not, forces a full,
 // clean process restart — precisely what a manual restart already
 // does and already reliably fixes.
-let lastActivity = Date.now();
+// lastServerMsgAt tracks APPLICATION-level replies from the backend
+// (heartbeat_ack, welcome, commands) — deliberately NOT protocol-level
+// pongs. A pong proves something on the network answered; it does not
+// prove our backend still knows this agent exists. Railway's edge sits
+// in front of the app and can keep a socket alive and answer pings by
+// itself, so an agent could sit "connected" for hours, pongs flowing,
+// while the backend behind that edge had no record of it — online in
+// this log, offline in the software, until someone restarted it by hand.
+// The backend replies heartbeat_ack to every heartbeat ONLY while the
+// agent is registered, so a gap in acks is the real signal.
+let lastServerMsgAt      = Date.now();
+let lastConnectAttemptAt = 0;
+let reconnectScheduled   = false;
+let wsGeneration         = 0;
+
+// Last-resort watchdog. Restarting the process does NOT fix an
+// unreachable backend, so this no longer fires just because the server
+// is down — the reconnect loop handles outages on its own, and killing
+// the process during one only risks tripping the supervisor's
+// crash-loop backoff and leaving the farm dark for several minutes.
+// It now fires only for states the reconnect loop cannot get out of.
 setInterval(() => {
-  const idleFor = Date.now() - lastActivity;
-  if (idleFor > 60000) {
-    console.log(`[WATCHDOG] No successful server activity in ${Math.round(idleFor/1000)}s — restarting process for a clean reconnect`);
+  const connected = ws && ws.readyState === 1; // 1 = OPEN
+  const silentFor = Date.now() - lastServerMsgAt;
+
+  // Wedged: not connected, nothing scheduled to reconnect, and the last
+  // attempt is long past — no timer will ever fire, so nothing will
+  // recover this without a restart.
+  if (!connected && !reconnectScheduled && Date.now() - lastConnectAttemptAt > 60000) {
+    console.log('[WATCHDOG] Not connected and no reconnect pending — state is wedged, restarting process');
     process.exit(1); // the supervisor (update-check.js) restarts agent.js fresh
+  }
+
+  // Total silence for 5 minutes in any state. Long enough that a normal
+  // deploy or a brief outage never triggers it.
+  if (silentFor > 5 * 60 * 1000) {
+    console.log(`[WATCHDOG] No reply from the server in ${Math.round(silentFor/60000)} min — restarting process as a last resort`);
+    process.exit(1);
   }
 }, 15000);
 
@@ -1161,8 +1193,22 @@ async function pollLanli() {
 }
 
 // ── Connect to server ──────────────────────────────────────
+// Only ever one reconnect in flight. Two paths can ask for one (a close
+// event and a forced terminate), and without this guard they each start
+// their own chain — the agent then opens several sockets, the backend
+// keeps only the newest, and the extra ones closing look exactly like
+// disconnections.
+function scheduleReconnect(why) {
+  if (reconnectScheduled) return;
+  reconnectScheduled = true;
+  console.log(`[WARN] ${why} — retry in ${reconnectMs/1000}s`);
+  setTimeout(() => { reconnectScheduled = false; connect(); }, reconnectMs);
+  reconnectMs = Math.min(reconnectMs * 1.5, 30000);
+}
+
 function connect() {
-  lastActivity = Date.now(); // reset so the watchdog doesn't fire mid-reconnect
+  lastConnectAttemptAt = Date.now();
+  const myGen = ++wsGeneration; // stale sockets must not drive reconnects
   console.log('\n╔══════════════════════════════════════════╗');
   console.log('║     EKALAVYA — FARM AGENT v1.0.0        ║');
   console.log('╠══════════════════════════════════════════╣');
@@ -1199,14 +1245,31 @@ function connect() {
     }, 32000);
   }
 
-  ws.on('pong', () => { clearTimeout(pongTimeout); lastActivity = Date.now(); });
+  // A pong only proves the socket is alive at the network level, which
+  // is not the same as the backend knowing about us — see the note on
+  // lastServerMsgAt above. So it clears the pong timer and nothing more.
+  ws.on('pong', () => { clearTimeout(pongTimeout); });
 
-  let heartbeatMsgInterval = null, lanliInterval = null;
+  let heartbeatMsgInterval = null, lanliInterval = null, ackCheckInterval = null;
 
   ws.on('open', () => {
     reconnectMs = 3000;
-    lastActivity = Date.now();
+    lastServerMsgAt = Date.now(); // start the ack window fresh
     console.log(`[INFO] ✓ Connected | Farm: ${FARM_NAME}`);
+
+    // The real health check: we send a heartbeat every 8s and the
+    // backend acks every one of them while we're registered. If acks
+    // stop arriving while the socket still reads as open, the backend
+    // has lost track of this agent and only a fresh connection (which
+    // re-sends the registration headers) will fix it.
+    ackCheckInterval = setInterval(() => {
+      if (!ws || ws.readyState !== 1) return;
+      const silentFor = Date.now() - lastServerMsgAt;
+      if (silentFor > 45000) {
+        console.log(`[WARN] Socket is open but the server has not replied in ${Math.round(silentFor/1000)}s — it no longer knows this agent. Reconnecting to re-register.`);
+        try { ws.terminate(); } catch(e) {}
+      }
+    }, 10000);
     pollTimer = setInterval(pollMiners, POLL_MS);
     heartbeatMsgInterval = setInterval(() => send({ type:'heartbeat', farm_id:FARM_ID }), 8000);
     // Ping every 8s; only reconnect if truly unresponsive for 32s
@@ -1220,7 +1283,10 @@ function connect() {
   });
 
   ws.on('message', raw => {
-    lastActivity = Date.now();
+    // Any message from the backend proves it's still talking to us at
+    // the application layer — this is the signal the health check above
+    // and the watchdog both rely on.
+    lastServerMsgAt = Date.now();
     try {
       const msg = JSON.parse(raw.toString());
       if (msg.type === 'welcome') {
@@ -1290,14 +1356,22 @@ function connect() {
   });
 
   ws.on('close', code => {
-    clearInterval(pollTimer);
     clearInterval(pingInterval);
     clearInterval(heartbeatMsgInterval);
     clearInterval(lanliInterval);
+    clearInterval(ackCheckInterval);
     clearTimeout(pongTimeout);
-    console.log(`[WARN] Disconnected (${code}) — retry in ${reconnectMs/1000}s`);
-    setTimeout(connect, reconnectMs);
-    reconnectMs = Math.min(reconnectMs * 1.5, 30000);
+
+    // A close from a socket that's already been replaced must not
+    // schedule anything — the newer connection owns the reconnect path.
+    // Its timers are its own; only clear the shared poll timer if this
+    // is still the current connection.
+    if (myGen !== wsGeneration) {
+      console.log(`[INFO] Old connection closed (${code}) — a newer one is already active`);
+      return;
+    }
+    clearInterval(pollTimer);
+    scheduleReconnect(`Disconnected (${code})`);
   });
 
   ws.on('error', err => console.error(`[ERROR] ${err.message}`));
