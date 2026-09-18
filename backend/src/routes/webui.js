@@ -23,6 +23,36 @@ const db       = require('../services/db');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-prod';
 
+// ── Ownership memo ──────────────────────────────────────────
+// A single miner page pulls dozens of sub-resources (JS, CSS, icons,
+// cgi polls), and the customer ownership check below reads the whole
+// worker list. Re-reading it per resource makes the tunnel crawl, so a
+// granted result is remembered briefly.
+//
+// ONLY grants are cached, never denials: caching a denial would mean
+// that after an operator assigns the machine, the customer keeps
+// seeing "not assigned to your account" with no obvious cause.
+const OWNERSHIP_TTL_MS = 15 * 1000;
+const ownershipMemo = new Map(); // "user|farm|ip" -> expiry timestamp
+
+function memoKey(userId, farmId, ip) { return `${userId}|${farmId}|${ip}`; }
+
+function ownershipAllowedRecently(userId, farmId, ip) {
+  const until = ownershipMemo.get(memoKey(userId, farmId, ip));
+  if (!until) return false;
+  if (until < Date.now()) { ownershipMemo.delete(memoKey(userId, farmId, ip)); return false; }
+  return true;
+}
+
+function rememberOwnershipAllowed(userId, farmId, ip) {
+  ownershipMemo.set(memoKey(userId, farmId, ip), Date.now() + OWNERSHIP_TTL_MS);
+  // Keep the map from growing without bound on a long-lived process.
+  if (ownershipMemo.size > 500) {
+    const now = Date.now();
+    for (const [k, v] of ownershipMemo) if (v < now) ownershipMemo.delete(k);
+  }
+}
+
 // Minimal cookie parser — avoids adding the cookie-parser dependency
 // just for this one route.
 function parseCookies(header) {
@@ -73,12 +103,48 @@ router.use('/:farmId/:ip', async (req, res) => {
   catch(e) { return res.status(401).send(tunnelErrorPage('Your session has expired — please log in again.')); }
 
   // ── Customer accounts: restrict to only their own assigned machine ──
-  if (user.role === 'customer') {
-    const worker = await db.findWorkerByFarmAndIp(farmId, ip);
-    if (!worker || worker.cid !== user.id) {
-      console.log(`[WEBUI] ✗ Customer ${user.id} denied access to farm=${farmId} ip=${ip} (not their assigned machine)`);
+  //
+  // This deliberately checks EVERY worker record at this farm+ip, not
+  // just the first match. Machines move between sites and run on DHCP,
+  // so more than one record can transiently carry the same farm+ip —
+  // and if a stale unassigned record happened to sit earlier in the
+  // list, a single-match lookup rejected the customer's own machine.
+  //
+  // Ids are compared as strings: a customer id that came back from
+  // Postgres as a number and from the JWT as a string is the same
+  // customer, but !== says otherwise.
+  if (user.role === 'customer' && !ownershipAllowedRecently(user.id, farmId, ip)) {
+    const all = await db.loadWorkers();
+    const sameMachine = all.filter(w => w && w.farm_id === farmId && w.ip === ip);
+    // Both ids must actually exist before they're compared. Without the
+    // emptiness guard, String(undefined) === String(undefined) is true,
+    // so a token missing an id would match every UNASSIGNED machine.
+    const hasId = v => v !== null && v !== undefined && String(v).trim() !== '';
+    const owned = hasId(user.id)
+      ? sameMachine.filter(w => hasId(w.cid) && String(w.cid) === String(user.id))
+      : [];
+
+    if (owned.length === 0) {
+      // Say precisely why in the log — "not assigned" covers three very
+      // different faults and guessing between them wastes a site visit.
+      if (sameMachine.length === 0) {
+        console.log(`[WEBUI] ✗ DENIED user=${user.id}: no worker record at farm="${farmId}" ip=${ip}. ` +
+          `Closest by ip: ${JSON.stringify(all.filter(w => w && w.ip === ip).map(w => ({ farm: w.farm_id, cid: w.cid })))}`);
+        return res.status(403).send(tunnelErrorPage(
+          'This machine is no longer at the recorded address — ask your operator to rescan the site.'));
+      }
+      console.log(`[WEBUI] ✗ DENIED user=${user.id} (${typeof user.id}) at farm="${farmId}" ip=${ip}: ` +
+        `${sameMachine.length} record(s) here, owned by ` +
+        JSON.stringify(sameMachine.map(w => ({ id: w.id, cid: w.cid, cidType: typeof w.cid }))));
       return res.status(403).send(tunnelErrorPage('This machine is not assigned to your account.'));
     }
+
+    if (sameMachine.length > 1) {
+      console.warn(`[WEBUI] ⚠ ${sameMachine.length} worker records share farm="${farmId}" ip=${ip} ` +
+        `(ids: ${sameMachine.map(w => w.id).join(', ')}) — duplicates need merging.`);
+    }
+
+    rememberOwnershipAllowed(user.id, farmId, ip);
   }
 
   // Re-issue the cookie on every verified request — cheap, and keeps
