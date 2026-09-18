@@ -1,16 +1,18 @@
 {
-  "version": "1.1.20",
-  "released_at": "2026-09-17T12:00:00Z",
+  "version": "1.1.21",
+  "released_at": "2026-09-18T18:00:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "Recover MAC addresses from the local ARP table for miners whose firmware doesn't report one, so every machine has a permanent hardware ID that survives a DHCP address change",
-    "Guard against router/gateway MACs: any MAC seen for more than one IP is discarded rather than used as identity, so machines on a routed subnet are never collapsed into a single record"
+    "Detect when the backend has lost track of this agent: health is now measured by application-level replies (heartbeat acks), not network pings, which an edge proxy can answer on the server's behalf while the backend behind it knows nothing about us",
+    "Reconnect automatically in that case instead of sitting 'connected' until someone restarts the agent by hand",
+    "Only ever run one reconnect at a time, so a close event and a forced disconnect can no longer each start their own chain and open duplicate sockets",
+    "Watchdog no longer restarts the process merely because the server is unreachable — the reconnect loop handles outages, and restarting during one risked tripping the supervisor's crash-loop backoff and leaving the farm dark for minutes"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "39aa13215609c0df831d1456787606592de962ea5c3f8f69055206ae2764361f",
-      "size": 60490
+      "sha256": "6c3acb3559e44e4d08fa435c7f0aca57e6b7546037c477e9689a0f60b43f7909",
+      "size": 64446
     },
     {
       "name": "sonoff-th.js",
