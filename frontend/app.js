@@ -3357,6 +3357,20 @@ function openMinerWebUI(wid){
     // network as the farm PC acting as a subnet router. No proxy, no
     // URL rewriting, no JS shims needed — it's a real network path.
     url = 'http://' + w.ip + '/';
+
+    // A page served over HTTPS may not navigate to a plain-HTTP address.
+    // Browsers block it as mixed content, and an installed app (PWA)
+    // typically does so with NO error, NO page and nothing in the UI —
+    // the tap simply appears to do nothing at all. That silent failure
+    // is exactly what this check turns into an explanation.
+    if (location.protocol === 'https:') {
+      showWebUiFallback(w, url,
+        'Tailscale mode is ON for this device, which opens the miner at ' + url + ' over plain HTTP. '
+        + 'This app is running over HTTPS, so the browser blocks that — silently, which is why nothing happened. '
+        + 'Turn Tailscale mode OFF in Settings → Web Login to use the agent tunnel instead (works on any device, '
+        + 'nothing to install), or open the link below manually.');
+      return;
+    }
   } else {
     if(!w.farm_id){ toast('This miner has no farm assigned — cannot tunnel', 'var(--red)'); return; }
     const token = localStorage.getItem('ekl_token');
@@ -3364,13 +3378,83 @@ function openMinerWebUI(wid){
     url = API_BASE + '/api/webui/' + encodeURIComponent(w.farm_id) + '/' + encodeURIComponent(w.ip) + '/?token=' + encodeURIComponent(token);
   }
 
-  // "New tab" approaches (window.open, anchor click with target=_blank)
-  // are handled very inconsistently across mobile browsers and installed
-  // home-screen apps — some silently swallow them with no way to detect
-  // it. Navigating the current screen is less convenient (you'll need to
-  // use your browser's Back button to return) but works everywhere,
-  // every time, with nothing that can silently fail.
-  window.location.href = url;
+  openExternal(w, url);
+}
+
+// Opening an external page from an INSTALLED app (PWA) is the awkward
+// case: the miner UI lives on the backend's domain, which is outside the
+// installed app's scope, and a plain location.href to an out-of-scope
+// origin can be dropped by the launcher with no error and no visible
+// change — the button just looks dead.
+//
+// So this tries the approaches in order of how well they survive that,
+// and if none of them visibly worked, it shows a tappable link rather
+// than leaving the person staring at an unchanged screen.
+function openExternal(w, url) {
+  const standalone = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches
+                  || window.navigator.standalone === true;
+
+  // 1. A real anchor click. An installed app honours this and hands the
+  //    URL to the browser, where location.href can be swallowed.
+  try {
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function(){ try { a.remove(); } catch(e){} }, 1000);
+  } catch(e) {}
+
+  // 2. window.open as a second attempt. Returns null when a popup
+  //    blocker stopped it, which is worth knowing about.
+  let win = null;
+  try { win = window.open(url, '_blank', 'noopener'); } catch(e) {}
+
+  // 3. Last resort in a normal browser tab: navigate this screen. NOT
+  //    done in an installed app — that's the case that silently fails,
+  //    and it would also throw the person out of the app entirely.
+  if (!win && !standalone) {
+    window.location.href = url;
+    return;
+  }
+
+  // In an installed app there's no reliable way to confirm the browser
+  // actually came to the front, so offer the link either way. If it did
+  // open, this panel is simply behind it and gets dismissed later.
+  if (standalone) {
+    showWebUiFallback(w, url,
+      'Opening ' + (w.name || w.ip) + ' in your browser. If nothing appeared, your installed app blocked it — '
+      + 'tap the link below to open it manually.');
+  }
+}
+
+// A visible, tappable way out. Anything that can't be opened
+// automatically ends up here, so a tap can never silently do nothing.
+function showWebUiFallback(w, url, message) {
+  const existing = document.getElementById('webuiFallback');
+  if (existing) existing.remove();
+
+  const wrap = document.createElement('div');
+  wrap.id = 'webuiFallback';
+  wrap.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:9999;background:var(--s1);'
+    + 'border-top:2px solid var(--cyan);padding:16px 16px calc(16px + env(safe-area-inset-bottom));'
+    + 'box-shadow:0 -8px 24px rgba(0,0,0,.5);max-height:70vh;overflow-y:auto';
+  wrap.innerHTML =
+      '<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">'
+    +   '<div style="font-family:Orbitron,sans-serif;font-size:12px;font-weight:700;color:var(--cyan);flex:1">'
+    +     '&#x1F310; ' + escHtml(w.name || w.ip)
+    +   '</div>'
+    +   '<button onclick="document.getElementById(\'webuiFallback\').remove()" '
+    +     'style="background:none;border:1px solid var(--b1);color:var(--mute);border-radius:4px;'
+    +     'padding:4px 10px;font-size:14px;cursor:pointer;line-height:1">&#x2715;</button>'
+    + '</div>'
+    + '<div style="font-size:11px;color:var(--txt);line-height:1.6;margin-bottom:12px">' + escHtml(message) + '</div>'
+    + '<a href="' + escAttr(url) + '" target="_blank" rel="noopener noreferrer" '
+    +   'style="display:block;text-align:center;background:var(--cyan);color:#001018;font-weight:700;'
+    +   'padding:12px;border-radius:6px;text-decoration:none;font-size:13px">Open miner Web UI &#x2197;</a>'
+    + '<div style="font-size:9px;color:var(--mute);margin-top:8px;word-break:break-all;font-family:Share Tech Mono,monospace">'
+    +   escHtml(url.replace(/token=[^&]+/, 'token=…')) + '</div>';
+  document.body.appendChild(wrap);
 }
 
 function doAction(action, wid){
