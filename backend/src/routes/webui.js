@@ -70,8 +70,58 @@ function parseCookies(header) {
 // this point" in Express 4's path matcher. The earlier /*? wildcard
 // pattern is unreliable across path-to-regexp versions and may simply
 // never match at all, which looks identical to "route doesn't exist".
+// Does this path segment actually name a miner?
+const IP_SEGMENT = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+
 router.use('/:farmId/:ip', async (req, res) => {
-  const { farmId, ip } = req.params;
+  let { farmId, ip } = req.params;
+
+  // ── Recover from a parent-relative path that climbed too far ──
+  //
+  // Miner firmware requests some files with a parent-relative path —
+  // the L11's language dictionary asks for "../i18n/strings.properties".
+  // On the miner itself that climbs from /dashboard/ back to its root
+  // and lands on /i18n/. Through this tunnel the page sits one level
+  // shallower, so ".." climbs past the miner altogether and swallows
+  // the IP segment: the browser asks for
+  //   /api/webui/Farm 3/i18n/strings.properties
+  // and this route reads "i18n" as the miner's address. The agent then
+  // tries to resolve a host called "i18n" and fails with ENOTFOUND —
+  // which surfaced as a 502 on exactly the files the dashboard needs
+  // to turn [rate] and [network] into their real names.
+  //
+  // The Referer still carries the page's true address, so the real
+  // miner is recovered from it and the swallowed segment is put back
+  // on the front of the path where it belongs.
+  let climbedPrefix = '';
+  if (!IP_SEGMENT.test(ip)) {
+    const ref = req.headers.referer || req.headers.referrer || '';
+    const m = String(ref).match(/\/api\/webui\/([^/?#]+)\/(\d{1,3}(?:\.\d{1,3}){3})(?:[/?#]|$)/);
+    if (!m) {
+      console.warn(`[WEBUI] ✗ 400 cannot resolve miner from segment "${ip}" — no usable Referer (${req.url})`);
+      return res.status(400).send(tunnelErrorPage(
+        `This page asked for "${ip}${req.url}" using a path that points outside the miner, and there was no Referer to recover the real address from.`));
+    }
+    // Express has already decoded req.params, but the Referer is raw,
+    // so only that needs decoding — and a farm named something like
+    // "50% Hydro" makes decodeURIComponent throw on malformed escapes,
+    // which must not take the whole request down.
+    const safeDecode = s => { try { return decodeURIComponent(s); } catch(e) { return s; } };
+    const realFarm = safeDecode(m[1]);
+    const realIp   = m[2];
+
+    // One level of climbing eats the IP segment. Two levels eat the
+    // farm segment as well, so whichever of the two segments isn't
+    // really ours is a folder name that has to go back on the path,
+    // in the order it appeared.
+    climbedPrefix = '/' + ip;
+    if (safeDecode(farmId) !== realFarm) climbedPrefix = '/' + farmId + climbedPrefix;
+
+    farmId = realFarm;
+    ip     = realIp;
+    console.log(`[WEBUI] ↺ recovered parent-relative request → farm=${farmId} ip=${ip} path=${climbedPrefix}${req.url}`);
+  }
+
   const proxyBase = `/api/webui/${farmId}/${ip}`;
 
   // ── Auth check ────────────────────────────────────────────
@@ -153,7 +203,10 @@ router.use('/:farmId/:ip', async (req, res) => {
 
   // Once mounted this way, req.url is already everything AFTER
   // /:farmId/:ip — exactly the sub-path + querystring to forward
-  const minerPath = req.url === '/' ? '/' : req.url;
+  // climbedPrefix restores the folder that a parent-relative path had
+  // turned into the miner-address segment, so the miner is asked for
+  // "/i18n/strings.properties" rather than "/strings.properties".
+  const minerPath = climbedPrefix + (req.url === '/' ? '/' : req.url);
   console.log(`[WEBUI] ${req.method} tunnel request → farm=${farmId} ip=${ip} path=${minerPath} user=${user.id}(${user.role})`);
 
   const agent = agentMgr.getAgent(farmId);
