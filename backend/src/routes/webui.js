@@ -158,6 +158,7 @@ router.use('/:farmId/:ip', async (req, res) => {
 
   const agent = agentMgr.getAgent(farmId);
   if (!agent) {
+    console.warn(`[WEBUI] ✗ 502 ${req.url}  — agent "${farmId}" was not connected at this moment`);
     return res.status(502).send(tunnelErrorPage(`Farm agent "${farmId}" is not connected right now.`));
   }
 
@@ -196,7 +197,29 @@ router.use('/:farmId/:ip', async (req, res) => {
     const looksLikeJs   = pathOnly.endsWith('.js');
     const isJs          = looksLikeJs || declaredType.includes('javascript');
     const isHtml        = !isJs && (declaredType.includes('text/html') || (!declaredType && (pathOnly === '/' || pathOnly.endsWith('/') || pathOnly.endsWith('.html'))));
-    const contentType   = declaredType || (isJs ? 'application/javascript' : 'text/html');
+
+    // Falling back to text/html for ANY file the miner didn't label was
+    // actively harmful: helmet sends X-Content-Type-Options: nosniff, and
+    // under nosniff a browser flatly refuses to execute a script or apply
+    // a stylesheet served as text/html. A miner that omits Content-Type
+    // on its language or script files therefore had them silently
+    // rejected — the file arrives with status 200, and nothing runs.
+    // Deriving the type from the file extension avoids mislabelling.
+    const EXT_TYPES = {
+      '.js': 'application/javascript', '.mjs': 'application/javascript',
+      '.css': 'text/css', '.json': 'application/json',
+      '.html': 'text/html', '.htm': 'text/html',
+      '.properties': 'text/plain', '.txt': 'text/plain', '.text': 'text/plain',
+      '.xml': 'application/xml', '.svg': 'image/svg+xml',
+      '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif', '.ico': 'image/x-icon', '.webp': 'image/webp',
+      '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.eot': 'application/vnd.ms-fontobject',
+      '.map': 'application/json',
+    };
+    const ext = (pathOnly.match(/\.[a-z0-9]+$/) || [''])[0];
+    const contentType = declaredType
+      || EXT_TYPES[ext]
+      || (pathOnly === '/' || pathOnly.endsWith('/') ? 'text/html' : 'application/octet-stream');
     let bodyBuf = result.encoding === 'base64'
       ? Buffer.from(result.body || '', 'base64')
       : Buffer.from(result.body || '', 'utf8');
@@ -302,6 +325,17 @@ router.use('/:farmId/:ip', async (req, res) => {
       bodyBuf = Buffer.from(js, 'utf8');
     }
 
+    // Name every failing file and say WHICH layer refused it. A 502 in
+    // the browser console is ambiguous — it can come from this backend
+    // (agent not connected) or from the agent (miner refused the
+    // connection) — and the console shows neither the reason nor, for
+    // a request made by a script, the URL. Without this, diagnosing a
+    // page that half-loads means guessing.
+    if (result.status && (result.status < 200 || result.status >= 400)) {
+      const why = typeof result.body === 'string' ? result.body.slice(0, 160) : '';
+      console.warn(`[WEBUI] ✗ ${result.status} ${minerPath}  (farm=${farmId} ip=${ip}) ${why}`);
+    }
+
     res.status(result.status || 200);
     res.set('Content-Type', contentType);
 
@@ -317,6 +351,7 @@ router.use('/:farmId/:ip', async (req, res) => {
 
     res.send(bodyBuf);
   } catch(e) {
+    console.warn(`[WEBUI] ✗ 504 ${minerPath}  (farm=${farmId} ip=${ip}) ${e.message}`);
     res.status(504).send(tunnelErrorPage(e.message));
   }
 });
