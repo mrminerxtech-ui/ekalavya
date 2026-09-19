@@ -154,16 +154,32 @@ function sendWebuiRequest(farmId, ip, method, path, headers, body) {
     if (!agent || agent.ws.readyState !== 1) { reject(new Error(`Agent "${farmId}" not connected`)); return; }
 
     const request_id = 'webui-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+
+    // This budget has to cover QUEUE TIME at the agent, not just the
+    // miner's own response time. Requests to a single miner are served
+    // a few at a time, so on a page pulling dozens of files the later
+    // ones wait their turn first. At the old 12s the backend gave up
+    // while those requests were still sitting in the queue, unstarted —
+    // so the tail of every large page failed no matter how healthy the
+    // miner was. That's why an Antminer dashboard showed its readings
+    // (early requests) but never its language file (a later one), and
+    // why the page felt slow: the browser was waiting out timeouts.
+    const TTL_MS = 30000;
     const timer = setTimeout(() => {
       pendingWebuiRequests.delete(request_id);
       reject(new Error('Miner did not respond in time (is it powered on and reachable?)'));
-    }, 12000);
+    }, TTL_MS);
 
     pendingWebuiRequests.set(request_id, { resolve, reject, timer });
 
     try {
       agent.ws.send(JSON.stringify({
-        type: 'webui_proxy_request', request_id, ip, method, path, headers, body,
+        // ttl_ms lets the agent drop a request whose caller has already
+        // given up, instead of spending the miner's limited capacity on
+        // a response nobody will read. Sent as a duration rather than a
+        // deadline so it doesn't depend on the farm PC's clock matching
+        // the server's.
+        type: 'webui_proxy_request', request_id, ip, method, path, headers, body, ttl_ms: TTL_MS,
       }));
     } catch(e) {
       clearTimeout(timer);
