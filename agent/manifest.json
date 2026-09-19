@@ -1,19 +1,21 @@
 {
-  "version": "1.1.22",
-  "released_at": "2026-09-19T18:00:00Z",
+  "version": "1.1.23",
+  "released_at": "2026-09-19T19:30:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
     "Web UI tunnel: remember each miner's Digest auth challenge instead of starting every single file with a Basic attempt the miner always rejects — halves the requests needed to load an Antminer page",
     "Web UI tunnel: reuse one keep-alive connection per miner rather than opening a fresh TCP connection for every file, which these small embedded web servers are slow to accept",
     "Web UI tunnel: retry once when a busy miner refuses or resets a connection, instead of immediately returning 502 — this is what left the dashboard's own stats.cgi/pools.cgi/warning.cgi polls failing and panels stuck on stale readings",
     "Log download: HTTP status codes were ignored, so a miner's 404 or 401 error page came back as a perfectly valid-looking 'log' and stopped the search before reaching the endpoint that actually works",
-    "Log download: collect from the syslog, system info and CGMiner API together, syslog first, instead of returning whichever endpoint answered first"
+    "Log download: collect from the syslog, system info and CGMiner API together, syslog first, instead of returning whichever endpoint answered first",
+    "Web UI tunnel: serve a few files at a time per miner instead of strictly one after another. Full serialisation meant the later files on a large page were still queued when the backend's 12s budget expired, so the tail of every Antminer dashboard failed — including its language dictionary, which is why labels rendered as [rate] and [algorithm] instead of their real names",
+    "Web UI tunnel: drop a queued request whose caller has already given up, rather than spending the miner's limited capacity on a response nobody is waiting for"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "7e78be22d025c94b5e6bb71db3c04b546e363fa0658f118bd73ac2285c376859",
-      "size": 70203
+      "sha256": "22bcef16b081da3294971805dc1ff49dc5ac6f3b041559275033b19fef599111",
+      "size": 72172
     },
     {
       "name": "sonoff-th.js",
