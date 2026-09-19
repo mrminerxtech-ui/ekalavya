@@ -1,21 +1,17 @@
 {
-  "version": "1.1.23",
-  "released_at": "2026-09-19T19:30:00Z",
+  "version": "1.1.24",
+  "released_at": "2026-09-19T20:00:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "Web UI tunnel: remember each miner's Digest auth challenge instead of starting every single file with a Basic attempt the miner always rejects — halves the requests needed to load an Antminer page",
-    "Web UI tunnel: reuse one keep-alive connection per miner rather than opening a fresh TCP connection for every file, which these small embedded web servers are slow to accept",
-    "Web UI tunnel: retry once when a busy miner refuses or resets a connection, instead of immediately returning 502 — this is what left the dashboard's own stats.cgi/pools.cgi/warning.cgi polls failing and panels stuck on stale readings",
-    "Log download: HTTP status codes were ignored, so a miner's 404 or 401 error page came back as a perfectly valid-looking 'log' and stopped the search before reaching the endpoint that actually works",
-    "Log download: collect from the syslog, system info and CGMiner API together, syslog first, instead of returning whichever endpoint answered first",
-    "Web UI tunnel: serve a few files at a time per miner instead of strictly one after another. Full serialisation meant the later files on a large page were still queued when the backend's 12s budget expired, so the tail of every Antminer dashboard failed — including its language dictionary, which is why labels rendered as [rate] and [algorithm] instead of their real names",
-    "Web UI tunnel: drop a queued request whose caller has already given up, rather than spending the miner's limited capacity on a response nobody is waiting for"
+    "Web UI tunnel: retry a dropped connection on a brand-new socket instead of the pooled one. These miners handle keep-alive inconsistently, so a socket the pool believes is reusable can already be dead at the miner's end \u2014 every request handed to it failed the same way, which is what left strings.properties and strings_en.properties returning 502 and every label on the dashboard showing as [rate], [network] and so on",
+    "Web UI tunnel: discard a miner's whole connection pool after the first dropped connection, so other queued requests don't inherit a socket already proven dead",
+    "Web UI tunnel: log the real error code for a failed miner request rather than just reporting a generic 502"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "22bcef16b081da3294971805dc1ff49dc5ac6f3b041559275033b19fef599111",
-      "size": 72172
+      "sha256": "9bf46c3c27f011863537d1b17d674b59bcc315af259e7d0c5f79ab0516e7dd87",
+      "size": 73219
     },
     {
       "name": "sonoff-th.js",
