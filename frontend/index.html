@@ -228,7 +228,12 @@ tr:last-child td{border-bottom:none;}
 .bi{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;cursor:pointer;color:var(--mute);transition:color .2s;position:relative;}
 .bi.active{color:var(--cyan);}.bi-icon{font-size:20px;}.bi-lbl{font-size:9px;font-family:"Exo 2",sans-serif;font-weight:600;}
 .bi-badge{position:absolute;top:4px;right:calc(50% - 18px);width:15px;height:15px;background:var(--red);border-radius:50%;font-size:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;}
-@media(max-width:768px){#sidebar{display:none;}#bottomNav{display:block;}.scan-grid{grid-template-columns:1fr;}.two-col{grid-template-columns:1fr;}.action-grid{grid-template-columns:repeat(2,1fr);}.three-col{grid-template-columns:1fr 1fr;}}
+@media(max-width:768px){#sidebar{display:none;}#bottomNav{display:block;}.scan-grid{grid-template-columns:1fr;}.two-col{grid-template-columns:1fr;}.action-grid{grid-template-columns:repeat(2,1fr);}.three-col{grid-template-columns:1fr 1fr;}
+/* Lift toasts clear of the 56px bottom nav. At the desktop offset of
+   24px they land on top of the nav bar on a phone — the one place a
+   person is least likely to read them, which made every error message
+   the app tried to show on mobile effectively invisible. */
+.toast{bottom:calc(72px + env(safe-area-inset-bottom));}}
 .sortable-th{cursor:pointer;user-select:none;white-space:nowrap;transition:color .15s;}
 .sortable-th:hover{color:var(--cyan);}
 .sort-arrow{font-size:9px;color:var(--cyan);display:inline-block;width:8px;}
