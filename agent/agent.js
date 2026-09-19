@@ -150,12 +150,16 @@ function parseDigestHeader(header) {
 }
 
 // ── Build Digest Authorization header ──────────────────────
-function buildDigestAuth(user, pass, method, path, digestParams) {
+// ncOverride matters when a nonce is REUSED across requests (see the
+// digest challenge cache used by the Web UI tunnel). A server that
+// tracks nonce counts rejects a repeated nc, so each reuse must pass
+// the next value in sequence.
+function buildDigestAuth(user, pass, method, path, digestParams, ncOverride) {
   const realm  = digestParams.realm || '';
   const nonce  = digestParams.nonce || '';
   const qop    = digestParams.qop || '';
   const opaque = digestParams.opaque;
-  const nc     = '00000001';
+  const nc     = ncOverride || '00000001';
   const cnonce = crypto.randomBytes(8).toString('hex');
 
   const ha1 = crypto.createHash('md5').update(user + ':' + realm + ':' + pass).digest('hex');
@@ -199,6 +203,18 @@ function httpGet(ip, path, auth, debug) {
         res.on('data', c => d += c);
         res.on('end', () => {
           if (debug) console.log('[HTTP] ' + ip + path + ' → status ' + res.statusCode + ' | body: ' + d.slice(0,200));
+          // The status code was previously ignored entirely, so a 404
+          // or 401 page came back as a perfectly truthy string. Callers
+          // that try several endpoints in turn ("if (result) return
+          // result") then stopped at the FIRST one and handed back the
+          // miner's error page as though it were the data — which is
+          // why downloading an Antminer log produced an error page
+          // instead of a log, and never fell through to the endpoints
+          // that would have worked.
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            if (debug) console.log('[HTTP] ' + ip + path + ' → treating HTTP ' + res.statusCode + ' as no data');
+            return resolve(null);
+          }
           try { resolve(JSON.parse(d)); } catch(e) { resolve(d || null); }
         });
       });
@@ -712,20 +728,54 @@ function subnetToIPs(input) {
 }
 
 // ── Fetch miner log ────────────────────────────────────────
+// Does this look like real content, or like the miner's error page?
+// A firmware that doesn't have an endpoint answers with an HTML page
+// rather than a clean failure, and that page is a perfectly ordinary
+// non-empty string — so "did we get something back" is not a usable
+// test on its own.
+function looksLikeRealContent(v) {
+  if (!v) return false;
+  if (typeof v === 'object') return Object.keys(v).length > 0;
+  const s = String(v).trim();
+  if (s.length < 20) return false;
+  // An HTML document here means a login page, a 404, or an error page.
+  if (/^\s*<(!doctype|html|head|body)/i.test(s)) return false;
+  if (/401 unauthorized|404 not found|403 forbidden|bad request/i.test(s)) return false;
+  return true;
+}
+
+// Collect from EVERY endpoint that answers rather than stopping at the
+// first, because which one carries the useful detail varies by firmware
+// — and a stop-at-first-truthy rule used to return whichever error page
+// happened to come back first.
 async function fetchMinerLog(ip) {
-  // Try Antminer log endpoint
-  const log1 = await httpGet(ip, '/cgi-bin/get_system_info.cgi', 'root:root');
-  if (log1) return JSON.stringify(log1, null, 2);
-  
-  // Try CGMiner check command (limited log)
-  const check = await cgCmd(ip, 'check');
-  if (check) return JSON.stringify(check, null, 2);
+  const parts = [];
 
-  // Try standard syslog
-  const log2 = await httpGet(ip, '/cgi-bin/log.cgi', 'root:root');
-  if (log2) return typeof log2 === 'string' ? log2 : JSON.stringify(log2, null, 2);
+  // Real syslog text first — this is what someone asking for "the log"
+  // actually wants. It used to be tried LAST, behind two endpoints that
+  // return JSON status instead.
+  const syslog = await httpGet(ip, '/cgi-bin/log.cgi', 'root:root');
+  if (looksLikeRealContent(syslog)) {
+    parts.push('===== SYSTEM LOG (log.cgi) =====\n'
+      + (typeof syslog === 'string' ? syslog : JSON.stringify(syslog, null, 2)));
+  }
 
-  return null;
+  const sysInfo = await httpGet(ip, '/cgi-bin/get_system_info.cgi', 'root:root');
+  if (looksLikeRealContent(sysInfo)) {
+    parts.push('===== SYSTEM INFO (get_system_info.cgi) =====\n'
+      + (typeof sysInfo === 'string' ? sysInfo : JSON.stringify(sysInfo, null, 2)));
+  }
+
+  // CGMiner's own API, which answers on port 4028 even when the web
+  // interface is unhappy — often the only thing that responds on a
+  // miner that's in trouble, which is exactly when a log is wanted.
+  const check = await cgCmd(ip, 'stats');
+  if (looksLikeRealContent(check)) {
+    parts.push('===== CGMINER STATS (port 4028) =====\n' + JSON.stringify(check, null, 2));
+  }
+
+  if (!parts.length) return null;
+  return 'Miner ' + ip + ' — collected ' + new Date().toISOString() + '\n\n' + parts.join('\n\n');
 }
 
 // ── Fetch the REAL boot/system log text ────────────────────
@@ -1110,6 +1160,38 @@ function handleWebuiProxyRequest(msg) {
   queueForIp(msg.ip, () => handleWebuiProxyRequestNow(msg));
 }
 
+// ── Digest challenge cache ──────────────────────────────────
+// Antminer firmware answers with Digest auth. Every request used to
+// start with a Basic attempt that the miner ALWAYS rejects with a 401,
+// then repeat the request with Digest — two round trips for every
+// single file on the page. Since requests to one miner are queued one
+// at a time, that doubling is felt directly as the page loading at
+// half speed, and on a dashboard pulling dozens of files it's the
+// difference between a page that loads and one that looks stuck.
+//
+// The challenge (realm/nonce/qop) is reusable, so it's remembered per
+// miner after the first 401 and every later request goes straight to
+// Digest. A reused nonce must carry an incrementing count or a strict
+// server rejects it, hence the counter.
+const digestCache = new Map();
+
+function ncHex(n) { return String(n).padStart(8, '0'); }
+
+// One keep-alive connection per miner. These embedded web servers are
+// slow to accept new TCP connections, and a fresh handshake for every
+// file on the page is a large part of the wait. maxSockets:1 also
+// enforces at the socket level the one-request-at-a-time rule the
+// queue above maintains, so this can't accidentally flood the miner.
+const minerHttpAgents = new Map();
+function agentFor(ip) {
+  let a = minerHttpAgents.get(ip);
+  if (!a) {
+    a = new http.Agent({ keepAlive: true, keepAliveMsecs: 10000, maxSockets: 1, maxFreeSockets: 1 });
+    minerHttpAgents.set(ip, a);
+  }
+  return a;
+}
+
 function handleWebuiProxyRequestNow(msg) {
   return new Promise(resolveQueue => {
   const { request_id, ip, method, path: reqPath, headers, body } = msg;
@@ -1142,23 +1224,32 @@ function handleWebuiProxyRequestNow(msg) {
   // round-trip); if the miner replies 401 asking for Digest instead,
   // automatically retry with it. The person browsing never sees any of
   // this or has to type a password themselves.
-  function attempt(authHeader, isRetry) {
+  // phase 0 = first try (cached Digest if we have one, else Basic)
+  // phase 1 = retry with a freshly issued challenge
+  // phase 2 = last retry; a 401 after this is passed through to the browser
+  function attempt(authHeader, phase) {
     const options = {
       hostname: ip, port: 80, path: reqPath || '/', method: method || 'GET',
       headers: { 'Authorization': authHeader },
       timeout: 8000,
+      agent: agentFor(ip),
     };
     if (body) options.headers['Content-Length'] = Buffer.byteLength(body);
     if (headers && headers['content-type']) options.headers['Content-Type'] = headers['content-type'];
 
     const req = http.request(options, res => {
-      if (res.statusCode === 401 && !isRetry && res.headers['www-authenticate']) {
+      if (res.statusCode === 401 && phase < 2 && res.headers['www-authenticate']) {
         const wa = res.headers['www-authenticate'];
         res.resume(); // drain this response, we're retrying
         if (wa.toLowerCase().startsWith('digest')) {
+          // Remember the challenge so the next file on this page skips
+          // straight to Digest instead of paying for a rejected Basic
+          // attempt first. A 401 here on a CACHED nonce just means it
+          // went stale, and this same path refreshes it.
           const params = parseDigestHeader(wa);
-          const digestHeader = buildDigestAuth(REQUEST_USER, REQUEST_PASS, method || 'GET', reqPath || '/', params);
-          attempt(digestHeader, true);
+          digestCache.set(ip, { params, nc: 1 });
+          const digestHeader = buildDigestAuth(REQUEST_USER, REQUEST_PASS, method || 'GET', reqPath || '/', params, ncHex(1));
+          attempt(digestHeader, phase + 1);
           return;
         }
       }
@@ -1167,14 +1258,34 @@ function handleWebuiProxyRequestNow(msg) {
       res.on('end', () => sendResponse(res, Buffer.concat(chunks)));
     });
 
-    req.on('error',   e => sendError(502, 'Cannot reach miner: ' + e.message));
+    req.on('error', e => {
+      // A miner whose web server is momentarily busy refuses or resets
+      // the connection instead of queuing it. That is transient, but it
+      // used to surface immediately as a 502 — which is what the
+      // dashboard's own polling calls (stats.cgi, pools.cgi,
+      // warning.cgi) were hitting, leaving panels stuck on stale
+      // numbers or empty. One short retry clears it.
+      const transient = /ECONNRESET|ECONNREFUSED|EPIPE|ECONNABORTED|socket hang up/i.test(e.message || '');
+      if (transient && !connRetried) {
+        connRetried = true;
+        setTimeout(() => attempt(authHeader, phase), 400);
+        return;
+      }
+      sendError(502, 'Cannot reach miner: ' + e.message);
+    });
     req.on('timeout', () => { req.destroy(); sendError(504, 'Miner did not respond in time'); });
     if (body) req.write(body);
     req.end();
   }
+  let connRetried = false;
 
-  const basicAuth = 'Basic ' + Buffer.from(REQUEST_USER + ':' + REQUEST_PASS).toString('base64');
-  attempt(basicAuth, false);
+  const cached = digestCache.get(ip);
+  if (cached) {
+    cached.nc += 1;
+    attempt(buildDigestAuth(REQUEST_USER, REQUEST_PASS, method || 'GET', reqPath || '/', cached.params, ncHex(cached.nc)), 0);
+  } else {
+    attempt('Basic ' + Buffer.from(REQUEST_USER + ':' + REQUEST_PASS).toString('base64'), 0);
+  }
   });
 }
 
