@@ -80,6 +80,52 @@ const SUBNET    = SUBNETS[0];  // first one for display/registration
 const POLL_MS   = parseInt(process.env.POLL_MS || '30000');
 const CGPORT    = parseInt(process.env.CGMINER_PORT || '4028');
 
+// ── One agent per farm, enforced locally ────────────────────
+// Two agents sharing a FARM_ID fight: each registration kicks the other
+// off the backend, the kicked one reconnects, and they trade places
+// indefinitely. The commonest cause is simply two copies running on the
+// same PC — someone starts agent.js by hand while update-check.js is
+// already supervising one. A lock file makes that impossible to do by
+// accident, and says so clearly rather than failing mysteriously.
+(function claimSingleInstance() {
+  const fsLock   = require('fs');
+  const pathLock = require('path');
+  const lockFile = pathLock.join(__dirname, '.agent.lock');
+  try {
+    if (fsLock.existsSync(lockFile)) {
+      const prev = parseInt(fsLock.readFileSync(lockFile, 'utf8').trim(), 10);
+      if (prev && prev !== process.pid) {
+        let alive = false;
+        // Signal 0 checks for the process without touching it.
+        try { process.kill(prev, 0); alive = true; } catch(e) { alive = false; }
+        if (alive) {
+          console.error('');
+          console.error('  ════════════════════════════════════════════════════════');
+          console.error(`  An agent is ALREADY RUNNING on this PC (process ${prev}).`);
+          console.error('');
+          console.error('  Two agents with the same FARM_ID knock each other');
+          console.error('  offline in a loop, so this one will not start.');
+          console.error('');
+          console.error('  Close the other agent window first, or just let the');
+          console.error('  existing one keep running — it is already connected.');
+          console.error('  ════════════════════════════════════════════════════════');
+          console.error('');
+          process.exit(0);   // 0 = deliberate, so the supervisor doesn't count it as a crash
+        }
+      }
+    }
+    fsLock.writeFileSync(lockFile, String(process.pid), 'utf8');
+    const release = () => { try { fsLock.unlinkSync(lockFile); } catch(e) {} };
+    process.on('exit', release);
+    process.on('SIGINT',  () => { release(); process.exit(0); });
+    process.on('SIGTERM', () => { release(); process.exit(0); });
+  } catch(e) {
+    // A read-only folder or odd permissions must never stop the agent
+    // from doing its job — the backend still catches duplicates.
+    console.log('[LOCK] Could not use a lock file (' + e.message + ') — continuing');
+  }
+})();
+
 let ws = null, reconnectMs = 3000, pollTimer = null;
 
 // ── Independent watchdog — a safety net completely separate from the
@@ -1537,6 +1583,32 @@ function connect() {
       return;
     }
     clearInterval(pollTimer);
+
+    // 4003: the backend already has an agent connected for this FARM_ID.
+    // Reconnecting straight away just resumes the tug-of-war that made
+    // both agents trade places every few seconds, so back off hard and
+    // say plainly what needs fixing.
+    if (code === 4003) {
+      console.error('');
+      console.error('  ════════════════════════════════════════════════════════');
+      console.error('  DUPLICATE AGENT — another agent is already connected');
+      console.error(`  using FARM_ID "${FARM_ID}".`);
+      console.error('');
+      console.error('  Two agents sharing one FARM_ID knock each other offline');
+      console.error('  in a loop. Only one may run per farm.');
+      console.error('');
+      console.error('    • Check this PC for a second agent window, or for');
+      console.error('      agent.js running alongside update-check.js');
+      console.error('    • Or give the other machine its own FARM_ID in .env');
+      console.error('');
+      console.error('  Standing down for 5 minutes, then trying once more.');
+      console.error('  ════════════════════════════════════════════════════════');
+      console.error('');
+      reconnectMs = 5 * 60 * 1000;
+      scheduleReconnect('Duplicate FARM_ID');
+      return;
+    }
+
     scheduleReconnect(`Disconnected (${code})`);
   });
 
