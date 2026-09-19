@@ -3,6 +3,55 @@
 // ============================================================
 const connectedAgents = new Map();
 
+// ── Duplicate-agent detection ───────────────────────────────
+// Replacing a farm's existing connection is correct when the old socket
+// is a stale one the agent has already given up on. It is exactly wrong
+// when TWO agent processes share one farm id: each replacement kicks the
+// other off, the kicked one reconnects, and they trade places forever.
+// Seen in production at one swap every 3.6s — 104 reconnections in six
+// minutes, which drowned the log and kept re-registering the farm
+// non-stop.
+//
+// So replacements are counted. A couple are normal (a genuine
+// reconnect); a steady stream means duplicates, and then the sitting
+// connection is kept and the newcomer is turned away instead.
+const REPLACE_WINDOW_MS = 60 * 1000;
+const REPLACE_LIMIT     = 4;          // replacements per minute before we call it a duplicate
+const replacementLog    = new Map();  // farm_id -> [timestamps]
+const duplicateWarned   = new Map();  // farm_id -> last warning time
+
+function noteReplacement(farmId) {
+  const now = Date.now();
+  const hits = (replacementLog.get(farmId) || []).filter(t => now - t < REPLACE_WINDOW_MS);
+  hits.push(now);
+  replacementLog.set(farmId, hits);
+  return hits.length;
+}
+
+// Returns true if this farm is currently flapping between duplicates.
+function isDuplicateStorm(farmId) {
+  const now = Date.now();
+  const hits = (replacementLog.get(farmId) || []).filter(t => now - t < REPLACE_WINDOW_MS);
+  replacementLog.set(farmId, hits);
+  return hits.length >= REPLACE_LIMIT;
+}
+
+function warnDuplicateOnce(farmId, farmName, hostname) {
+  const now = Date.now();
+  const last = duplicateWarned.get(farmId) || 0;
+  if (now - last < 5 * 60 * 1000) return;   // at most one warning per farm per 5 min
+  duplicateWarned.set(farmId, now);
+  console.warn(
+    `[AGENT] ⚠ DUPLICATE AGENT for farm "${farmId}" (${farmName}). ` +
+    `More than one agent process is connecting with this same FARM_ID — they kick each other off in a loop. ` +
+    `Newest attempt came from host "${hostname}". Keeping the connection already in place and refusing the extra one. ` +
+    `Fix: make sure only ONE agent runs per farm (check for a second agent.js or a second update-check.js on that PC), ` +
+    `or give the other machine its own FARM_ID.`
+  );
+}
+
+// Returns false when the caller must NOT wire this socket up — it has
+// already been closed as a duplicate.
 function registerAgent(ws, info) {
   // If this farm already has a socket registered, it's a stale one that
   // hasn't finished dying yet — the agent only opens a second connection
@@ -13,7 +62,21 @@ function registerAgent(ws, info) {
   // in the UI while their own logs said "connected").
   const existing = connectedAgents.get(info.farm_id);
   if (existing && existing.ws !== ws) {
-    console.log(`[AGENT] ${info.farm_name}: replacing previous connection`);
+    // Already flapping — keep who we have and turn this one away, so the
+    // two processes stop trading places. The server-side keepalive still
+    // reaps the sitting connection within ~32s if it is genuinely dead,
+    // and the farm recovers on the next attempt.
+    if (isDuplicateStorm(info.farm_id) && existing.ws.readyState === 1) {
+      warnDuplicateOnce(info.farm_id, info.farm_name, info.hostname || 'unknown');
+      try {
+        ws.close(4003, 'Another agent is already connected with this FARM_ID');
+      } catch(e) {}
+      return false;
+    }
+
+    const count = noteReplacement(info.farm_id);
+    console.log(`[AGENT] ${info.farm_name}: replacing previous connection` +
+                (count > 1 ? ` (${count} replacements in the last minute)` : ''));
     try { existing.ws.close(4002, 'Superseded by a newer connection'); } catch(e) {}
     try { existing.ws.terminate(); } catch(e) {}
   }
@@ -50,6 +113,8 @@ function registerAgent(ws, info) {
     const { broadcast } = require('../websocket');
     broadcast({ type: 'agent_connected', agent: sanitize(agent) });
   } catch(e) {}
+
+  return true;
 }
 
 // `ws` is the socket whose close event fired. It matters: a late close
