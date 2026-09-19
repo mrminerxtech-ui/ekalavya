@@ -269,9 +269,21 @@ router.use('/:farmId/:ip', async (req, res) => {
         '})();' +
         '</script>';
 
+      // Miner firmware is built for a desktop monitor and declares no
+      // viewport, so a phone renders it at desktop width and clips it —
+      // which is why the dashboard appears cut off with panels running
+      // off the side of the screen. Telling the phone to lay the page
+      // out at a desktop width and then scale it to fit shows the whole
+      // thing instead of a slice of it. Only added when the firmware
+      // doesn't set its own viewport, so a miner UI that IS
+      // mobile-aware keeps its own behaviour.
+      const viewportTag = /<meta[^>]+name=["']?viewport/i.test(html)
+        ? ''
+        : '<meta name="viewport" content="width=1024, initial-scale=0.35, user-scalable=yes">';
+
       html = html
         .replace(/(href|src|action)=(["'])\/(?!\/)/gi, '$1=$2')
-        .replace(/<head([^>]*)>/i, `<head$1>${interceptShim}`);
+        .replace(/<head([^>]*)>/i, `<head$1>${viewportTag}${interceptShim}`);
       bodyBuf = Buffer.from(html, 'utf8');
     }
 
