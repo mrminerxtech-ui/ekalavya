@@ -1268,12 +1268,20 @@ function handleWebuiProxyRequestNow(msg) {
   // phase 0 = first try (cached Digest if we have one, else Basic)
   // phase 1 = retry with a freshly issued challenge
   // phase 2 = last retry; a 401 after this is passed through to the browser
-  function attempt(authHeader, phase) {
+  function attempt(authHeader, phase, freshConnection) {
     const options = {
       hostname: ip, port: 80, path: reqPath || '/', method: method || 'GET',
       headers: { 'Authorization': authHeader },
       timeout: 8000,
-      agent: agentFor(ip),
+      // A retry after a dropped connection deliberately does NOT reuse
+      // the pooled socket. These miners' web servers handle keep-alive
+      // inconsistently — a socket the pool believes is reusable can
+      // already be dead at the miner's end, and every request handed to
+      // it fails the same way. Retrying on a brand-new connection
+      // sidesteps a stale pooled socket entirely.
+      agent: freshConnection
+        ? new http.Agent({ keepAlive: false, maxSockets: 1 })
+        : agentFor(ip),
     };
     if (body) options.headers['Content-Length'] = Buffer.byteLength(body);
     if (headers && headers['content-type']) options.headers['Content-Type'] = headers['content-type'];
@@ -1306,19 +1314,25 @@ function handleWebuiProxyRequestNow(msg) {
       // dashboard's own polling calls (stats.cgi, pools.cgi,
       // warning.cgi) were hitting, leaving panels stuck on stale
       // numbers or empty. One short retry clears it.
-      const transient = /ECONNRESET|ECONNREFUSED|EPIPE|ECONNABORTED|socket hang up/i.test(e.message || '');
-      if (transient && !connRetried) {
-        connRetried = true;
-        setTimeout(() => attempt(authHeader, phase), 400);
+      const transient = /ECONNRESET|ECONNREFUSED|EPIPE|ECONNABORTED|socket hang up|EHOSTUNREACH|ETIMEDOUT/i.test(e.message || '');
+      if (transient && connRetries < 2) {
+        connRetries++;
+        // Second attempt onwards goes over a fresh connection, and the
+        // pool for this miner is discarded so no other queued request
+        // inherits a socket that has already proven dead.
+        if (connRetries === 1) minerHttpAgents.delete(ip);
+        console.log(`[WEBUI] ${reqPath} → ${e.code || e.message} — retry ${connRetries}/2 on a fresh connection`);
+        setTimeout(() => attempt(authHeader, phase, true), 300 * connRetries);
         return;
       }
-      sendError(502, 'Cannot reach miner: ' + e.message);
+      console.log(`[WEBUI] ✗ ${reqPath} → giving up: ${e.code || ''} ${e.message}`);
+      sendError(502, 'Cannot reach miner (' + (e.code || 'error') + '): ' + e.message);
     });
     req.on('timeout', () => { req.destroy(); sendError(504, 'Miner did not respond in time'); });
     if (body) req.write(body);
     req.end();
   }
-  let connRetried = false;
+  let connRetries = 0;
 
   const cached = digestCache.get(ip);
   if (cached) {
