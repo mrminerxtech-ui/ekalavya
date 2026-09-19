@@ -1,17 +1,17 @@
 {
-  "version": "1.1.24",
-  "released_at": "2026-09-19T20:00:00Z",
+  "version": "1.1.25",
+  "released_at": "2026-09-19T21:30:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "Web UI tunnel: retry a dropped connection on a brand-new socket instead of the pooled one. These miners handle keep-alive inconsistently, so a socket the pool believes is reusable can already be dead at the miner's end \u2014 every request handed to it failed the same way, which is what left strings.properties and strings_en.properties returning 502 and every label on the dashboard showing as [rate], [network] and so on",
-    "Web UI tunnel: discard a miner's whole connection pool after the first dropped connection, so other queued requests don't inherit a socket already proven dead",
-    "Web UI tunnel: log the real error code for a failed miner request rather than just reporting a generic 502"
+    "Refuse to start when another agent is already running on this PC. Two agents sharing a FARM_ID knock each other off the backend in a loop \u2014 one farm was reconnecting every 3.6 seconds, 104 times in six minutes",
+    "Back off for five minutes, with a clear explanation, when the backend reports that another agent already holds this FARM_ID, instead of reconnecting immediately and resuming the tug-of-war",
+    "Release the instance lock cleanly on exit, and ignore a stale lock left behind by a crashed agent"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "9bf46c3c27f011863537d1b17d674b59bcc315af259e7d0c5f79ab0516e7dd87",
-      "size": 73219
+      "sha256": "a525747be9285fe4910de2ca7da9cdb599660c697e7f9c7ac6e9a868d91aa23d",
+      "size": 77377
     },
     {
       "name": "sonoff-th.js",
