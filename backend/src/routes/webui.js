@@ -207,7 +207,13 @@ router.use('/:farmId/:ip', async (req, res) => {
   // turned into the miner-address segment, so the miner is asked for
   // "/i18n/strings.properties" rather than "/strings.properties".
   const minerPath = climbedPrefix + (req.url === '/' ? '/' : req.url);
-  console.log(`[WEBUI] ${req.method} tunnel request → farm=${farmId} ip=${ip} path=${minerPath} user=${user.id}(${user.role})`);
+  // One miner page is dozens of these. Log the page itself (worth
+  // knowing who opened which miner) and keep the rest behind
+  // LOG_VERBOSE — failures are logged separately either way.
+  const isPageLoad = minerPath === '/' || /\.(html?|cgi)$/i.test(minerPath.split('?')[0]) === false;
+  if (process.env.LOG_VERBOSE === '1' || isPageLoad) {
+    console.log(`[WEBUI] ${req.method} ${minerPath} → farm=${farmId} ip=${ip} user=${user.id}(${user.role})`);
+  }
 
   const agent = agentMgr.getAgent(farmId);
   if (!agent) {
