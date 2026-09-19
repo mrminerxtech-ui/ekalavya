@@ -49,7 +49,21 @@ const server = http.createServer(app);
 app.use(cors({ origin: '*', credentials: true }));
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
-app.use(morgan('dev'));
+// Log HTTP requests, but skip the ones that repeat constantly and say
+// nothing: agent-list polling from every open tab, health checks, and
+// successful tunnel sub-resource fetches (a single miner page is dozens
+// of them). Failures are always logged. LOG_VERBOSE=1 logs everything.
+app.use(morgan('dev', {
+  skip: (req, res) => {
+    if (process.env.LOG_VERBOSE === '1') return false;
+    if (res.statusCode >= 400) return false;          // never hide a failure
+    if (req.path === '/health') return true;
+    if (req.path === '/api/agents') return true;
+    if (req.path.startsWith('/api/webui/')) return true;
+    if (req.path === '/api/market/prices' || req.path === '/api/market') return true;
+    return false;
+  },
+}));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use('/api/', rateLimit({ windowMs: 60_000, max: 300 }));
@@ -149,7 +163,12 @@ agentWss.on('connection', (ws, req) => {
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
 
-  agentMgr.registerAgent(ws, { farm_id: farmId, farm_name: farmName, subnet, hostname, agent_version: version });
+  // Refused as a duplicate: the socket is already closed, and wiring up
+  // handlers for it would let a rejected agent keep feeding the fleet.
+  const accepted = agentMgr.registerAgent(ws, {
+    farm_id: farmId, farm_name: farmName, subnet, hostname, agent_version: version,
+  });
+  if (accepted === false) return;
 
   ws.on('message', async (raw) => {
     try {
