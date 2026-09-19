@@ -17,7 +17,13 @@ router.get('/', (req, res) => {
       last_checkin_at:  checkin.received_at,
     } : a;
   });
-  console.log(`[API] /agents called — returning ${agents.length} agents`);
+  // Deliberately not logged. Every open browser tab polls this every
+  // 30s, which produced 125 identical lines in six minutes of log —
+  // noise that buries the lines that actually matter. Set
+  // LOG_VERBOSE=1 to get them back while debugging.
+  if (process.env.LOG_VERBOSE === '1') {
+    console.log(`[API] /agents called — returning ${agents.length} agents`);
+  }
   res.json({ ok: true, count: agents.length, agents });
 });
 
