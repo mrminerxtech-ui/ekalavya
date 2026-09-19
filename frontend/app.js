@@ -3394,38 +3394,39 @@ function openExternal(w, url) {
   const standalone = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches
                   || window.navigator.standalone === true;
 
-  // 1. A real anchor click. An installed app honours this and hands the
-  //    URL to the browser, where location.href can be swallowed.
+  // In an ORDINARY browser tab, navigate this screen and nothing else.
+  // A single click only earns permission to open one window, so trying
+  // an anchor AND window.open meant the browser suppressed one of them
+  // — and which one it suppressed decided whether anything happened at
+  // all. Navigating directly is what worked here for months; it is the
+  // installed-app case that needs the special handling below.
+  if (!standalone) {
+    toast('Opening ' + (w.name || w.ip) + ' — use Back to return', 'var(--cyan)');
+    window.location.href = url;
+    return;
+  }
+
+  // Installed app: the miner's page lives outside the app's scope, and
+  // navigating there can be dropped silently by the launcher. An anchor
+  // click is the form an installed app honours, handing the URL to the
+  // browser. rel keeps noopener (safe) but NOT noreferrer, so the page
+  // still sends a Referer — the tunnel needs it to resolve a
+  // parent-relative request back to the right miner.
   try {
     const a = document.createElement('a');
-    a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    a.href = url; a.target = '_blank'; a.rel = 'noopener';
     a.style.display = 'none';
     document.body.appendChild(a);
     a.click();
     setTimeout(function(){ try { a.remove(); } catch(e){} }, 1000);
   } catch(e) {}
 
-  // 2. window.open as a second attempt. Returns null when a popup
-  //    blocker stopped it, which is worth knowing about.
-  let win = null;
-  try { win = window.open(url, '_blank', 'noopener'); } catch(e) {}
-
-  // 3. Last resort in a normal browser tab: navigate this screen. NOT
-  //    done in an installed app — that's the case that silently fails,
-  //    and it would also throw the person out of the app entirely.
-  if (!win && !standalone) {
-    window.location.href = url;
-    return;
-  }
-
-  // In an installed app there's no reliable way to confirm the browser
-  // actually came to the front, so offer the link either way. If it did
-  // open, this panel is simply behind it and gets dismissed later.
-  if (standalone) {
-    showWebUiFallback(w, url,
-      'Opening ' + (w.name || w.ip) + ' in your browser. If nothing appeared, your installed app blocked it — '
-      + 'tap the link below to open it manually.');
-  }
+  // No reliable way to confirm the browser actually came to the front,
+  // so offer the link either way. If it did open, this panel is simply
+  // behind it and gets dismissed later.
+  showWebUiFallback(w, url,
+    'Opening ' + (w.name || w.ip) + ' in your browser. If nothing appeared, your installed app blocked it — '
+    + 'tap the link below to open it manually.');
 }
 
 // A visible, tappable way out. Anything that can't be opened
