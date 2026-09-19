@@ -1,18 +1,19 @@
 {
-  "version": "1.1.21",
-  "released_at": "2026-09-18T18:00:00Z",
+  "version": "1.1.22",
+  "released_at": "2026-09-19T18:00:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
-    "Detect when the backend has lost track of this agent: health is now measured by application-level replies (heartbeat acks), not network pings, which an edge proxy can answer on the server's behalf while the backend behind it knows nothing about us",
-    "Reconnect automatically in that case instead of sitting 'connected' until someone restarts the agent by hand",
-    "Only ever run one reconnect at a time, so a close event and a forced disconnect can no longer each start their own chain and open duplicate sockets",
-    "Watchdog no longer restarts the process merely because the server is unreachable — the reconnect loop handles outages, and restarting during one risked tripping the supervisor's crash-loop backoff and leaving the farm dark for minutes"
+    "Web UI tunnel: remember each miner's Digest auth challenge instead of starting every single file with a Basic attempt the miner always rejects — halves the requests needed to load an Antminer page",
+    "Web UI tunnel: reuse one keep-alive connection per miner rather than opening a fresh TCP connection for every file, which these small embedded web servers are slow to accept",
+    "Web UI tunnel: retry once when a busy miner refuses or resets a connection, instead of immediately returning 502 — this is what left the dashboard's own stats.cgi/pools.cgi/warning.cgi polls failing and panels stuck on stale readings",
+    "Log download: HTTP status codes were ignored, so a miner's 404 or 401 error page came back as a perfectly valid-looking 'log' and stopped the search before reaching the endpoint that actually works",
+    "Log download: collect from the syslog, system info and CGMiner API together, syslog first, instead of returning whichever endpoint answered first"
   ],
   "files": [
     {
       "name": "agent.js",
-      "sha256": "6c3acb3559e44e4d08fa435c7f0aca57e6b7546037c477e9689a0f60b43f7909",
-      "size": 64446
+      "sha256": "7e78be22d025c94b5e6bb71db3c04b546e363fa0658f118bd73ac2285c376859",
+      "size": 70203
     },
     {
       "name": "sonoff-th.js",
