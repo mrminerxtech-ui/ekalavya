@@ -1148,16 +1148,53 @@ async function handleActionRequest(msg) {
 // connection failure (502) even though the miner was perfectly
 // reachable. Queuing requests per-IP so only one is ever in flight
 // to a given miner at a time avoids this entirely.
-const webuiQueues = new Map();
+// Requests to one miner run a few at a time, not strictly one after
+// another. Serialising them completely was safe but made a large page
+// pathologically slow: with dozens of files queued, the ones at the
+// back waited so long that the backend had already given up on them
+// before they even started, so the tail of every big page failed.
+//
+// The http.Agent below caps ACTUAL sockets per miner, so this limit
+// governs how many requests are in flight, while the socket pool is
+// what protects the miner's small web server from being flooded.
+const WEBUI_CONCURRENCY = 3;
+const webuiActive  = new Map(); // ip -> number of requests in flight
+const webuiWaiting = new Map(); // ip -> array of queued starters
+
 function queueForIp(ip, task) {
-  const prev = webuiQueues.get(ip) || Promise.resolve();
-  const next = prev.then(task, task).catch(() => {}); // one failure never blocks the queue
-  webuiQueues.set(ip, next);
-  return next;
+  return new Promise(resolve => {
+    const start = () => {
+      webuiActive.set(ip, (webuiActive.get(ip) || 0) + 1);
+      Promise.resolve()
+        .then(task)
+        .catch(() => {})            // one failure never blocks the queue
+        .then(() => {
+          webuiActive.set(ip, Math.max(0, (webuiActive.get(ip) || 1) - 1));
+          const waiting = webuiWaiting.get(ip);
+          if (waiting && waiting.length) waiting.shift()();
+          resolve();
+        });
+    };
+
+    if ((webuiActive.get(ip) || 0) < WEBUI_CONCURRENCY) return start();
+    if (!webuiWaiting.has(ip)) webuiWaiting.set(ip, []);
+    webuiWaiting.get(ip).push(start);
+  });
 }
 
 function handleWebuiProxyRequest(msg) {
-  queueForIp(msg.ip, () => handleWebuiProxyRequestNow(msg));
+  // Start the clock when the request ARRIVES, so time spent queued
+  // counts against it. A request whose caller has already timed out is
+  // dropped rather than served — the browser stopped waiting, and the
+  // miner's limited capacity is better spent on requests still wanted.
+  const expiresAt = Date.now() + (Number(msg.ttl_ms) || 30000);
+  queueForIp(msg.ip, () => {
+    if (Date.now() >= expiresAt) {
+      console.log('[WEBUI] Skipping ' + (msg.path || '/') + ' — caller already gave up while it was queued');
+      return Promise.resolve();
+    }
+    return handleWebuiProxyRequestNow(msg);
+  });
 }
 
 // ── Digest challenge cache ──────────────────────────────────
@@ -1186,7 +1223,11 @@ const minerHttpAgents = new Map();
 function agentFor(ip) {
   let a = minerHttpAgents.get(ip);
   if (!a) {
-    a = new http.Agent({ keepAlive: true, keepAliveMsecs: 10000, maxSockets: 1, maxFreeSockets: 1 });
+    // Two sockets, not one: enough to overlap a slow response with the
+    // next request without flooding a web server that only has a
+    // handful of connection slots. Node queues anything beyond this
+    // onto the existing sockets rather than opening more.
+    a = new http.Agent({ keepAlive: true, keepAliveMsecs: 10000, maxSockets: 2, maxFreeSockets: 2 });
     minerHttpAgents.set(ip, a);
   }
   return a;
