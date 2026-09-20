@@ -1871,7 +1871,13 @@ function doLogin(){
     e.style.display='block';
   });
 }
-function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).style.display='none');['ticker','topbar','appBody','bottomNav'].forEach(id=>document.getElementById(id).style.display=id==='appBody'?'flex':id==='bottomNav'?'block':'flex');const ini=currentUser.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();document.getElementById('sideAv').textContent=ini;document.getElementById('sideName').textContent=currentUser.name;document.getElementById('sideRole').textContent=isCustomer?'Customer Portal':currentUser.role==='admin'?'Super Admin':'Team Member';document.getElementById('topBadge').textContent=isCustomer?'PORTAL':'ADMIN';if(isCustomer){document.getElementById('adminNav').style.display='none';document.getElementById('custNav').style.display='block';document.getElementById('agentPill').style.display='none';document.getElementById('bnavAdmin').style.display='none';document.getElementById('bnavCust').style.display='flex';showPage('portal-home');document.getElementById('custNav').querySelector('.nav-item').classList.add('active');renderPortal();try{ fetchMarketData(function(){ try{ renderPortal(); }catch(e){} }); loadFleetFromBackend(function(){ try{ renderPortal(); }catch(e){} }); fetchEarnings(); setInterval(fetchEarnings, 10*60*1000); }catch(e){}}else{populateDropdowns();renderAll();}initTicker();
+function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).style.display='none');['ticker','topbar','appBody','bottomNav'].forEach(id=>document.getElementById(id).style.display=id==='appBody'?'flex':id==='bottomNav'?'block':'flex');const ini=currentUser.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();document.getElementById('sideAv').textContent=ini;document.getElementById('sideName').textContent=currentUser.name;document.getElementById('sideRole').textContent=isCustomer?'Customer Portal':currentUser.role==='admin'?'Super Admin':'Team Member';document.getElementById('topBadge').textContent=isCustomer?'PORTAL':'ADMIN';if(isCustomer){document.getElementById('adminNav').style.display='none';document.getElementById('custNav').style.display='block';document.getElementById('agentPill').style.display='none';document.getElementById('bnavAdmin').style.display='none';document.getElementById('bnavCust').style.display='flex';showPage('portal-home');document.getElementById('custNav').querySelector('.nav-item').classList.add('active');renderPortal();try{ fetchMarketData(function(){ try{ renderPortal(); }catch(e){} }); loadFleetFromBackend(function(){ try{ renderPortal(); }catch(e){} }); fetchEarnings(); setInterval(fetchEarnings, 10*60*1000); }catch(e){}}else{populateDropdowns();renderAll();
+// Pull the underperformer count on login so the sidebar badge shows a
+// problem without anyone having to go looking for it. Refreshed on the
+// same 10-minute cadence the backend records history at — polling
+// faster would just re-read the same snapshot.
+try{ loadInsights(); setInterval(loadInsights, 10*60*1000); }catch(e){}
+}initTicker();
 // Live prices from CoinGecko. The old demo ticker invented prices with
 // Math.random() and is gone.
 fetchCoinPrices(); setInterval(fetchCoinPrices, 60000);
@@ -2080,6 +2086,7 @@ function showPage(n){
     if(n==='scada')         { checkScadaSession(); }
     if(n==='pools')         { renderPools(); }
     if(n==='profitability') { fetchMarketData(function(){ renderProfit(); }); renderProfit(); }
+    if(n==='insights')      { renderInsights(); loadInsights(); }
     if(n==='settings')      { updateFleetStat(); renderSensorEntryGrid(); const tt=document.getElementById('tailscaleToggle'); if(tt) tt.checked = localStorage.getItem('use_tailscale_webui') === 'true'; const rr=document.getElementById('ewRedirectUrl'); if(rr && !rr.value) rr.value = window.location.origin + window.location.pathname; }
   } catch(e) { console.error('showPage render error:', e); }
 }
@@ -3269,6 +3276,143 @@ function onWorkerSearchInput(){
 // ── Filter by site / agent ──────────────────────────────────
 // Independent of the status buttons, so "Ghummadh + Offline" works.
 let workerAgentFilter = 'all';
+
+// ── Performance insights ────────────────────────────────────
+// Everything here is read from stored history on the backend. Nothing
+// is computed in the browser, so two people looking at the same window
+// see the same numbers, and the figures don't reset when a tab closes.
+let insightsData = { under: null, uptime: null };
+
+function authFetch(path) {
+  const base = (typeof API_BASE !== 'undefined') ? API_BASE : '';
+  if (!base || base.includes('localhost')) return Promise.resolve(null);
+  const token = localStorage.getItem('ekl_token') || '';
+  return fetch(base + path, { headers: { 'Authorization': 'Bearer ' + token } })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .catch(function(){ return null; });
+}
+
+function loadInsights() {
+  const hoursEl = document.getElementById('inHours');
+  const daysEl  = document.getElementById('inDays');
+  const hours = hoursEl ? hoursEl.value : 24;
+  const days  = daysEl  ? daysEl.value  : 7;
+
+  authFetch('/api/insights/underperformers?hours=' + encodeURIComponent(hours))
+    .then(function(d){ insightsData.under = (d && d.ok) ? d : null; renderInsights(); });
+  authFetch('/api/insights/uptime?days=' + encodeURIComponent(days))
+    .then(function(d){ insightsData.uptime = (d && d.ok) ? d : null; renderInsights(); });
+}
+
+// Hashrate is stored normalised to TH/s so one column fits every
+// machine. Scrypt miners are quoted in GH/s, so showing "0.021 TH/s"
+// for an L11 would be technically right and completely unreadable.
+function fmtHashrate(th, unitHint) {
+  if (th === null || th === undefined || !isFinite(th)) return '—';
+  const u = (unitHint || '').toUpperCase();
+  if (u.indexOf('GH') === 0) return (th * 1000).toFixed(2) + ' GH/s';
+  if (u.indexOf('MH') === 0) return (th * 1e6).toFixed(0) + ' MH/s';
+  if (u.indexOf('PH') === 0) return (th / 1000).toFixed(3) + ' PH/s';
+  return th.toFixed(1) + ' TH/s';
+}
+
+function renderInsights() {
+  const u = insightsData.under, up = insightsData.uptime;
+
+  const elUnder = document.getElementById('inUnder');
+  if (elUnder) elUnder.textContent = u ? u.flagged.length : '—';
+  const navBadge = document.getElementById('underNavBadge');
+  if (navBadge) {
+    const n = u ? u.flagged.length : 0;
+    navBadge.textContent = n;
+    navBadge.style.display = n ? '' : 'none';
+  }
+
+  const note = document.getElementById('inUnderNote');
+  if (note) {
+    if (!u) {
+      note.textContent = 'Performance history not available yet.';
+    } else {
+      const skipped = (u.skipped_models || []).length;
+      note.textContent = 'Compared against the median of the SAME MODEL in your own fleet over the last '
+        + u.window_hours + 'h — not a spec sheet, so overclocks and custom firmware are accounted for. '
+        + 'Flagging anything more than ' + u.threshold_pct + '% below its peers. '
+        + u.checked + ' machines in ' + u.cohorts + ' model group(s).'
+        + (skipped ? ' ' + skipped + ' model(s) skipped for having too few machines to compare.' : '');
+    }
+  }
+
+  const tb = document.getElementById('inUnderTbody');
+  if (tb) {
+    if (!u) {
+      tb.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:26px;color:var(--mute)">No data yet — history builds up over the first few hours after deploying.</td></tr>';
+    } else if (!u.flagged.length) {
+      tb.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:26px;color:var(--green)">'
+        + '&#10003; No underperforming machines. All ' + u.checked + ' compared machines are within '
+        + u.threshold_pct + '% of their model\'s median.</td></tr>';
+    } else {
+      tb.innerHTML = u.flagged.map(function(f){
+        const sev = f.shortfall_pct >= 30 ? 'var(--red)' : 'var(--warn)';
+        return '<tr>'
+          + '<td style="font-weight:700;color:var(--cyan);font-size:11px">' + escHtml(f.name) + '</td>'
+          + '<td style="font-size:10px;color:var(--mute)">' + escHtml((f.brand || '') + ' ' + (f.model_raw || f.model || '')) + '</td>'
+          + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;color:' + sev + '">' + fmtHashrate(f.avg_th, f.hr_unit) + '</td>'
+          + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;color:var(--mute)">' + fmtHashrate(f.peer_median_th, f.hr_unit) + '</td>'
+          + '<td style="font-family:Share Tech Mono,monospace;font-size:12px;font-weight:700;color:' + sev + '">' + f.pct_of_peers + '%</td>'
+          + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;color:' + sev + '">-' + f.shortfall_pct + '%</td>'
+          + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (f.avg_temp != null ? Math.round(f.avg_temp) + '°C' : '—') + '</td>'
+          + '<td><button class="abtn" onclick="openCtrl(\'' + escAttr(f.worker_id) + '\')">Manage</button></td>'
+          + '</tr>';
+      }).join('');
+    }
+  }
+
+  // Uptime panel
+  const rows = up ? up.workers : [];
+  const tracked = document.getElementById('inTracked');
+  if (tracked) tracked.textContent = up ? up.count : '—';
+
+  const withPct = rows.filter(function(r){ return r.uptime_pct !== null && r.uptime_pct !== undefined; });
+  const fleetEl = document.getElementById('inUptime');
+  if (fleetEl) {
+    if (!withPct.length) fleetEl.textContent = '—';
+    else {
+      const avg = withPct.reduce(function(s,r){ return s + Number(r.uptime_pct); }, 0) / withPct.length;
+      fleetEl.textContent = avg.toFixed(1) + '%';
+    }
+  }
+  const subEl = document.getElementById('inUptimeSub');
+  if (subEl && up) subEl.textContent = 'last ' + up.days + ' day' + (up.days === 1 ? '' : 's');
+
+  const worstEl = document.getElementById('inWorst'), worstName = document.getElementById('inWorstName');
+  if (worstEl) {
+    if (!withPct.length) { worstEl.textContent = '—'; if (worstName) worstName.textContent = '—'; }
+    else {
+      worstEl.textContent = Number(withPct[0].uptime_pct).toFixed(1) + '%';
+      if (worstName) worstName.textContent = withPct[0].name || withPct[0].worker_id;
+    }
+  }
+
+  const utb = document.getElementById('inUptimeTbody');
+  if (utb) {
+    if (!rows.length) {
+      utb.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:26px;color:var(--mute)">No history recorded yet.</td></tr>';
+    } else {
+      utb.innerHTML = rows.slice(0, 100).map(function(r){
+        const pct = r.uptime_pct;
+        const col = pct === null ? 'var(--mute)' : pct >= 99 ? 'var(--green)' : pct >= 95 ? 'var(--warn)' : 'var(--red)';
+        return '<tr>'
+          + '<td style="font-weight:700;color:var(--cyan);font-size:11px">' + escHtml(r.name || r.worker_id) + '</td>'
+          + '<td style="font-size:10px;color:var(--mute)">' + escHtml(r.farm_id || '—') + '</td>'
+          + '<td style="font-family:Share Tech Mono,monospace;font-size:12px;font-weight:700;color:' + col + '">' + (pct === null ? '—' : pct + '%') + '</td>'
+          + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + r.slots_online + '</td>'
+          + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;color:var(--mute)">' + r.slots_observed + '</td>'
+          + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;color:var(--green)">' + fmtHashrate(r.avg_hashrate_th) + '</td>'
+          + '</tr>';
+      }).join('');
+    }
+  }
+}
 
 function clearWorkerFilters(){
   workerFilter = 'all';
