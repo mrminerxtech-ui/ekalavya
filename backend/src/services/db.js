@@ -197,11 +197,16 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
 
     // Mark workers under this farm that WEREN'T in this poll as offline —
     // they've either been unplugged, moved to another farm (handled
-    // above), or are unreachable right now
+    // above), or are unreachable right now. Their last-known hashrate/
+    // temp/fan/worker readings are cleared at the same time — a machine
+    // that's offline isn't hashing at its old rate, and leaving that
+    // stale number in place made a genuinely dead machine's row look
+    // like it was still mining right up until someone opened it.
     const allForFarm = await client.query(`SELECT id, data FROM workers WHERE farm_id = $1`, [farmId]);
     for (const row of allForFarm.rows) {
       if (!nowIps.has(row.data.ip) && row.data.status !== 'offline' && !row.data.disabled) {
-        const updated = { ...row.data, status: 'offline' };
+        const updated = { ...row.data, status: 'offline',
+          hashrate: 0, hr_display: '—', temp: null, fan: null };
         await client.query(`UPDATE workers SET data=$1, updated_at=NOW() WHERE id=$2`, [JSON.stringify(updated), row.id]);
       }
     }
@@ -244,10 +249,12 @@ function upsertWorkersFallback(farmId, minersFoundNow) {
     }
   });
 
-  // Mark missing-from-this-poll workers (for this farm) as offline
+  // Mark missing-from-this-poll workers (for this farm) as offline, and
+  // clear their last-known readings along with it — see the matching
+  // comment in upsertWorkersByIp above for why.
   byId.forEach((w, id) => {
     if (w.farm_id === farmId && !nowIps.has(w.ip) && w.status !== 'offline' && !w.disabled) {
-      byId.set(id, { ...w, status: 'offline' });
+      byId.set(id, { ...w, status: 'offline', hashrate: 0, hr_display: '—', temp: null, fan: null });
     }
   });
 
