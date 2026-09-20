@@ -902,16 +902,11 @@ function openCtrl(wid) {
   }
   el.style.display = 'flex';
 
-  // Customer accounts get self-service basics only — no overclock/
-  // power tuning, no firmware upgrade or disable/enable repair
-  // workflow, and no factory reset or delete. Ownership of the
-  // machine itself is still enforced server-side on every request;
-  // this is just keeping their UI free of buttons they can't use.
-  const powerBtn = document.getElementById('ctrlPowerBtn');
-  const maintSec = document.getElementById('ctrlMaintenanceSec');
+  // Customer accounts get history, web login and diagnostics only —
+  // no delete from fleet. Ownership of the machine itself is still
+  // enforced server-side on every request; this is just keeping their
+  // UI free of a button they can't use.
   const dangerSec = document.getElementById('ctrlDangerSec');
-  if (powerBtn)  powerBtn.style.display  = isCustomer ? 'none' : '';
-  if (maintSec)  maintSec.style.display  = isCustomer ? 'none' : '';
   if (dangerSec) dangerSec.style.display = isCustomer ? 'none' : '';
 
   // Default to 7 days — enough to see a real trend without waiting on
