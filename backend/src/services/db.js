@@ -88,6 +88,31 @@ async function createTables() {
       updated_at  TIMESTAMPTZ DEFAULT NOW(),
       PRIMARY KEY (customer_id, day)
     );
+
+    -- Per-miner metric history. Until now the software only ever knew
+    -- what was true THIS INSTANT: no trend, no "when did it break", no
+    -- uptime figure, and no way to tell a machine that has quietly been
+    -- running at 70% for a fortnight from one that is fine.
+    --
+    -- One row per miner per 10-minute slot. The slot is part of the key
+    -- so a restart or a duplicate tick overwrites rather than
+    -- duplicating, exactly like customer_earnings.
+    CREATE TABLE IF NOT EXISTS miner_metrics (
+      worker_id   TEXT NOT NULL,
+      slot        TIMESTAMPTZ NOT NULL,
+      farm_id     TEXT,
+      status      TEXT,
+      hashrate_th DOUBLE PRECISION,
+      temp        DOUBLE PRECISION,
+      fan         INTEGER,
+      model       TEXT,
+      PRIMARY KEY (worker_id, slot)
+    );
+
+    -- Queries are nearly always "this miner over time" or "everything
+    -- in this window", so both get an index.
+    CREATE INDEX IF NOT EXISTS miner_metrics_slot_idx   ON miner_metrics (slot DESC);
+    CREATE INDEX IF NOT EXISTS miner_metrics_worker_idx ON miner_metrics (worker_id, slot DESC);
   `);
   console.log('[DB] Tables ready');
 }
@@ -521,4 +546,142 @@ async function getEarningsHistory(customerId, limit) {
   }
 }
 
-module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, upsertWorkersByIp, saveCustomers, loadCustomers, deleteCustomer, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory };
+// ── Miner metric history ────────────────────────────────────
+
+// Written in one statement per slot rather than one per miner: on a
+// 97-machine fleet that's one round trip instead of 97, every ten
+// minutes.
+async function recordMetrics(slotIso, rows) {
+  if (!rows || !rows.length) return 0;
+
+  if (useFallback || !pool) {
+    // The file store is a stand-in for a real database and must not be
+    // allowed to grow without bound, so it keeps a short window only.
+    let store = {};
+    if (fs.existsSync(FALLBACK_FILE)) {
+      try { store = JSON.parse(fs.readFileSync(FALLBACK_FILE, 'utf8')); } catch(e) { store = {}; }
+    }
+    store.metrics = store.metrics || [];
+    rows.forEach(r => store.metrics.push({ slot: slotIso, ...r }));
+    const cutoff = Date.now() - 2 * 24 * 60 * 60 * 1000;   // 2 days
+    store.metrics = store.metrics.filter(m => new Date(m.slot).getTime() >= cutoff);
+    try { fs.writeFileSync(FALLBACK_FILE, JSON.stringify(store), 'utf8'); return rows.length; }
+    catch(e) { return 0; }
+  }
+
+  const vals = [];
+  const params = [];
+  rows.forEach((r, i) => {
+    const b = i * 8;
+    vals.push(`($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8})`);
+    params.push(r.worker_id, slotIso, r.farm_id || null, r.status || null,
+                r.hashrate_th, r.temp, r.fan, r.model || null);
+  });
+
+  try {
+    await pool.query(
+      `INSERT INTO miner_metrics (worker_id, slot, farm_id, status, hashrate_th, temp, fan, model)
+       VALUES ${vals.join(',')}
+       ON CONFLICT (worker_id, slot) DO UPDATE SET
+         status = EXCLUDED.status, hashrate_th = EXCLUDED.hashrate_th,
+         temp = EXCLUDED.temp, fan = EXCLUDED.fan, model = EXCLUDED.model`,
+      params
+    );
+    return rows.length;
+  } catch(e) {
+    console.error('[DB] recordMetrics error:', e.message);
+    return 0;
+  }
+}
+
+// History is for spotting trends, not for keeping forever. Old slots
+// are dropped so the table stays a predictable size.
+async function pruneMetrics(days) {
+  if (useFallback || !pool) return 0;
+  try {
+    const r = await pool.query(
+      `DELETE FROM miner_metrics WHERE slot < NOW() - ($1 || ' days')::interval`,
+      [String(days || 30)]
+    );
+    return r.rowCount || 0;
+  } catch(e) {
+    console.error('[DB] pruneMetrics error:', e.message);
+    return 0;
+  }
+}
+
+async function getWorkerHistory(workerId, hours) {
+  const h = Math.min(Math.max(parseInt(hours, 10) || 24, 1), 24 * 30);
+  if (useFallback || !pool) {
+    let store = {};
+    try { store = JSON.parse(fs.readFileSync(FALLBACK_FILE, 'utf8')); } catch(e) { return []; }
+    const cutoff = Date.now() - h * 3600 * 1000;
+    return (store.metrics || [])
+      .filter(m => m.worker_id === workerId && new Date(m.slot).getTime() >= cutoff)
+      .sort((a, b) => new Date(a.slot) - new Date(b.slot));
+  }
+  try {
+    const r = await pool.query(
+      `SELECT slot, status, hashrate_th, temp, fan
+         FROM miner_metrics
+        WHERE worker_id = $1 AND slot >= NOW() - ($2 || ' hours')::interval
+        ORDER BY slot ASC`,
+      [workerId, String(h)]
+    );
+    return r.rows;
+  } catch(e) {
+    console.error('[DB] getWorkerHistory error:', e.message);
+    return [];
+  }
+}
+
+// Uptime measured as "slots seen hashing ÷ slots observed". Slots where
+// nothing was recorded at all (backend down) are simply absent, so they
+// neither help nor hurt a machine's figure — the alternative would be
+// blaming miners for our own downtime.
+async function getUptimeReport(days, farmId) {
+  const d = Math.min(Math.max(parseInt(days, 10) || 7, 1), 90);
+  if (useFallback || !pool) {
+    let store = {};
+    try { store = JSON.parse(fs.readFileSync(FALLBACK_FILE, 'utf8')); } catch(e) { return []; }
+    const cutoff = Date.now() - d * 86400000;
+    const by = {};
+    (store.metrics || []).forEach(m => {
+      if (new Date(m.slot).getTime() < cutoff) return;
+      if (farmId && m.farm_id !== farmId) return;
+      const k = m.worker_id;
+      by[k] = by[k] || { worker_id: k, farm_id: m.farm_id, model: m.model, slots: 0, online: 0, avg: 0, sum: 0, n: 0 };
+      by[k].slots++;
+      if (m.status === 'online') { by[k].online++; if (m.hashrate_th > 0) { by[k].sum += m.hashrate_th; by[k].n++; } }
+    });
+    return Object.values(by).map(r => ({
+      worker_id: r.worker_id, farm_id: r.farm_id, model: r.model,
+      slots_observed: r.slots, slots_online: r.online,
+      uptime_pct: r.slots ? (100 * r.online / r.slots) : null,
+      avg_hashrate_th: r.n ? (r.sum / r.n) : null,
+    }));
+  }
+  try {
+    const r = await pool.query(
+      `SELECT worker_id,
+              MAX(farm_id)  AS farm_id,
+              MAX(model)    AS model,
+              COUNT(*)                                         AS slots_observed,
+              COUNT(*) FILTER (WHERE status = 'online')        AS slots_online,
+              100.0 * COUNT(*) FILTER (WHERE status = 'online') / NULLIF(COUNT(*),0) AS uptime_pct,
+              AVG(hashrate_th) FILTER (WHERE status = 'online' AND hashrate_th > 0)  AS avg_hashrate_th,
+              AVG(temp)        FILTER (WHERE status = 'online' AND temp > 0)         AS avg_temp
+         FROM miner_metrics
+        WHERE slot >= NOW() - ($1 || ' days')::interval
+          AND ($2::text IS NULL OR farm_id = $2)
+        GROUP BY worker_id`,
+      [String(d), farmId || null]
+    );
+    return r.rows;
+  } catch(e) {
+    console.error('[DB] getUptimeReport error:', e.message);
+    return [];
+  }
+}
+
+module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, upsertWorkersByIp, saveCustomers, loadCustomers, deleteCustomer, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport };
