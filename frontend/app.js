@@ -913,8 +913,12 @@ function openCtrl(wid) {
   if (powerBtn)  powerBtn.style.display  = isCustomer ? 'none' : '';
   if (maintSec)  maintSec.style.display  = isCustomer ? 'none' : '';
   if (dangerSec) dangerSec.style.display = isCustomer ? 'none' : '';
+
+  // Default to 7 days — enough to see a real trend without waiting on
+  // a slow 30-day fetch every time the panel opens.
+  loadMinerHistory(wid, 168);
 }
-function closeCtrl() { const el = document.getElementById('ctrlPanel'); if (el) el.style.display = 'none'; activeWid = null; }
+function closeCtrl() { const el = document.getElementById('ctrlPanel'); if (el) el.style.display = 'none'; activeWid = null; histState.wid = null; }
 function refreshCtrl() { if (activeWid) openCtrl(activeWid); }
 
 // ── Quick assign ──────────────────────────────────────────
@@ -1872,11 +1876,6 @@ function doLogin(){
   });
 }
 function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).style.display='none');['ticker','topbar','appBody','bottomNav'].forEach(id=>document.getElementById(id).style.display=id==='appBody'?'flex':id==='bottomNav'?'block':'flex');const ini=currentUser.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();document.getElementById('sideAv').textContent=ini;document.getElementById('sideName').textContent=currentUser.name;document.getElementById('sideRole').textContent=isCustomer?'Customer Portal':currentUser.role==='admin'?'Super Admin':'Team Member';document.getElementById('topBadge').textContent=isCustomer?'PORTAL':'ADMIN';if(isCustomer){document.getElementById('adminNav').style.display='none';document.getElementById('custNav').style.display='block';document.getElementById('agentPill').style.display='none';document.getElementById('bnavAdmin').style.display='none';document.getElementById('bnavCust').style.display='flex';showPage('portal-home');document.getElementById('custNav').querySelector('.nav-item').classList.add('active');renderPortal();try{ fetchMarketData(function(){ try{ renderPortal(); }catch(e){} }); loadFleetFromBackend(function(){ try{ renderPortal(); }catch(e){} }); fetchEarnings(); setInterval(fetchEarnings, 10*60*1000); }catch(e){}}else{populateDropdowns();renderAll();
-// Pull the underperformer count on login so the sidebar badge shows a
-// problem without anyone having to go looking for it. Refreshed on the
-// same 10-minute cadence the backend records history at — polling
-// faster would just re-read the same snapshot.
-try{ loadInsights(); setInterval(loadInsights, 10*60*1000); }catch(e){}
 }initTicker();
 // Live prices from CoinGecko. The old demo ticker invented prices with
 // Math.random() and is gone.
@@ -2086,7 +2085,6 @@ function showPage(n){
     if(n==='scada')         { checkScadaSession(); }
     if(n==='pools')         { renderPools(); }
     if(n==='profitability') { fetchMarketData(function(){ renderProfit(); }); renderProfit(); }
-    if(n==='insights')      { renderInsights(); loadInsights(); }
     if(n==='settings')      { updateFleetStat(); renderSensorEntryGrid(); const tt=document.getElementById('tailscaleToggle'); if(tt) tt.checked = localStorage.getItem('use_tailscale_webui') === 'true'; const rr=document.getElementById('ewRedirectUrl'); if(rr && !rr.value) rr.value = window.location.origin + window.location.pathname; }
   } catch(e) { console.error('showPage render error:', e); }
 }
@@ -3277,11 +3275,11 @@ function onWorkerSearchInput(){
 // Independent of the status buttons, so "Ghummadh + Offline" works.
 let workerAgentFilter = 'all';
 
-// ── Performance insights ────────────────────────────────────
-// Everything here is read from stored history on the backend. Nothing
-// is computed in the browser, so two people looking at the same window
-// see the same numbers, and the figures don't reset when a tab closes.
-let insightsData = { under: null, uptime: null };
+// ── Per-miner hashrate & uptime history ─────────────────────
+// Drawn straight from stored history on the backend (miner_metrics,
+// one row per 10-minute slot), so it's the same data whoever looks
+// at it and it doesn't reset when a tab closes.
+let histState = { wid: null, hours: 168, points: [], hoverX: null };
 
 function authFetch(path) {
   const base = (typeof API_BASE !== 'undefined') ? API_BASE : '';
@@ -3290,18 +3288,6 @@ function authFetch(path) {
   return fetch(base + path, { headers: { 'Authorization': 'Bearer ' + token } })
     .then(function(r){ return r.ok ? r.json() : null; })
     .catch(function(){ return null; });
-}
-
-function loadInsights() {
-  const hoursEl = document.getElementById('inHours');
-  const daysEl  = document.getElementById('inDays');
-  const hours = hoursEl ? hoursEl.value : 24;
-  const days  = daysEl  ? daysEl.value  : 7;
-
-  authFetch('/api/insights/underperformers?hours=' + encodeURIComponent(hours))
-    .then(function(d){ insightsData.under = (d && d.ok) ? d : null; renderInsights(); });
-  authFetch('/api/insights/uptime?days=' + encodeURIComponent(days))
-    .then(function(d){ insightsData.uptime = (d && d.ok) ? d : null; renderInsights(); });
 }
 
 // Hashrate is stored normalised to TH/s so one column fits every
@@ -3316,103 +3302,181 @@ function fmtHashrate(th, unitHint) {
   return th.toFixed(1) + ' TH/s';
 }
 
-function renderInsights() {
-  const u = insightsData.under, up = insightsData.uptime;
+function loadMinerHistory(wid, hours) {
+  histState.wid = wid;
+  histState.hours = hours || histState.hours || 168;
+  histState.hoverX = null;
+  document.querySelectorAll('.hist-range-btn').forEach(function(b){
+    b.classList.toggle('active', Number(b.dataset.hours) === histState.hours);
+  });
+  authFetch('/api/insights/history/' + encodeURIComponent(wid) + '?hours=' + histState.hours)
+    .then(function(d){
+      if (histState.wid !== wid) return; // panel moved on to another machine mid-fetch
+      histState.points = (d && d.ok) ? d.history : [];
+      drawHistChart();
+    });
+}
 
-  const elUnder = document.getElementById('inUnder');
-  if (elUnder) elUnder.textContent = u ? u.flagged.length : '—';
-  const navBadge = document.getElementById('underNavBadge');
-  if (navBadge) {
-    const n = u ? u.flagged.length : 0;
-    navBadge.textContent = n;
-    navBadge.style.display = n ? '' : 'none';
+function onHistRangeClick(hours) {
+  if (!activeWid) return;
+  loadMinerHistory(activeWid, hours);
+}
+
+// Vanilla canvas line chart — no library needed for one line + a
+// hover readout. Redraws from scratch each time; the dataset here
+// (at most ~4300 points for 30 days at 10-min slots) is tiny for that.
+function drawHistChart() {
+  const canvas = document.getElementById('histCanvas');
+  const empty  = document.getElementById('histEmpty');
+  const tip    = document.getElementById('histTooltip');
+  const sum    = document.getElementById('histSummary');
+  if (!canvas) return;
+
+  const pts = (histState.points || []).filter(function(p){ return p.hashrate_th !== null && p.hashrate_th !== undefined; });
+
+  if (!pts.length) {
+    canvas.style.display = 'none';
+    if (empty) empty.style.display = 'block';
+    if (tip) tip.style.display = 'none';
+    if (sum) sum.textContent = '';
+    return;
+  }
+  canvas.style.display = 'block';
+  if (empty) empty.style.display = 'none';
+
+  // Uptime + avg over the loaded window, computed here so it always
+  // matches exactly what the chart is showing (same range, same fetch).
+  const all = histState.points || [];
+  const onlineCount = all.filter(function(p){ return p.status === 'online'; }).length;
+  const uptimePct = all.length ? (100 * onlineCount / all.length) : null;
+  const avgTh = pts.reduce(function(s,p){ return s + Number(p.hashrate_th); }, 0) / pts.length;
+  const peakTh = pts.reduce(function(m,p){ return Math.max(m, Number(p.hashrate_th)); }, 0);
+  if (sum) {
+    sum.textContent = (uptimePct !== null ? uptimePct.toFixed(1) + '% uptime' : '—')
+      + '  ·  avg ' + fmtHashrate(avgTh)
+      + '  ·  peak ' + fmtHashrate(peakTh);
   }
 
-  const note = document.getElementById('inUnderNote');
-  if (note) {
-    if (!u) {
-      note.textContent = 'Performance history not available yet.';
-    } else {
-      const skipped = (u.skipped_models || []).length;
-      note.textContent = 'Compared against the median of the SAME MODEL in your own fleet over the last '
-        + u.window_hours + 'h — not a spec sheet, so overclocks and custom firmware are accounted for. '
-        + 'Flagging anything more than ' + u.threshold_pct + '% below its peers. '
-        + u.checked + ' machines in ' + u.cohorts + ' model group(s).'
-        + (skipped ? ' ' + skipped + ' model(s) skipped for having too few machines to compare.' : '');
-    }
+  // Backing-store scaled for device pixel ratio so the line stays sharp.
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(rect.width, 200), h = 180;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.style.height = h + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const padL = 4, padR = 4, padT = 10, padB = 18;
+  const plotW = w - padL - padR, plotH = h - padT - padB;
+
+  const times = pts.map(function(p){ return new Date(p.slot).getTime(); });
+  const vals  = pts.map(function(p){ return Number(p.hashrate_th); });
+  const tMin = times[0], tMax = times[times.length - 1] || tMin + 1;
+  const vMax = Math.max.apply(null, vals) * 1.1 || 1;
+  const vMin = 0; // hashrate chart reads better anchored at zero — a dip to 0 (offline) is the whole point
+
+  function xAt(t){ return padL + (tMax > tMin ? (t - tMin) / (tMax - tMin) : 0) * plotW; }
+  function yAt(v){ return padT + plotH - ((v - vMin) / (vMax - vMin)) * plotH; }
+
+  // Gridlines
+  ctx.strokeStyle = 'rgba(148,163,184,.12)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 3; i++) {
+    const gy = padT + (plotH / 3) * i;
+    ctx.beginPath(); ctx.moveTo(padL, gy); ctx.lineTo(w - padR, gy); ctx.stroke();
   }
 
-  const tb = document.getElementById('inUnderTbody');
-  if (tb) {
-    if (!u) {
-      tb.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:26px;color:var(--mute)">No data yet — history builds up over the first few hours after deploying.</td></tr>';
-    } else if (!u.flagged.length) {
-      tb.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:26px;color:var(--green)">'
-        + '&#10003; No underperforming machines. All ' + u.checked + ' compared machines are within '
-        + u.threshold_pct + '% of their model\'s median.</td></tr>';
-    } else {
-      tb.innerHTML = u.flagged.map(function(f){
-        const sev = f.shortfall_pct >= 30 ? 'var(--red)' : 'var(--warn)';
-        return '<tr>'
-          + '<td style="font-weight:700;color:var(--cyan);font-size:11px">' + escHtml(f.name) + '</td>'
-          + '<td style="font-size:10px;color:var(--mute)">' + escHtml((f.brand || '') + ' ' + (f.model_raw || f.model || '')) + '</td>'
-          + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;color:' + sev + '">' + fmtHashrate(f.avg_th, f.hr_unit) + '</td>'
-          + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;color:var(--mute)">' + fmtHashrate(f.peer_median_th, f.hr_unit) + '</td>'
-          + '<td style="font-family:Share Tech Mono,monospace;font-size:12px;font-weight:700;color:' + sev + '">' + f.pct_of_peers + '%</td>'
-          + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;color:' + sev + '">-' + f.shortfall_pct + '%</td>'
-          + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (f.avg_temp != null ? Math.round(f.avg_temp) + '°C' : '—') + '</td>'
-          + '<td><button class="abtn" onclick="openCtrl(\'' + escAttr(f.worker_id) + '\')">Manage</button></td>'
-          + '</tr>';
-      }).join('');
-    }
+  // Filled area under the line
+  const cs = getComputedStyle(document.documentElement);
+  const cyan = (cs.getPropertyValue('--cyan') || '#00e5ff').trim();
+  ctx.beginPath();
+  ctx.moveTo(xAt(times[0]), yAt(0));
+  pts.forEach(function(p, i){ ctx.lineTo(xAt(times[i]), yAt(vals[i])); });
+  ctx.lineTo(xAt(times[times.length - 1]), yAt(0));
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, padT, 0, padT + plotH);
+  grad.addColorStop(0, cyan + '33'); grad.addColorStop(1, cyan + '02');
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Line
+  ctx.beginPath();
+  pts.forEach(function(p, i){
+    const x = xAt(times[i]), y = yAt(vals[i]);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = cyan;
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+
+  // X-axis date labels (start / mid / end)
+  ctx.fillStyle = 'rgba(148,163,184,.7)';
+  ctx.font = '9px "Share Tech Mono", monospace';
+  function fmtAxisDate(ts){
+    const d = new Date(ts);
+    return histState.hours <= 48
+      ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
   }
+  ctx.textAlign = 'left';  ctx.fillText(fmtAxisDate(tMin), padL, h - 4);
+  ctx.textAlign = 'right'; ctx.fillText(fmtAxisDate(tMax), w - padR, h - 4);
 
-  // Uptime panel
-  const rows = up ? up.workers : [];
-  const tracked = document.getElementById('inTracked');
-  if (tracked) tracked.textContent = up ? up.count : '—';
+  // Hover crosshair + tooltip
+  if (histState.hoverX !== null) {
+    const targetT = tMin + (Math.min(Math.max(histState.hoverX - padL, 0), plotW) / plotW) * (tMax - tMin);
+    let nearest = 0, best = Infinity;
+    times.forEach(function(t, i){ const d = Math.abs(t - targetT); if (d < best) { best = d; nearest = i; } });
+    const hx = xAt(times[nearest]), hy = yAt(vals[nearest]);
 
-  const withPct = rows.filter(function(r){ return r.uptime_pct !== null && r.uptime_pct !== undefined; });
-  const fleetEl = document.getElementById('inUptime');
-  if (fleetEl) {
-    if (!withPct.length) fleetEl.textContent = '—';
-    else {
-      const avg = withPct.reduce(function(s,r){ return s + Number(r.uptime_pct); }, 0) / withPct.length;
-      fleetEl.textContent = avg.toFixed(1) + '%';
+    ctx.strokeStyle = 'rgba(148,163,184,.35)';
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(hx, padT); ctx.lineTo(hx, padT + plotH); ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.beginPath(); ctx.arc(hx, hy, 3.2, 0, Math.PI * 2);
+    ctx.fillStyle = cyan; ctx.fill();
+
+    if (tip) {
+      const d = new Date(times[nearest]);
+      const statusRow = pts[nearest] && pts[nearest].status ? pts[nearest].status : '';
+      tip.innerHTML = '<div style="color:var(--cyan);font-weight:700">' + fmtHashrate(vals[nearest]) + '</div>'
+        + '<div style="color:var(--mute);font-size:10px">' + d.toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }) + '</div>'
+        + (statusRow ? '<div style="color:var(--mute);font-size:9px;text-transform:uppercase">' + statusRow + '</div>' : '');
+      tip.style.display = 'block';
+      let left = hx + 10;
+      if (left + 120 > w) left = hx - 120;
+      tip.style.left = left + 'px';
+      tip.style.top  = Math.max(hy - 40, 0) + 'px';
     }
-  }
-  const subEl = document.getElementById('inUptimeSub');
-  if (subEl && up) subEl.textContent = 'last ' + up.days + ' day' + (up.days === 1 ? '' : 's');
-
-  const worstEl = document.getElementById('inWorst'), worstName = document.getElementById('inWorstName');
-  if (worstEl) {
-    if (!withPct.length) { worstEl.textContent = '—'; if (worstName) worstName.textContent = '—'; }
-    else {
-      worstEl.textContent = Number(withPct[0].uptime_pct).toFixed(1) + '%';
-      if (worstName) worstName.textContent = withPct[0].name || withPct[0].worker_id;
-    }
-  }
-
-  const utb = document.getElementById('inUptimeTbody');
-  if (utb) {
-    if (!rows.length) {
-      utb.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:26px;color:var(--mute)">No history recorded yet.</td></tr>';
-    } else {
-      utb.innerHTML = rows.slice(0, 100).map(function(r){
-        const pct = r.uptime_pct;
-        const col = pct === null ? 'var(--mute)' : pct >= 99 ? 'var(--green)' : pct >= 95 ? 'var(--warn)' : 'var(--red)';
-        return '<tr>'
-          + '<td style="font-weight:700;color:var(--cyan);font-size:11px">' + escHtml(r.name || r.worker_id) + '</td>'
-          + '<td style="font-size:10px;color:var(--mute)">' + escHtml(r.farm_id || '—') + '</td>'
-          + '<td style="font-family:Share Tech Mono,monospace;font-size:12px;font-weight:700;color:' + col + '">' + (pct === null ? '—' : pct + '%') + '</td>'
-          + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + r.slots_online + '</td>'
-          + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;color:var(--mute)">' + r.slots_observed + '</td>'
-          + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;color:var(--green)">' + fmtHashrate(r.avg_hashrate_th) + '</td>'
-          + '</tr>';
-      }).join('');
-    }
+  } else if (tip) {
+    tip.style.display = 'none';
   }
 }
+
+(function wireHistChart(){
+  document.addEventListener('click', function(e){
+    const btn = e.target.closest && e.target.closest('.hist-range-btn');
+    if (btn) onHistRangeClick(Number(btn.dataset.hours));
+  });
+  document.addEventListener('mousemove', function(e){
+    const canvas = document.getElementById('histCanvas');
+    if (!canvas || canvas.style.display === 'none') return;
+    const rect = canvas.getBoundingClientRect();
+    if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) {
+      if (histState.hoverX !== null) { histState.hoverX = null; drawHistChart(); }
+      return;
+    }
+    histState.hoverX = e.clientX - rect.left;
+    drawHistChart();
+  });
+  document.addEventListener('mouseleave', function(e){
+    if (e.target && e.target.id === 'histCanvas' && histState.hoverX !== null) {
+      histState.hoverX = null; drawHistChart();
+    }
+  }, true);
+  window.addEventListener('resize', function(){ if (histState.wid) drawHistChart(); });
+})();
 
 function clearWorkerFilters(){
   workerFilter = 'all';
