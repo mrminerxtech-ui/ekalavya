@@ -692,65 +692,9 @@ tr:last-child td{border-bottom:none;}
     </div>
 
     <div class="ctrl-sec">
-      <div class="ctrl-sec-title" style="color:var(--cyan)">&#x26A1; Operations</div>
+      <div class="ctrl-sec-title" style="color:var(--cyan)">&#x26A1; Access</div>
       <div class="action-grid">
-        <div class="action-btn act-cyan" onclick="doAction('restart')"><div class="action-icon">&#x1F504;</div><div class="action-label">Restart</div><div class="action-desc">Restart mining software only &mdash; no hardware reboot</div></div>
-        <div class="action-btn act-warn" onclick="doAction('reboot')"><div class="action-icon">&#x27F3;</div><div class="action-label">Reboot</div><div class="action-desc">Full hardware reboot &mdash; machine offline ~60s</div></div>
-        <div class="action-btn act-purple" onclick="doAction('sleep')"><div class="action-icon">&#x1F634;</div><div class="action-label">Sleep</div><div class="action-desc">Low-power sleep &mdash; halts hashing, stays warm</div></div>
-        <div class="action-btn act-green" onclick="doAction('wake')"><div class="action-icon">&#x26A1;</div><div class="action-label">Wake Up</div><div class="action-desc">Exit sleep mode, resume full hashing</div></div>
-        <div class="action-btn act-cyan" onclick="doAction('led')"><div class="action-icon">&#x1F4A1;</div><div class="action-label">LED Blink</div><div class="action-desc">Blink LEDs to find machine in rack</div></div>
-        <div class="action-btn act-cyan" onclick="openMinerWebUI()"><div class="action-icon">&#x1F310;</div><div class="action-label">Web Login</div><div class="action-desc">Open miner web UI via agent tunnel</div></div>
-      </div>
-    </div>
-
-    <div class="ctrl-sec">
-      <div class="ctrl-sec-title" style="color:var(--cyan)">&#x2699;&#xFE0F; Configuration</div>
-      <div class="action-grid">
-        <div class="action-btn act-cyan" onclick="toggleCfg('poolCfg')"><div class="action-icon">&#x1F3CA;</div><div class="action-label">Change Pool</div><div class="action-desc">Update pool &mdash; up to 3 failover pools</div></div>
-        <div class="action-btn act-cyan" onclick="toggleCfg('workerCfg')"><div class="action-icon">&#x1F194;</div><div class="action-label">Change Worker ID</div><div class="action-desc">Rename worker in MMX and pool</div></div>
-        <div class="action-btn act-warn" id="ctrlPowerBtn" onclick="toggleCfg('powerCfg')"><div class="action-icon">&#x26A1;</div><div class="action-label">Power / OC</div><div class="action-desc">Adjust frequency and power mode</div></div>
-      </div>
-
-      <div class="config-panel" id="poolCfg">
-        <div style="font-family:'Orbitron',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:var(--cyan);margin-bottom:14px">POOL CONFIGURATION</div>
-        <div class="frow"><label>Pool Preset</label>
-          <select class="si" id="poolPreset" onchange="applyPreset()" style="width:100%;margin-bottom:6px">
-            <option value="">Select preset...</option>
-            <option value="stratum+tcp://btc.foundryusa.com:3333">Foundry USA (BTC)</option>
-            <option value="stratum+tcp://ss.antpool.com:3333">Antpool (BTC)</option>
-            <option value="stratum+tcp://btc.f2pool.com:3333">F2Pool (BTC)</option>
-            <option value="stratum+tcp://btc.viabtc.com:3333">ViaBTC (BTC)</option>
-            <option value="stratum+tcp://btc.luxor.tech:3333">Luxor (BTC)</option>
-            <option value="stratum+tcp://pool.k1pool.com:3333">K1Pool (KAS)</option>
-            <option value="stratum+tcp://pool.litecoinpool.org:3333">Litecoinpool (LTC)</option>
-          </select>
-        </div>
-        <div class="frow"><label>Pool URL (Primary)</label><input id="pUrl1" placeholder="stratum+tcp://pool.example.com:3333" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
-        <div class="frow"><label>Worker (wallet.worker_name)</label><input id="pUser1" placeholder="yourwallet.WORKER-001" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
-        <div style="margin-bottom:10px;cursor:pointer;color:var(--mute);font-size:11px" onclick="toggleFb()">+ Add failover pools</div>
-        <div id="fbPools" style="display:none">
-          <div class="frow"><label>Pool 2 (Failover)</label><input id="pUrl2" placeholder="stratum+tcp://..." style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
-          <div class="frow"><label>Pool 3 (Failover)</label><input id="pUrl3" placeholder="stratum+tcp://..." style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
-        </div>
-        <button class="btn btn-g btn-sm" onclick="doAction('setpool')">Apply Pool Change</button>
-      </div>
-
-      <div class="config-panel" id="workerCfg">
-        <div style="font-family:'Orbitron',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:var(--cyan);margin-bottom:14px">WORKER ID</div>
-        <div class="frow"><label>New Worker ID</label><input id="newWid" placeholder="e.g. GUMMADH-001" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
-        <div style="font-size:11px;color:var(--mute);margin-bottom:12px">Updates MMX fleet name and pool worker string (wallet.new_id)</div>
-        <button class="btn btn-g btn-sm" onclick="doAction('setworkerid')">Update Worker ID</button>
-      </div>
-
-      <div class="config-panel" id="powerCfg">
-        <div style="font-family:'Orbitron',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:var(--warn);margin-bottom:14px">POWER / OVERCLOCK</div>
-        <div class="three-col">
-          <div class="frow"><label>Mode</label><select id="powerMode" class="si" style="width:100%"><option value="normal">Normal (100%)</option><option value="low">Low Power (70%)</option><option value="high">High Perf (110%)</option></select></div>
-          <div class="frow"><label>Frequency %</label><input id="freqPct" type="number" value="100" min="50" max="120" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
-          <div class="frow"><label>Fan Speed %</label><input id="fanPct" type="number" value="80" min="20" max="100" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
-        </div>
-        <div style="background:rgba(255,184,0,.06);border:1px solid rgba(255,184,0,.2);border-radius:6px;padding:10px;font-size:11px;color:var(--warn);margin-bottom:12px">Monitor temperatures closely after applying. Overclocking may void warranty.</div>
-        <button class="btn btn-w btn-sm" onclick="doAction('overclock')">Apply Power Settings</button>
+        <div class="action-btn act-cyan" onclick="openMinerWebUI()"><div class="action-icon">&#x1F310;</div><div class="action-label">Web Login</div><div class="action-desc">Open miner web UI via agent tunnel &mdash; use it for pool, power and every other setting</div></div>
       </div>
     </div>
 
@@ -764,26 +708,9 @@ tr:last-child td{border-bottom:none;}
       <div class="log-viewer" id="logViewer" style="display:none;margin-top:12px"></div>
     </div>
 
-    <div class="ctrl-sec" id="ctrlMaintenanceSec">
-      <div class="ctrl-sec-title" style="color:var(--orange)">&#x1F527; Maintenance</div>
-      <div class="action-grid">
-        <div class="action-btn act-orange" onclick="doAction('disable')"><div class="action-icon">&#x1F6AB;</div><div class="action-label">Disable</div><div class="action-desc">Take offline for repair &mdash; stays in fleet</div></div>
-        <div class="action-btn act-green" onclick="doAction('enable')"><div class="action-icon">&#x2705;</div><div class="action-label">Re-enable</div><div class="action-desc">Return from repair, resume monitoring</div></div>
-        <div class="action-btn act-warn" onclick="toggleCfg('fwCfg')"><div class="action-icon">&#x1F4E6;</div><div class="action-label">Firmware Upgrade</div><div class="action-desc">Flash new firmware &mdash; 3-5 min, no power off</div></div>
-      </div>
-      <div class="config-panel" id="fwCfg">
-        <div style="font-family:'Orbitron',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:var(--warn);margin-bottom:14px">FIRMWARE UPGRADE</div>
-        <div class="frow"><label>Firmware URL or File Path</label><input id="fwUrl" placeholder="https://... or /path/to/firmware.bin" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
-        <div class="frow"><label>Target Version</label><input id="fwVer" placeholder="e.g. 11.0.1.3" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:9px 12px;color:var(--txt);font-family:'Share Tech Mono',monospace;font-size:12px;outline:none"></div>
-        <div style="background:rgba(255,184,0,.06);border:1px solid rgba(255,184,0,.2);border-radius:6px;padding:10px;font-size:11px;color:var(--warn);margin-bottom:12px">DO NOT disconnect power. Miner will be offline 3-5 minutes. Wrong firmware = brick.</div>
-        <button class="btn btn-w btn-sm" onclick="doAction('firmware')">Start Firmware Upgrade</button>
-      </div>
-    </div>
-
     <div class="ctrl-sec" id="ctrlDangerSec">
       <div class="ctrl-sec-title" style="color:var(--red)">&#x26A0; Danger Zone</div>
       <div class="action-grid">
-        <div class="action-btn act-red" onclick="doAction('factoryreset')"><div class="action-icon">&#x1F4A3;</div><div class="action-label">Factory Reset</div><div class="action-desc">Wipe ALL settings &mdash; full reconfiguration needed</div></div>
         <div class="action-btn act-red" onclick="doAction('delete')"><div class="action-icon">&#x1F5D1;&#xFE0F;</div><div class="action-label">Delete from Fleet</div><div class="action-desc">Remove permanently from MMX &mdash; cannot undo</div></div>
       </div>
     </div>
