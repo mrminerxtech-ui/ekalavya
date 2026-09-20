@@ -618,22 +618,31 @@ async function getMinerInfo(ip) {
     }
 
     // Model from boot log — reuses the SAME log fetch that getHardwareIds()
-    // already did (via hwIds.logText), instead of fetching it all over
-    // again here. Handles WhatsMiner + ElphaPEX formats:
+    // already did (via hwIds.logText) when it has it; otherwise fetches
+    // it directly rather than skipping this fallback. getHardwareIds()
+    // only pulls the log when mac/serial are BOTH still missing, so a
+    // machine whose mac/serial were found some other way never got a
+    // log fetch at all, silently disabling this fallback for it. Handles
+    // WhatsMiner + ElphaPEX formats:
     //   WhatsMiner: "miner_type=M50VH50"
     //   ElphaPEX:   "Sep 12 19:36:48 DG1+ user.info health: ..."
-    if (!isValidModel(model) && typeof hwIds?.logText === 'string') {
-      const logText = hwIds.logText;
-      const wmMatch = logText.match(/miner_type\s*=\s*([A-Za-z0-9+]+)/i);
-      if (wmMatch) {
-        const wmCandidate = 'WhatsMiner ' + wmMatch[1];
-        if (isValidModel(wmCandidate)) model = wmCandidate;
+    if (!isValidModel(model)) {
+      let logText = (typeof hwIds?.logText === 'string') ? hwIds.logText : null;
+      if (logText === null) {
+        try { logText = await fetchBootLog(ip); } catch(e) { logText = null; }
       }
-      if (!isValidModel(model)) {
-        const epMatch = logText.match(/^\w+\s+\d+\s+[\d:]+\s+(DG\d\+?|ElphaPEX\S*)\s+\S+\.\S+\s/im);
-        if (epMatch) {
-          const epCandidate = 'ElphaPEX ' + epMatch[1];
-          if (isValidModel(epCandidate)) model = epCandidate;
+      if (typeof logText === 'string') {
+        const wmMatch = logText.match(/miner_type\s*=\s*([A-Za-z0-9+]+)/i);
+        if (wmMatch) {
+          const wmCandidate = 'WhatsMiner ' + wmMatch[1];
+          if (isValidModel(wmCandidate)) model = wmCandidate;
+        }
+        if (!isValidModel(model)) {
+          const epMatch = logText.match(/^\w+\s+\d+\s+[\d:]+\s+(DG\d\+?|ElphaPEX\S*)\s+\S+\.\S+\s/im);
+          if (epMatch) {
+            const epCandidate = 'ElphaPEX ' + epMatch[1];
+            if (isValidModel(epCandidate)) model = epCandidate;
+          }
         }
       }
     }
@@ -648,11 +657,25 @@ async function getMinerInfo(ip) {
   const s      = summary?.SUMMARY?.[0] || {};
   let   rawMhs = parseFloat(s['MHS 5s'] || s['MHS av'] || (s['GHS 5s']||0)*1000 || (s['THS 5s']||0)*1e6 || 0);
 
-  // ElphaPEX fallback — reuses the SAME cached log from hwIds.logText
-  // rather than fetching it again. Format: "hashrate by nonce is: 3329.432012 Mhash/s"
-  if ((!rawMhs || rawMhs <= 0) && typeof hwIds?.logText === 'string') {
-    const hrMatch = hwIds.logText.match(/hashrate by nonce is:\s*([\d.]+)\s*Mhash\/s/i);
-    if (hrMatch) rawMhs = parseFloat(hrMatch[1]);
+  // ElphaPEX fallback — its cgminer 'summary' doesn't expose hashrate in
+  // any of the field names read above, so the ONLY place it's available
+  // is a line in the boot log. getHardwareIds() only fetches that log
+  // as a LAST RESORT when mac/serial are still missing after everything
+  // else — on a machine where the generic mac/serial lookups happen to
+  // succeed (fairly common), the log is never fetched at all, and this
+  // fallback silently had nothing to read, leaving hashrate at 0 and
+  // the machine looking offline even though it was hashing fine. Fetch
+  // the log directly here when that happened, instead of only ever
+  // reusing whatever getHardwareIds() already had cached.
+  if (!rawMhs || rawMhs <= 0) {
+    let logForHr = (typeof hwIds?.logText === 'string') ? hwIds.logText : null;
+    if (logForHr === null) {
+      try { logForHr = await fetchBootLog(ip); } catch(e) { logForHr = null; }
+    }
+    if (typeof logForHr === 'string') {
+      const hrMatch = logForHr.match(/hashrate by nonce is:\s*([\d.]+)\s*Mhash\/s/i);
+      if (hrMatch) rawMhs = parseFloat(hrMatch[1]);
+    }
   }
 
   const hr = convertHashrate(rawMhs, algo);
