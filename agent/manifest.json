@@ -1,8 +1,9 @@
 {
-  "version": "1.1.25",
-  "released_at": "2026-09-19T21:30:00Z",
+  "version": "1.1.26",
+  "released_at": "2026-09-20T14:25:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
+    "Fix ElphaPEX (DG1/DG1+) hashrate and model showing blank/offline: the boot-log read those values depend on was only ever fetched when a machine's MAC and serial number were BOTH still unknown, so a unit that had already been identified some other way silently never got its hashrate parsed at all. The log is now read directly whenever hashrate comes back empty, regardless of why.",
     "Refuse to start when another agent is already running on this PC. Two agents sharing a FARM_ID knock each other off the backend in a loop \u2014 one farm was reconnecting every 3.6 seconds, 104 times in six minutes",
     "Back off for five minutes, with a clear explanation, when the backend reports that another agent already holds this FARM_ID, instead of reconnecting immediately and resuming the tug-of-war",
     "Release the instance lock cleanly on exit, and ignore a stale lock left behind by a crashed agent"
@@ -10,8 +11,8 @@
   "files": [
     {
       "name": "agent.js",
-      "sha256": "a525747be9285fe4910de2ca7da9cdb599660c697e7f9c7ac6e9a868d91aa23d",
-      "size": 77377
+      "sha256": "54a89c47349ebb3f09fd2033d21526d132d62a9e779eb43765ad501e278674d5",
+      "size": 78587
     },
     {
       "name": "sonoff-th.js",
