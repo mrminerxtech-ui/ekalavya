@@ -1260,7 +1260,23 @@ function updateFleetStat() {
   const token = localStorage.getItem('ekl_token');
   if (token && API_BASE && !API_BASE.includes('localhost')) {
     fetch(API_BASE + '/api/fleet/status', {headers:{'Authorization':'Bearer '+token}})
-      .then(r => r.json()).then(d => { if (d.ok) el.innerHTML += ' · <span style="color:var(--green)">✓ ' + d.storage + '</span>'; }).catch(() => {});
+      .then(r => r.json()).then(d => {
+        if (!d.ok) return;
+        if (d.storage === 'postgresql') {
+          el.innerHTML += ' · <span style="color:var(--green)">✓ database</span>';
+        } else {
+          // File storage used to be shown with a green tick like the
+          // database, which made a serious problem look like a healthy
+          // state. On a hosted platform this file is wiped on every
+          // redeploy, taking customer portal passwords and team logins
+          // with it — the exact cause of "credentials erased after an
+          // update". It needs to be alarming, not reassuring.
+          el.innerHTML += ' · <span style="color:var(--red)">⚠ NO DATABASE — temporary storage</span>'
+            + '<div style="color:var(--red);font-size:10px;margin-top:6px;line-height:1.5">'
+            + 'Customer passwords and team logins are being stored in a temporary file and <strong>will be erased the next time the software is updated</strong>.<br>'
+            + 'Fix: set <span style="font-family:monospace">DATABASE_URL</span> on the server to your Postgres database, then restart it.</div>';
+        }
+      }).catch(() => {});
   }
 }
 
