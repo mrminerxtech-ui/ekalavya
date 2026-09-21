@@ -1917,7 +1917,7 @@ const profitModels=[
 const teamData=[{name:'Alex T.',col:'#e74c3c',role:'Admin',email:'alex@ekalavya.io',last:'2 min ago'},{name:'Sam Lee',col:'#3498db',role:'Manager',email:'sam@ekalavya.io',last:'1h ago'},{name:'Jamie R.',col:'#2ecc71',role:'Technician',email:'jamie@ekalavya.io',last:'3h ago'}];
 
 // LOGIN
-function setLTab(t,el){loginTab=t;document.querySelectorAll('.ltab').forEach(x=>x.classList.remove('active'));el.classList.add('active');const b=document.getElementById('lBtn'),h=document.getElementById('lHint');if(t==='customer'){b.className='login-btn customer';b.textContent='ENTER CUSTOMER PORTAL';h.textContent='Use the email/password set for this customer in Customers → Edit';}else{b.className='login-btn admin';b.textContent='ACCESS PLATFORM';h.innerHTML='Admin: admin / admin123';}}
+function setLTab(t,el){loginTab=t;document.querySelectorAll('.ltab').forEach(x=>x.classList.remove('active'));el.classList.add('active');const b=document.getElementById('lBtn'),h=document.getElementById('lHint'),u=document.getElementById('lUser'),p=document.getElementById('lPass');if(t==='customer'){b.className='login-btn customer';b.textContent='ENTER CUSTOMER PORTAL';h.textContent='Use the email/password set for this customer in Customers → Edit';u.value='';p.value='';}else if(t==='team'){b.className='login-btn admin';b.textContent='ACCESS PLATFORM';h.textContent='Use the username/password an admin set for you in Team Access';u.value='';p.value='';}else{b.className='login-btn admin';b.textContent='ACCESS PLATFORM';h.innerHTML='Admin: admin / admin123';u.value='admin';p.value='admin123';}}
 function doLogin(){
   const u=document.getElementById('lUser').value.trim();
   const p=document.getElementById('lPass').value;
@@ -2167,6 +2167,7 @@ function showPage(n){
     if(n==='workers')       { renderWorkers(); attachSortHandlers(); }
     if(n==='agents')        { renderAgents(); populateDropdowns(); }
     if(n==='customers')     { renderCustomers(); }
+    if(n==='team')          { loadTeamFromBackend(); }
     if(n==='alerts')        { renderAlerts(); }
     if(n==='scada')         { checkScadaSession(); }
     if(n==='pools')         { renderPools(); }
@@ -2314,9 +2315,142 @@ function toast(msg,col){const t=document.createElement('div');t.className='toast
 
 
 // ── Missing stubs ─────────────────────────────────────────
+// ── Team Access — real staff accounts, stored server-side via
+// /api/team (admin-only). Separate from customers (portal, miners-
+// only) and from the three hardcoded demo logins in auth.js.
+let team = [];
+const ROLE_LABELS = { team: 'Team Member', technician: 'Technician', viewer: 'Viewer' };
+
+function loadTeamFromBackend(cb) {
+  const token = localStorage.getItem('ekl_token');
+  if (!token || !API_BASE || API_BASE.includes('localhost')) { if (cb) cb(); return; }
+  fetch(API_BASE + '/api/team', { headers: { 'Authorization': 'Bearer ' + token } })
+    .then(function(r){ return r.ok ? r.json() : { ok:false }; })
+    .then(function(d){ if (d.ok) team = d.members || []; renderTeam(); if (cb) cb(); })
+    .catch(function(){ if (cb) cb(); });
+}
+
 function renderTeam() {
-  const el = document.getElementById('page-team');
-  if (el) el.innerHTML = '<div style="padding:30px;color:var(--mute);text-align:center">Team management coming soon.</div>';
+  const grid = document.getElementById('teamGrid');
+  if (!grid) return;
+
+  // Only an admin can see or manage this page — a team member has no
+  // business creating or removing other staff accounts, including
+  // their own. currentUser.role is whatever the login response set.
+  if (!currentUser || currentUser.role !== 'admin') {
+    grid.innerHTML = '<div style="text-align:center;padding:40px;color:var(--mute)">Team Access is admin-only.</div>';
+    const addBtn = document.getElementById('teamAddBtn'); if (addBtn) addBtn.style.display = 'none';
+    return;
+  }
+  const addBtn = document.getElementById('teamAddBtn'); if (addBtn) addBtn.style.display = '';
+
+  const CC = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e'];
+  grid.innerHTML = team.length === 0
+    ? '<div style="text-align:center;padding:40px;color:var(--mute)">No team accounts yet. Add one so staff can log in with their own username instead of sharing the admin login.</div>'
+    : team.map(function(m, i){
+      const col = CC[i % CC.length];
+      const ini = (m.name||'?').split(' ').map(function(w){return w[0];}).join('').slice(0,2).toUpperCase();
+      return '<div class="card"><div class="card-head"><div class="av" style="background:' + col + ';width:38px;height:38px;font-size:15px">' + ini + '</div>'
+        + '<div><div style="font-family:Exo 2,sans-serif;font-weight:700;font-size:13px">' + escHtml(m.name) + '</div><div style="font-size:10px;color:var(--mute)">@' + escHtml(m.username) + '</div></div>'
+        + '<span class="badge ' + (m.active === false ? 'brn' : 'bgn') + '" style="margin-left:auto">' + (m.active === false ? 'DISABLED' : (ROLE_LABELS[m.role] || m.role || 'Team Member').toUpperCase()) + '</span></div>'
+        + '<div class="card-foot"><button class="btn btn-sm edit-team-btn" data-tid="' + m.id + '">&#x270E; Edit</button></div></div>';
+    }).join('');
+
+  grid.querySelectorAll('.edit-team-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){ openEditTeamMember(this.dataset.tid); });
+  });
+}
+
+function addTeamMember() {
+  const name = document.getElementById('tName')?.value.trim();
+  const username = document.getElementById('tUser')?.value.trim();
+  const password = document.getElementById('tPass')?.value || '';
+  const role = document.getElementById('tRole')?.value || 'team';
+  if (!name)     { alert('Name required'); return; }
+  if (!username) { alert('Username required'); return; }
+  if (password.length < 6) { alert('Password must be at least 6 characters'); return; }
+
+  const token = localStorage.getItem('ekl_token');
+  fetch(API_BASE + '/api/team', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+    body: JSON.stringify({ name, username, password, role })
+  }).then(function(r){ return r.json().then(function(d){ return { status: r.status, d: d }; }); })
+    .then(function(res){
+      if (!res.d.ok) { toast(res.d.error || 'Could not create team member', 'var(--red)'); return; }
+      team.push(res.d.member);
+      closeSheet('addTeamSheet');
+      ['tName','tUser','tPass'].forEach(function(id){ const el = document.getElementById(id); if (el) el.value = ''; });
+      renderTeam();
+      toast('✓ ' + res.d.member.name + ' can now log in with their own account', 'var(--green)');
+    })
+    .catch(function(e){ toast('Error: ' + e.message, 'var(--red)'); });
+}
+
+function openEditTeamMember(tid) {
+  const m = team.find(function(x){ return x.id === tid; });
+  if (!m) return;
+  document.getElementById('etId').value = tid;
+  document.getElementById('etName').value = m.name || '';
+  document.getElementById('etUser').value = m.username || '';
+  document.getElementById('etPass').value = '';
+  document.getElementById('etPass').placeholder = 'Leave blank to keep current password';
+  document.getElementById('etRole').value = m.role || 'team';
+  document.getElementById('etActive').checked = m.active !== false;
+  openSheet('editTeamSheet');
+}
+
+function saveEditTeamMember() {
+  const tid = document.getElementById('etId').value;
+  const m = team.find(function(x){ return x.id === tid; });
+  if (!m) return;
+  const name = document.getElementById('etName')?.value.trim();
+  const username = document.getElementById('etUser')?.value.trim();
+  const newPass = document.getElementById('etPass')?.value || '';
+  const role = document.getElementById('etRole')?.value || 'team';
+  const active = document.getElementById('etActive')?.checked;
+  if (!name)     { alert('Name required'); return; }
+  if (!username) { alert('Username required'); return; }
+  if (newPass && newPass.length < 6) { alert('Password must be at least 6 characters'); return; }
+
+  const body = { name, username, role, active };
+  if (newPass) body.password = newPass;
+
+  const token = localStorage.getItem('ekl_token');
+  fetch(API_BASE + '/api/team/' + encodeURIComponent(tid), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+    body: JSON.stringify(body)
+  }).then(function(r){ return r.json().then(function(d){ return { status: r.status, d: d }; }); })
+    .then(function(res){
+      if (!res.d.ok) { toast(res.d.error || 'Could not update team member', 'var(--red)'); return; }
+      Object.assign(m, res.d.member);
+      closeSheet('editTeamSheet');
+      renderTeam();
+      toast('✓ ' + m.name + ' updated', 'var(--green)');
+    })
+    .catch(function(e){ toast('Error: ' + e.message, 'var(--red)'); });
+}
+
+function deleteTeamMember() {
+  const tid = document.getElementById('etId').value;
+  const m = team.find(function(x){ return x.id === tid; });
+  if (!m) return;
+  if (!confirm('Remove ' + m.name + '’s team account? They will no longer be able to log in. This cannot be undone.')) return;
+
+  const token = localStorage.getItem('ekl_token');
+  fetch(API_BASE + '/api/team/' + encodeURIComponent(tid), {
+    method: 'DELETE',
+    headers: { 'Authorization': 'Bearer ' + token }
+  }).then(function(r){ return r.json(); })
+    .then(function(d){
+      if (!d.ok) { toast('Could not delete team member', 'var(--red)'); return; }
+      team = team.filter(function(x){ return x.id !== tid; });
+      closeSheet('editTeamSheet');
+      renderTeam();
+      toast('✓ ' + m.name + ' removed', 'var(--red)');
+    })
+    .catch(function(e){ toast('Error: ' + e.message, 'var(--red)'); });
 }
 
 function checkScadaSession() {
