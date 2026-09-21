@@ -362,7 +362,10 @@ tr:last-child td{border-bottom:none;}
     <div id="page-workers" class="page">
       <div class="page-title">Workers <span id="wcTitle"></span></div>
       <div class="panel">
-        <div class="ph"><div class="phd">All Machines</div><div class="pa"><button class="btn btn-sm btn-r" onclick="bulkReboot()">&#x27F3; Bulk Reboot</button></div></div>
+        <div class="ph"><div class="phd">All Machines</div><div class="pa" style="display:flex;gap:8px">
+          <button class="btn btn-sm" id="mergeSelBtn" onclick="openMergePicker()" style="display:none">&#x1F517; Merge Selected (2)</button>
+          <button class="btn btn-sm btn-r" onclick="bulkReboot()">&#x27F3; Bulk Reboot</button>
+        </div></div>
         <div class="toolbar">
           <input class="si" placeholder="Search name/IP/model..." id="wSearch" oninput="onWorkerSearchInput()" style="width:180px">
           <select class="si" id="wAgentFilter" onchange="onWorkerAgentFilterChange()" style="width:160px" title="Show only one site's machines">
@@ -374,6 +377,7 @@ tr:last-child td{border-bottom:none;}
           <button class="fbtn" onclick="setWF('warn',this)">Warning</button>
           <button class="fbtn" onclick="setWF('disabled',this)">Disabled</button>
           <button class="fbtn" onclick="setWF('sleeping',this)">Sleep</button>
+          <button class="fbtn" onclick="setWF('noHwId',this)" title="No MAC or Serial captured — this machine's identity is its IP alone, so it will duplicate instead of updating if its IP ever changes (e.g. after a reboot)">&#x26A0; No Hardware ID</button>
         </div>
         <div class="tw"><table><thead><tr>
           <th><input type="checkbox" id="selAll" onclick="toggleSelAll()" style="accent-color:var(--cyan)"></th>
@@ -523,8 +527,11 @@ tr:last-child td{border-bottom:none;}
 
     <!-- TEAM -->
     <div id="page-team" class="page">
-      <div class="page-title">Team Access</div>
-      <div class="card-grid" id="teamGrid"></div>
+      <div class="page-title">Team Access <span>Staff accounts with their own login</span></div>
+      <div class="panel">
+        <div class="ph"><div class="phd">Staff Accounts</div><div class="pa"><button class="btn btn-sm btn-g" id="teamAddBtn" onclick="openSheet('addTeamSheet')">+ Add Team Member</button></div></div>
+        <div class="card-grid" style="padding:14px" id="teamGrid"></div>
+      </div>
     </div>
 
     <!-- ALERTS -->
@@ -903,6 +910,52 @@ tr:last-child td{border-bottom:none;}
     <div style="background:rgba(0,200,255,.05);border:1px solid rgba(0,200,255,.2);border-radius:6px;padding:12px;font-size:11px;color:var(--mute);margin-top:4px">Leave Password blank to keep the customer's current login password unchanged. Removing the email disables portal access entirely.</div>
     </div>
     <div class="sheet-foot"><button class="btn btn-r" onclick="deleteCustomer()">Delete Customer</button><button class="btn" onclick="closeSheet('editCustSheet')">Cancel</button><button class="btn btn-g" onclick="saveEditCustomer()">Save Changes</button></div>
+  </div>
+</div>
+
+<!-- ADD TEAM MEMBER SHEET -->
+<div class="overlay" id="addTeamSheet">
+  <div class="sheet"><div class="sheet-handle"></div><div class="sheet-title">ADD TEAM MEMBER</div>
+    <div class="sheet-body"><div class="two-col">
+      <div class="frow"><label>Full Name</label><input id="tName" placeholder="Rashid Al-Otaibi"></div>
+      <div class="frow"><label>Username (login)</label><input id="tUser" placeholder="rashid"></div>
+      <div class="frow"><label>Password</label><input id="tPass" type="password" placeholder="At least 6 characters"></div>
+      <div class="frow"><label>Role</label><select id="tRole"><option value="team">Team Member</option><option value="technician">Technician</option><option value="viewer">Viewer</option></select></div>
+    </div>
+    <div style="background:rgba(0,200,255,.05);border:1px solid rgba(0,200,255,.2);border-radius:6px;padding:12px;font-size:11px;color:var(--mute);margin-top:4px">They log in from the Team tab on the login screen with this username and password, instead of sharing the admin account.</div>
+    </div>
+    <div class="sheet-foot"><button class="btn" onclick="closeSheet('addTeamSheet')">Cancel</button><button class="btn btn-g" onclick="addTeamMember()">Create Account</button></div>
+  </div>
+</div>
+
+<div class="overlay" id="editTeamSheet">
+  <div class="sheet"><div class="sheet-handle"></div><div class="sheet-title">EDIT TEAM MEMBER</div>
+    <div class="sheet-body">
+    <input type="hidden" id="etId">
+    <div class="two-col">
+      <div class="frow"><label>Full Name</label><input id="etName" placeholder="Rashid Al-Otaibi"></div>
+      <div class="frow"><label>Username (login)</label><input id="etUser" placeholder="rashid"></div>
+      <div class="frow"><label>Password</label><input id="etPass" type="password" placeholder="Leave blank to keep current password"></div>
+      <div class="frow"><label>Role</label><select id="etRole"><option value="team">Team Member</option><option value="technician">Technician</option><option value="viewer">Viewer</option></select></div>
+    </div>
+    <div class="frow" style="margin-top:4px"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="etActive" style="accent-color:var(--cyan)" checked> Account active (uncheck to block login without deleting)</label></div>
+    </div>
+    <div class="sheet-foot"><button class="btn btn-r" onclick="deleteTeamMember()">Delete Account</button><button class="btn" onclick="closeSheet('editTeamSheet')">Cancel</button><button class="btn btn-g" onclick="saveEditTeamMember()">Save Changes</button></div>
+  </div>
+</div>
+
+<!-- MERGE DUPLICATE MACHINES SHEET -->
+<div class="overlay" id="mergeSheet">
+  <div class="sheet" style="max-width:520px">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title">&#x1F517; MERGE DUPLICATE MACHINE</div>
+    <div class="sheet-body">
+      <div style="font-size:11px;color:var(--mute);margin-bottom:14px">
+        Same physical miner, two records — usually because it changed IP (a reboot, a power outage) before it had a MAC or serial number on file to be recognised by. Pick which record to <strong>keep</strong>. Its name, customer assignment and history stay; the other record's live readings (IP, hashrate, status, etc.) are copied onto it, and the other record is deleted.
+      </div>
+      <div id="mergeCandidates" style="display:flex;flex-direction:column;gap:10px"></div>
+    </div>
+    <div class="sheet-foot"><button class="btn" onclick="closeSheet('mergeSheet')">Cancel</button><button class="btn btn-g" onclick="confirmMergeWorkers()">Merge</button></div>
   </div>
 </div>
 
