@@ -78,6 +78,24 @@ async function createTables() {
       updated_at  TIMESTAMPTZ DEFAULT NOW()
     );
 
+    -- Record of things a person DELETED on purpose.
+    --
+    -- Every device keeps its own local copy of the fleet and pushes the
+    -- whole list back on save. Deleting a customer on a laptop removes
+    -- it from the laptop and from the server — but a phone that still
+    -- has yesterday's copy will happily push that customer back up the
+    -- next time anything is saved there, and the deletion undoes
+    -- itself. "Absent from the list" can't be told apart from "not
+    -- created yet", so the deletion has to be recorded explicitly.
+    -- Saves drop anything listed here, and each device prunes its own
+    -- local copy from this list on load.
+    CREATE TABLE IF NOT EXISTS deleted_records (
+      id          TEXT NOT NULL,
+      kind        TEXT NOT NULL,
+      deleted_at  TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (id, kind)
+    );
+
     -- Cumulative customer earnings, accrued in short slots by the
     -- backend rather than calculated on the fly when someone opens a
     -- page. Accruing on view would double-count with two viewers and
@@ -216,6 +234,11 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
           `INSERT INTO workers(id, data, farm_id) VALUES($1,$2,$3)`,
           [fresh.id, JSON.stringify(fresh), farmId]
         );
+        // A machine that was deleted from the fleet but is still
+        // plugged in and hashing will be rediscovered here. That's a
+        // legitimate re-appearance, so drop its deletion record —
+        // otherwise every device would keep pruning it back out.
+        await client.query('DELETE FROM deleted_records WHERE id=$1 AND kind=$2', [fresh.id, 'worker']);
       }
     }
 
@@ -275,6 +298,9 @@ function upsertWorkersFallback(farmId, minersFoundNow) {
       const id = stableWorkerId(m);
       byId.set(id, { ...m, id, farm_id: farmId, cid: '',
         disabled: false, status: 'online', source: 'auto-poll', added_at: new Date().toISOString() });
+      // Rediscovered after deletion — see the matching comment in
+      // upsertWorkersByIp above.
+      clearTombstone('worker', id).catch(function(){});
     }
   });
 
@@ -434,7 +460,72 @@ function loadFallback(key) {
 
 function isUsingDB() { return !useFallback && pool !== null && pool !== undefined; }
 
+// ── Deletion records ────────────────────────────────────────
+// See the deleted_records table comment for why deletions have to be
+// written down rather than inferred from something being missing.
+const TOMBSTONE_KEEP_DAYS = 90;
+
+async function addTombstone(kind, id) {
+  if (!kind || !id) return false;
+  if (useFallback || !pool) {
+    let store = {};
+    if (fs.existsSync(FALLBACK_FILE)) { try { store = JSON.parse(fs.readFileSync(FALLBACK_FILE,'utf8')); } catch(e) { store = {}; } }
+    store.deleted_records = (store.deleted_records || []).filter(t => !(t.id === id && t.kind === kind));
+    store.deleted_records.push({ id, kind, deleted_at: new Date().toISOString() });
+    try { fs.writeFileSync(FALLBACK_FILE, JSON.stringify(store), 'utf8'); return true; } catch(e) { return false; }
+  }
+  try {
+    await pool.query(
+      `INSERT INTO deleted_records(id, kind) VALUES($1,$2)
+       ON CONFLICT (id, kind) DO UPDATE SET deleted_at = NOW()`,
+      [id, kind]
+    );
+    return true;
+  } catch(e) {
+    console.error('[DB] addTombstone error:', e.message);
+    return false;
+  }
+}
+
+// Called when something deliberately deleted legitimately comes back —
+// a machine that was removed from the fleet but is still plugged in and
+// gets rediscovered by the agent's own scan. Without this, the poller
+// would keep re-adding it and every device would keep pruning it away.
+async function clearTombstone(kind, id) {
+  if (!kind || !id) return false;
+  if (useFallback || !pool) {
+    let store = {};
+    if (fs.existsSync(FALLBACK_FILE)) { try { store = JSON.parse(fs.readFileSync(FALLBACK_FILE,'utf8')); } catch(e) { store = {}; } }
+    if (!Array.isArray(store.deleted_records)) return true;
+    store.deleted_records = store.deleted_records.filter(t => !(t.id === id && t.kind === kind));
+    try { fs.writeFileSync(FALLBACK_FILE, JSON.stringify(store), 'utf8'); return true; } catch(e) { return false; }
+  }
+  try {
+    await pool.query('DELETE FROM deleted_records WHERE id=$1 AND kind=$2', [id, kind]);
+    return true;
+  } catch(e) { return false; }
+}
+
+async function loadTombstones() {
+  if (useFallback || !pool) {
+    const cutoff = Date.now() - TOMBSTONE_KEEP_DAYS * 86400000;
+    return loadFallback('deleted_records').filter(t => new Date(t.deleted_at || 0).getTime() >= cutoff);
+  }
+  try {
+    const r = await pool.query(
+      `SELECT id, kind, deleted_at FROM deleted_records
+        WHERE deleted_at >= NOW() - ($1 || ' days')::interval`,
+      [String(TOMBSTONE_KEEP_DAYS)]
+    );
+    return r.rows;
+  } catch(e) {
+    console.error('[DB] loadTombstones error:', e.message);
+    return [];
+  }
+}
+
 async function deleteWorker(id) {
+  await addTombstone('worker', id);
   if (useFallback || !pool) {
     let store = {};
     if (fs.existsSync(FALLBACK_FILE)) store = JSON.parse(fs.readFileSync(FALLBACK_FILE,'utf8'));
@@ -494,6 +585,7 @@ async function mergeWorkers(keepId, discardId) {
 }
 
 async function deleteCustomer(id) {
+  await addTombstone('customer', id);
   if (useFallback || !pool) {
     let store = {};
     if (fs.existsSync(FALLBACK_FILE)) store = JSON.parse(fs.readFileSync(FALLBACK_FILE,'utf8'));
@@ -807,4 +899,4 @@ async function getUptimeReport(days, farmId) {
   }
 }
 
-module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport };
+module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, addTombstone, clearTombstone, loadTombstones, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport };
