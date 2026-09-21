@@ -9,9 +9,10 @@ const { hashPassword, isHashed } = require('../services/passwords');
 
 // GET /api/fleet/load — load all workers + customers
 router.get('/load', authMiddleware, async (req, res) => {
-  const [workers, customersRaw] = await Promise.all([
+  const [workers, customersRaw, deleted] = await Promise.all([
     db.loadWorkers(),
     db.loadCustomers(),
+    db.loadTombstones(),
   ]);
   // Never send the password hash to the browser — just tell the
   // frontend whether one is set, so the Edit form can show
@@ -25,6 +26,10 @@ router.get('/load', authMiddleware, async (req, res) => {
     ok: true,
     workers,
     customers,
+    // What was deliberately deleted. Each device prunes these from its
+    // own local copy, so a deletion made on one device actually
+    // disappears everywhere instead of only where it was done.
+    deleted,
     source: db.isUsingDB() ? 'postgresql' : 'file',
     count: { workers: workers.length, customers: customers.length },
   });
@@ -32,10 +37,26 @@ router.get('/load', authMiddleware, async (req, res) => {
 
 // POST /api/fleet/save — save entire fleet
 router.post('/save', authMiddleware, async (req, res) => {
-  const { workers, customers, clearAll } = req.body;
-  if (!Array.isArray(workers)) return res.status(400).json({ error: 'workers array required' });
+  const { workers: incomingWorkers, customers, clearAll } = req.body;
+  if (!Array.isArray(incomingWorkers)) return res.status(400).json({ error: 'workers array required' });
 
-  let processedCustomers = customers || [];
+  // Every device pushes its WHOLE local list here, so a device holding
+  // a copy from before a deletion would otherwise push the deleted
+  // record straight back and quietly undo it. Anything deliberately
+  // deleted is dropped from what this save is allowed to write. (A
+  // machine that was deleted but is still physically there gets its
+  // deletion record cleared the moment the agent rediscovers it, so
+  // this never blocks a genuine re-appearance.)
+  const tombstones = await db.loadTombstones();
+  const deadWorkers   = new Set(tombstones.filter(t => t.kind === 'worker').map(t => t.id));
+  const deadCustomers = new Set(tombstones.filter(t => t.kind === 'customer').map(t => t.id));
+
+  const workers = incomingWorkers.filter(w => !w || !deadWorkers.has(w.id));
+  let processedCustomers = (customers || []).filter(c => !c || !deadCustomers.has(c.id));
+  const blocked = (incomingWorkers.length - workers.length) + ((customers || []).length - processedCustomers.length);
+  if (blocked > 0) {
+    console.log(`[FLEET] Ignored ${blocked} deleted record(s) pushed back by an out-of-date device`);
+  }
   if (processedCustomers.length > 0) {
     const existing = await db.loadCustomers();
     const existingById = new Map(existing.map(c => [c.id, c]));
@@ -53,6 +74,19 @@ router.post('/save', authMiddleware, async (req, res) => {
       }
       return c;
     });
+  }
+
+  // A "Clear All" wipes the server's tables, but every other device
+  // still holds its own copy and would push the whole fleet back on its
+  // next save. Record what's being wiped so the clear actually sticks
+  // everywhere. (Machines still physically present get rediscovered by
+  // their agent, which clears their record again — as it should.)
+  if (clearAll) {
+    const [oldWorkers, oldCustomers] = await Promise.all([db.loadWorkers(), db.loadCustomers()]);
+    await Promise.all([]
+      .concat(oldWorkers.map(w => db.addTombstone('worker', w.id)))
+      .concat(oldCustomers.map(c => db.addTombstone('customer', c.id))));
+    console.log(`[FLEET] Clear All — recorded ${oldWorkers.length} machine(s) and ${oldCustomers.length} customer(s) as deleted`);
   }
 
   const [wOk, cOk] = await Promise.all([
@@ -78,6 +112,20 @@ router.post('/worker', authMiddleware, async (req, res) => {
 router.delete('/worker/:id', authMiddleware, async (req, res) => {
   await db.deleteWorker(req.params.id);
   res.json({ ok: true });
+});
+
+// POST /api/fleet/worker/merge — fold a duplicate machine record into
+// its real one. Comes up after an IP change the poller couldn't match
+// back to the existing record (see the long comment on db.mergeWorkers
+// for why that happens) — most often a batch of machines rebooting at
+// once after a power outage. Staff only: a customer has no business
+// merging fleet records.
+router.post('/worker/merge', authMiddleware, async (req, res) => {
+  if (req.user && req.user.role === 'customer') return res.status(403).json({ ok: false, error: 'Forbidden' });
+  const { keep_id, discard_id } = req.body || {};
+  const result = await db.mergeWorkers(keep_id, discard_id);
+  if (!result.ok) return res.status(400).json(result);
+  res.json(result);
 });
 
 // DELETE /api/fleet/customer/:id — delete a customer AND unassign
