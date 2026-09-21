@@ -30,6 +30,24 @@ router.post('/login', async (req, res) => {
     return res.json({ ok: true, token, role: user.role, name: user.username });
   }
 
+  // Check REAL team members — the ones actually created from the Team
+  // Access page, not the three hardcoded demo logins above. Username
+  // is matched case-insensitively (it's stored lowercased on create);
+  // password is scrypt-hashed, same as customers below.
+  const teamLogin = (username || email || '').trim().toLowerCase();
+  if (teamLogin) {
+    const team = await db.loadTeamMembers();
+    const member = team.find(m => (m.username || '').toLowerCase() === teamLogin);
+    if (member && member.active !== false && verifyPassword(password, member.password)) {
+      const token = jwt.sign(
+        { id: member.id, role: member.role || 'team', name: member.name },
+        JWT_SECRET,
+        { expiresIn: '30d' }
+      );
+      return res.json({ ok: true, token, role: member.role || 'team', name: member.name });
+    }
+  }
+
   // Check REAL customers — the ones actually created in the app,
   // not a hardcoded demo list. Passwords are stored hashed.
   const customers = await db.loadCustomers();
