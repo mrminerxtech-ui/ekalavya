@@ -68,6 +68,16 @@ async function createTables() {
       updated_at  TIMESTAMPTZ DEFAULT NOW()
     );
 
+    -- Real staff accounts an admin creates from the Team Access page —
+    -- separate from the three hardcoded demo logins in auth.js. Each
+    -- one gets its own username/password (hashed, same as customers)
+    -- and role, and can log in for real once created here.
+    CREATE TABLE IF NOT EXISTS team_members (
+      id          TEXT PRIMARY KEY,
+      data        JSONB NOT NULL,
+      updated_at  TIMESTAMPTZ DEFAULT NOW()
+    );
+
     -- Cumulative customer earnings, accrued in short slots by the
     -- backend rather than calculated on the fly when someone opens a
     -- page. Accruing on view would double-count with two viewers and
@@ -500,6 +510,51 @@ async function deleteCustomer(id) {
   }
 }
 
+// ── Team members (real staff accounts) ──────────────────────
+async function loadTeamMembers() {
+  if (useFallback || !pool) return loadFallback('team_members');
+  try {
+    const r = await pool.query('SELECT data FROM team_members ORDER BY updated_at ASC');
+    return r.rows.map(row => row.data);
+  } catch(e) {
+    console.error('[DB] loadTeamMembers error:', e.message);
+    return [];
+  }
+}
+
+async function saveTeamMember(member) {
+  if (!member || !member.id) return false;
+  if (useFallback || !pool) return saveFallback('team_members', [member]);
+  try {
+    await pool.query(
+      `INSERT INTO team_members(id, data) VALUES($1,$2)
+       ON CONFLICT (id) DO UPDATE SET data=$2, updated_at=NOW()`,
+      [member.id, JSON.stringify(member)]
+    );
+    return true;
+  } catch(e) {
+    console.error('[DB] saveTeamMember error:', e.message);
+    return false;
+  }
+}
+
+async function deleteTeamMember(id) {
+  if (useFallback || !pool) {
+    let store = {};
+    if (fs.existsSync(FALLBACK_FILE)) store = JSON.parse(fs.readFileSync(FALLBACK_FILE,'utf8'));
+    if (Array.isArray(store.team_members)) store.team_members = store.team_members.filter(m => m.id !== id);
+    try { fs.writeFileSync(FALLBACK_FILE, JSON.stringify(store), 'utf8'); return true; }
+    catch(e) { return false; }
+  }
+  try {
+    await pool.query('DELETE FROM team_members WHERE id=$1', [id]);
+    return true;
+  } catch(e) {
+    console.error('[DB] deleteTeamMember error:', e.message);
+    return false;
+  }
+}
+
 // ── Customer earnings accrual ───────────────────────────────────
 // Credits one slot's worth of earnings to a customer. Returns true if
 // it was actually credited, false if that slot was already counted
@@ -752,4 +807,4 @@ async function getUptimeReport(days, farmId) {
   }
 }
 
-module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, saveCustomers, loadCustomers, deleteCustomer, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport };
+module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport };
