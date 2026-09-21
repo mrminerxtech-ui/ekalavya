@@ -14,7 +14,13 @@ const { authMiddleware } = require('../middleware/auth');
 const db = require('../services/db');
 const { hashPassword, isHashed } = require('../services/passwords');
 
-const VALID_ROLES = ['team', 'technician', 'viewer'];
+// Both of these get the same staff-level access. There was a third,
+// "viewer", meant to be read-only — but nothing in the app actually
+// enforced read-only, so it granted full control under a label that
+// said otherwise. Removed rather than left as a false promise. Any
+// account created under it before that falls back to Technician, which
+// is the access it really had all along.
+const VALID_ROLES = ['team', 'technician'];
 
 function adminOnly(req, res, next) {
   if (!req.user || req.user.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin access required' });
