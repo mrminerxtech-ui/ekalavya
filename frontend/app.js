@@ -1347,6 +1347,21 @@ function findDuplicateMiners(){
   const seen = new Set();
   Object.values(groups).forEach(function(group){
     if(group.length < 2) return;
+    // Two records of ONE machine can't both be live at once. If several
+    // records in a group are online at DIFFERENT addresses right now,
+    // these are different machines that happen to report the same
+    // MAC/Serial — some firmware ships a batch with an identical value,
+    // or prints a constant one in its boot log. Merging them would
+    // delete real machines, so leave them alone.
+    var liveIps = {};
+    group.forEach(function(w){
+      if (effectiveStatus(w) === 'online' && w.ip) liveIps[w.ip] = true;
+    });
+    if (Object.keys(liveIps).length > 1) {
+      console.warn('[MERGE] Skipping ' + group.length + ' machines sharing an ID but online at different IPs: '
+        + Object.keys(liveIps).join(', '));
+      return;
+    }
     const ids = group.map(function(w){return w.id;}).sort().join(',');
     if(seen.has(ids)) return;
     seen.add(ids);
