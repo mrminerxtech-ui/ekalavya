@@ -85,6 +85,7 @@ app.use('/api/webui',     require('./routes/webui'));
 app.use('/api/market',    require('./routes/market'));
 app.use('/api/earnings',  require('./routes/earnings'));
 app.use('/api/insights',  require('./routes/insights'));
+app.use('/api/team',      require('./routes/team'));
 
 // Accrues each customer's mining earnings every 10 minutes from the
 // machines that are actually hashing. Runs on a server-side timer,
