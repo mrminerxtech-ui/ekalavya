@@ -18,7 +18,6 @@ process.on('unhandledRejection', (reason) => {
 const express     = require('express');
 const http        = require('http');
 const WebSocket   = require('ws');
-const url         = require('url');
 const cors        = require('cors');
 const helmet      = require('helmet');
 const compression = require('compression');
@@ -123,7 +122,11 @@ const agentWss = new WebSocket.Server({ noServer: true });
 
 // ── Route upgrade requests by path ────────────────────────
 server.on('upgrade', (request, socket, head) => {
-  const { pathname } = url.parse(request.url);
+  // url.parse() is deprecated (Node logs a DeprecationWarning for it on
+  // every upgrade request, which shows up as an error line in the
+  // platform logs). The base only exists to satisfy the URL parser —
+  // we just want the path.
+  const pathname = new URL(request.url, 'http://localhost').pathname;
   console.log(`[WS] Upgrade: ${pathname}`);
 
   if (pathname === '/ws') {
