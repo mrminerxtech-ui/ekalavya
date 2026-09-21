@@ -230,6 +230,9 @@ function renderWorkers() {
   tb.querySelectorAll('.sn-edit-cell').forEach(function(td){
     td.addEventListener('click', function(){ editSerialAndMac(this.dataset.wid); });
   });
+  tb.querySelectorAll('.worker-check').forEach(function(c){
+    c.addEventListener('change', updateMergeSelBtn);
+  });
 
   // Update badge counts (accounts for agent connectivity).
   // Scoped to the selected site so the counts describe what's on
@@ -1300,14 +1303,26 @@ function csvParseLine(line){
 // ── Export fleet as CSV ────────────────────────────────────
 // ── Find & merge duplicate miners ───────────────────────────
 // For machines that were physically moved BEFORE this de-duplication
-// logic existed — finds any group of workers sharing the same MAC or
-// Serial number and merges them into one record, keeping whichever
-// is currently online (or most recently updated if none are), and
-// carrying over any customer assignment / manual edits from either.
+// logic existed, or whose IP changed (a reboot, a power outage — every
+// machine on a switch can come back with a new DHCP lease at once) and
+// were never matched back to their old record because that record's
+// MAC/Serial were never captured in the first place — finds any group
+// of workers sharing the same MAC, Serial, OR pool Worker ID and merges
+// them into one record, keeping whichever is currently online (or most
+// recently updated if none are), and carrying over any customer
+// assignment / manual edits from either.
+//
+// The pool Worker ID (the wallet.worker-name string configured ON the
+// miner) is included as a grouping key because it's the one identifier
+// that survives a reboot and a new IP even when MAC/Serial were never
+// successfully read — exactly the case after a power-cut reboots an
+// entire farm at once. It's excluded when it's the placeholder "—" so
+// a farm with several not-yet-configured machines doesn't get them all
+// grouped together as if they were one duplicated machine.
 function findDuplicateMiners(){
   const groups = {};
   workers.forEach(function(w){
-    [w.mac, w.serial].filter(Boolean).forEach(function(key){
+    [w.mac, w.serial, (w.worker_id && w.worker_id !== '—' ? 'wid:' + w.worker_id : null)].filter(Boolean).forEach(function(key){
       if(!groups[key]) groups[key] = [];
       if(groups[key].indexOf(w) === -1) groups[key].push(w);
     });
@@ -1340,6 +1355,7 @@ function mergeDuplicateGroup(group){
     if(!winner.cid && w.cid) winner.cid = w.cid;
     if(!winner.mac && w.mac) winner.mac = w.mac;
     if(!winner.serial && w.serial) winner.serial = w.serial;
+    if((!winner.worker_id || winner.worker_id === '—') && w.worker_id && w.worker_id !== '—') winner.worker_id = w.worker_id;
     if(w.mac_manual) winner.mac_manual = true;
     if(w.serial_manual) winner.serial_manual = true;
   });
@@ -1555,6 +1571,81 @@ function deleteMiner(wid) {
   saveFleetToBackend(); // also persist the customer.miners[] cleanup above
   closeCtrl();
   renderWorkers(); renderDash();
+}
+
+// ── Merge duplicate machine records ─────────────────────────
+// Comes up after a reboot/outage changes a machine's IP and the poller
+// had no MAC or serial to recognise it by — see the long comment on
+// db.mergeWorkers on the backend for the full explanation. Two records,
+// pick which to keep, fold the other's live readings into it, delete
+// the other.
+let mergeCandidateIds = [];
+function openMergePicker() {
+  const ids = Array.from(document.querySelectorAll('.worker-check:checked')).map(function(c){ return c.dataset.wid; });
+  if (ids.length !== 2) { toast('Select exactly 2 machines to merge', 'var(--warn)'); return; }
+  const a = workers.find(function(w){ return w.id === ids[0]; });
+  const b = workers.find(function(w){ return w.id === ids[1]; });
+  if (!a || !b) { toast('Could not find both selected machines', 'var(--red)'); return; }
+  mergeCandidateIds = [a.id, b.id];
+
+  // Default to keeping whichever one looks more "established" — has a
+  // customer assigned, or a real hardware-based id, or was added
+  // earlier — since that's usually the one worth preserving history for.
+  function score(w){
+    let s = 0;
+    if (w.cid) s += 4;
+    if (typeof w.id === 'string' && w.id.indexOf('w-ip-') !== 0) s += 2;
+    if (w.name && !/^(unknown|w-ip-)/i.test(w.name)) s += 1;
+    return s;
+  }
+  const defaultKeep = score(a) >= score(b) ? a.id : b.id;
+
+  function card(w, checked){
+    const cust = customers.find(function(c){ return c.id === w.cid; });
+    return '<label style="display:flex;gap:10px;align-items:flex-start;border:1px solid var(--b1);border-radius:8px;padding:10px 12px;cursor:pointer">'
+      + '<input type="radio" name="mergeKeep" value="' + escAttr(w.id) + '" style="margin-top:3px;accent-color:var(--cyan)"' + (checked ? ' checked' : '') + '>'
+      + '<div style="flex:1;font-size:11px">'
+      + '<div style="font-family:Share Tech Mono,monospace;font-weight:700;color:var(--cyan);font-size:13px">' + escHtml(w.name || w.id) + '</div>'
+      + '<div style="color:var(--mute);margin-top:2px">' + escHtml(cleanBrandModel(w.brand)) + ' ' + escHtml(cleanBrandModel(w.model)) + ' &middot; ' + escHtml(w.ip || '—') + '</div>'
+      + '<div style="color:var(--mute)">Status: <span style="color:' + (effectiveStatus(w)==='online' ? 'var(--green)' : 'var(--red)') + '">' + escHtml(effectiveStatus(w)) + '</span> &middot; ' + hrDisplay(w) + '</div>'
+      + '<div style="color:var(--mute)">Customer: ' + (cust ? escHtml(cust.name) : '&mdash;') + ' &middot; Added: ' + escHtml((w.added_at||'').slice(0,10) || '—') + '</div>'
+      + '<div style="color:var(--mute);font-family:Share Tech Mono,monospace;font-size:9px;margin-top:2px">id: ' + escHtml(w.id) + '</div>'
+      + '</div></label>';
+  }
+  const box = document.getElementById('mergeCandidates');
+  if (box) box.innerHTML = card(a, a.id === defaultKeep) + card(b, b.id === defaultKeep);
+  openSheet('mergeSheet');
+}
+function confirmMergeWorkers() {
+  const sel = document.querySelector('input[name="mergeKeep"]:checked');
+  if (!sel || mergeCandidateIds.length !== 2) { toast('Pick which machine to keep', 'var(--warn)'); return; }
+  const keepId = sel.value;
+  const discardId = mergeCandidateIds.find(function(id){ return id !== keepId; });
+  const token = localStorage.getItem('ekl_token');
+  if (!token || !API_BASE || API_BASE.includes('localhost')) { toast('Not connected to backend', 'var(--red)'); return; }
+
+  fetch(API_BASE + '/api/fleet/worker/merge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+    body: JSON.stringify({ keep_id: keepId, discard_id: discardId }),
+  })
+    .then(function(r){ return r.json().then(function(d){ return { ok: r.ok, d: d }; }); })
+    .then(function(res){
+      if (!res.ok || !res.d || !res.d.ok) {
+        toast('Merge failed: ' + (res.d && res.d.error ? res.d.error : 'unknown error'), 'var(--red)');
+        return;
+      }
+      workers = workers.filter(function(w){ return w.id !== discardId; });
+      const idx = workers.findIndex(function(w){ return w.id === keepId; });
+      if (idx >= 0) workers[idx] = res.d.worker; else workers.push(res.d.worker);
+      customers.forEach(function(c){ c.miners = c.miners.filter(function(id){ return id !== discardId; }); });
+      closeSheet('mergeSheet');
+      mergeCandidateIds = [];
+      _workersHash = '';
+      renderWorkers(); renderDash();
+      toast('✓ Merged into ' + (res.d.worker.name || keepId), 'var(--green)');
+    })
+    .catch(function(e){ toast('Merge failed: ' + e.message, 'var(--red)'); });
 }
 
 // ── Disable / enable ──────────────────────────────────────
@@ -3217,6 +3308,16 @@ function toggleCfg(id){ const el = document.getElementById(id); if(el) el.style.
 function toggleFb(){ const el = document.getElementById('failoverFields'); if(el) el.style.display = el.style.display === 'none' ? 'block' : 'none'; }
 function toggleSelAll(cb){
   document.querySelectorAll('.worker-check').forEach(function(c){ c.checked = cb.checked; });
+  updateMergeSelBtn();
+}
+// Merge only ever makes sense for exactly two records — "keep" needs
+// exactly one other candidate to compare against — so the button only
+// appears once the selection is precisely that.
+function updateMergeSelBtn(){
+  const btn = document.getElementById('mergeSelBtn');
+  if (!btn) return;
+  const n = document.querySelectorAll('.worker-check:checked').length;
+  btn.style.display = n === 2 ? '' : 'none';
 }
 function applyPreset(url, user){
   const u = document.getElementById('poolUrl'); if(u) u.value = url;
@@ -3238,6 +3339,11 @@ function matchesWorkerFilter(w, filter){
   if (filter === 'disabled') return !!w.disabled;
   if (filter === 'sleeping') return w.status === 'sleeping';
   if (filter === 'warn')     return !w.disabled && w.status === 'warn';
+  // A machine whose id still starts "w-ip-" never had a MAC or serial
+  // captured, so it has no identity except its current IP — the exact
+  // condition that produces a duplicate record instead of an update
+  // the next time that IP changes.
+  if (filter === 'noHwId')   return typeof w.id === 'string' && w.id.indexOf('w-ip-') === 0;
   // online/offline go through effectiveStatus so a machine whose agent
   // is down, or whose hashrate is 0, is correctly counted as offline here too
   const eff = effectiveStatus(w);
