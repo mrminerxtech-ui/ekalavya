@@ -1865,11 +1865,62 @@ function loadFleetFromBackend(cb) {
             console.log('[FLEET] +' + added + ' new, ' + updated + ' status updates from backend');
           }
         }
+        // Apply deletions made on OTHER devices. This merge is otherwise
+        // purely additive — it can tell "the server has something I
+        // don't" but never "I have something that was deleted", so a
+        // customer deleted on a laptop stayed on the phone forever, and
+        // the phone would push it back to the server on its next save.
+        // The server now says explicitly what was deleted.
+        pruneDeletedLocally(d);
         loadAgentConfigsFromBackend();
         if (cb) cb();
       })
       .catch(() => { if (cb) cb(); });
   } catch(e) { if (cb) cb(); }
+}
+
+// Remove anything from this device's local copy that was deliberately
+// deleted somewhere else. A record is only dropped if the server BOTH
+// lists it as deleted AND isn't currently holding one — so a machine
+// that was removed from the fleet and then rediscovered by the agent
+// (still plugged in, still hashing) stays put rather than flickering
+// in and out.
+function pruneDeletedLocally(d) {
+  if (!d || !Array.isArray(d.deleted) || d.deleted.length === 0) return;
+
+  const liveWorkerIds   = new Set((d.workers   || []).map(function(w){ return w.id; }));
+  const liveCustomerIds = new Set((d.customers || []).map(function(c){ return c.id; }));
+
+  const deadWorkerIds = new Set(d.deleted
+    .filter(function(t){ return t.kind === 'worker' && !liveWorkerIds.has(t.id); })
+    .map(function(t){ return t.id; }));
+  const deadCustomerIds = new Set(d.deleted
+    .filter(function(t){ return t.kind === 'customer' && !liveCustomerIds.has(t.id); })
+    .map(function(t){ return t.id; }));
+
+  if (!deadWorkerIds.size && !deadCustomerIds.size) return;
+
+  const beforeW = workers.length, beforeC = customers.length;
+  if (deadWorkerIds.size) {
+    workers = workers.filter(function(w){ return !deadWorkerIds.has(w.id); });
+    // A machine that's gone shouldn't stay listed against a customer
+    customers.forEach(function(c){
+      if (Array.isArray(c.miners)) c.miners = c.miners.filter(function(id){ return !deadWorkerIds.has(id); });
+    });
+  }
+  if (deadCustomerIds.size) {
+    customers = customers.filter(function(c){ return !deadCustomerIds.has(c.id); });
+    // ...and a miner shouldn't stay assigned to a customer that's gone
+    workers.forEach(function(w){ if (deadCustomerIds.has(w.cid)) w.cid = ''; });
+  }
+
+  const removedW = beforeW - workers.length, removedC = beforeC - customers.length;
+  if (removedW > 0 || removedC > 0) {
+    saveFleet();
+    _fleetHash = ''; _workersHash = '';
+    console.log('[FLEET] Removed ' + removedW + ' machine(s) and ' + removedC + ' customer(s) deleted on another device');
+    try { renderAll(); } catch(e) {}
+  }
 }
 
 function loadAgentConfigsFromBackend(){
@@ -2319,7 +2370,11 @@ function toast(msg,col){const t=document.createElement('div');t.className='toast
 // /api/team (admin-only). Separate from customers (portal, miners-
 // only) and from the three hardcoded demo logins in auth.js.
 let team = [];
-const ROLE_LABELS = { team: 'Team Member', technician: 'Technician', viewer: 'Viewer' };
+// "viewer" is no longer offered — it promised read-only access that
+// nothing in the app enforced. It stays in this map only so an account
+// created under it before still shows a sensible label; editing one
+// moves it to Technician, which is the access it always actually had.
+const ROLE_LABELS = { team: 'Team Member', technician: 'Technician', viewer: 'Technician' };
 
 function loadTeamFromBackend(cb) {
   const token = localStorage.getItem('ekl_token');
@@ -2395,7 +2450,9 @@ function openEditTeamMember(tid) {
   document.getElementById('etUser').value = m.username || '';
   document.getElementById('etPass').value = '';
   document.getElementById('etPass').placeholder = 'Leave blank to keep current password';
-  document.getElementById('etRole').value = m.role || 'team';
+  // A role that's no longer offered (the old "viewer") has no matching
+  // option, which would leave the select blank — fall back to Technician
+  document.getElementById('etRole').value = (m.role === 'team' || m.role === 'technician') ? m.role : 'technician';
   document.getElementById('etActive').checked = m.active !== false;
   openSheet('editTeamSheet');
 }
