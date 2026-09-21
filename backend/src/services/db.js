@@ -1,42 +1,144 @@
 // ============================================================
 // DATABASE — PostgreSQL via Railway
 // Auto-creates tables on first run
-// Falls back to /tmp JSON file if DATABASE_URL not set
+// Falls back to a JSON file if PostgreSQL isn't reachable
 // ============================================================
 const { Pool } = require('pg');
 
 let pool = null;
 let useFallback = false;
+let connecting = null;      // in-flight connect(), so we only ever run one
+let retryTimer = null;
 
-const FALLBACK_FILE = '/tmp/ekl-fleet.json';
+// The fallback file is a LAST RESORT, not a storage option.
+//
+// On a hosted platform the container's filesystem is thrown away and
+// rebuilt on every deploy, so anything living here disappears the next
+// time the software is updated — including customer portal passwords
+// and team logins, which exist nowhere else. That is exactly what
+// "credentials erased after an update" looks like.
+//
+// Set FALLBACK_FILE to a path on a mounted volume if you want this to
+// survive at all; the only real fix is a working DATABASE_URL.
+const FALLBACK_FILE = process.env.FALLBACK_FILE || '/tmp/ekl-fleet.json';
 const fs = require('fs');
 
+function warnEphemeralStorage(reason) {
+  console.warn('');
+  console.warn('╔════════════════════════════════════════════════════════════╗');
+  console.warn('║  ⚠  RUNNING WITHOUT A DATABASE — DATA WILL BE LOST         ║');
+  console.warn('╚════════════════════════════════════════════════════════════╝');
+  console.warn(`[DB] Reason: ${reason}`);
+  console.warn(`[DB] Storing everything in ${FALLBACK_FILE} instead.`);
+  console.warn('[DB] On Railway this file is wiped on every redeploy, which');
+  console.warn('[DB] erases customer portal passwords and team logins — they');
+  console.warn('[DB] are not stored anywhere else and cannot be recovered.');
+  console.warn('[DB] Fix: set DATABASE_URL to your Postgres instance.');
+  console.warn('');
+}
+
 // ── Connect ───────────────────────────────────────────────
+// Postgres often isn't accepting connections yet at the instant this
+// process starts (the database container is still coming up after a
+// deploy). The previous version tried exactly once and, on failure,
+// switched to the file store permanently — so a database that became
+// reachable two seconds later went unused until someone restarted the
+// app, and everything written in between was lost on the next deploy.
+// This retries, and keeps retrying in the background.
+const CONNECT_ATTEMPTS  = 5;
+const RETRY_INTERVAL_MS = 30000;
+
 async function connect() {
-  if (!process.env.DATABASE_URL) {
-    console.warn('[DB] DATABASE_URL not set — using /tmp file fallback');
+  // One attempt at a time. Once connected, the guard stays so we never
+  // reconnect needlessly; if we ended up on the fallback, the guard is
+  // released so a later call (the retry timer, or anything else) can
+  // try again.
+  if (connecting) return connecting;
+  connecting = (async () => {
+    if (!process.env.DATABASE_URL) {
+      useFallback = true;
+      warnEphemeralStorage('DATABASE_URL is not set');
+      return;
+    }
+    for (let attempt = 1; attempt <= CONNECT_ATTEMPTS; attempt++) {
+      try {
+        pool = new Pool({
+          connectionString: process.env.DATABASE_URL,
+          ssl: process.env.DATABASE_URL.includes('railway') || process.env.DATABASE_URL.includes('amazonaws')
+            ? { rejectUnauthorized: false }
+            : false,
+          max: 5,
+          idleTimeoutMillis: 30000,
+        });
+        await pool.query('SELECT 1');
+        console.log(`[DB] ✓ PostgreSQL connected${attempt > 1 ? ` (attempt ${attempt})` : ''}`);
+        await createTables();
+        const wasOnFallback = useFallback;
+        useFallback = false;
+        if (retryTimer) { clearInterval(retryTimer); retryTimer = null; }
+        // Anything written while the database was unreachable is still
+        // sitting in the fallback file — move it in rather than leaving
+        // it to be wiped with the container.
+        if (wasOnFallback) await importFallbackFile();
+        return;
+      } catch(e) {
+        try { if (pool) await pool.end(); } catch(_) {}
+        pool = null;
+        console.error(`[DB] Connection attempt ${attempt}/${CONNECT_ATTEMPTS} failed: ${e.message}`);
+        if (attempt < CONNECT_ATTEMPTS) {
+          await new Promise(r => setTimeout(r, 2000 * attempt));  // 2s, 4s, 6s, 8s
+        }
+      }
+    }
     useFallback = true;
-    return;
-  }
+    warnEphemeralStorage('PostgreSQL could not be reached');
+    // Keep trying — the moment it comes up, switch over and carry the
+    // fallback file's contents across.
+    if (!retryTimer) {
+      retryTimer = setInterval(() => {
+        console.log('[DB] Retrying PostgreSQL connection...');
+        connect().catch(() => {});
+      }, RETRY_INTERVAL_MS);
+      if (retryTimer.unref) retryTimer.unref();
+    }
+  })();
+
+  const attempt = connecting;
   try {
-    pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.DATABASE_URL.includes('railway') || process.env.DATABASE_URL.includes('amazonaws')
-        ? { rejectUnauthorized: false }
-        : false,
-      max: 5,
-      idleTimeoutMillis: 30000,
-    });
-    await pool.query('SELECT 1');
-    console.log('[DB] ✓ PostgreSQL connected');
-    await createTables();
-  } catch(e) {
-    console.error('[DB] Connection failed:', e.message);
-    console.warn('[DB] Falling back to /tmp file storage');
-    useFallback = true;
-    pool = null;
+    return await attempt;
+  } finally {
+    // Still on the fallback — let the next caller try again.
+    if (useFallback && connecting === attempt) connecting = null;
   }
 }
+
+// Whatever was written while the database was down gets carried into
+// Postgres, then the file is set aside so it can't be imported twice.
+async function importFallbackFile() {
+  try {
+    if (!fs.existsSync(FALLBACK_FILE)) return;
+    const store = JSON.parse(fs.readFileSync(FALLBACK_FILE, 'utf8'));
+    const workers   = Array.isArray(store.workers)   ? store.workers   : [];
+    const customers = Array.isArray(store.customers) ? store.customers : [];
+    const teamers   = Array.isArray(store.team_members) ? store.team_members : [];
+    if (!workers.length && !customers.length && !teamers.length) return;
+
+    console.log(`[DB] Carrying ${workers.length} machine(s), ${customers.length} customer(s) and ${teamers.length} team account(s) from the fallback file into PostgreSQL`);
+    if (workers.length)   await saveWorkers(workers);
+    if (customers.length) await saveCustomers(customers);
+    for (const m of teamers) await saveTeamMember(m);
+
+    fs.renameSync(FALLBACK_FILE, FALLBACK_FILE + '.imported-' + Date.now());
+    console.log('[DB] ✓ Fallback data imported');
+  } catch(e) {
+    console.error('[DB] Could not import fallback file (left in place):', e.message);
+  }
+}
+
+// The connection is started here rather than relying on something else
+// to call connect(). If a caller does call it, the guard above means
+// this still only happens once.
+connect().catch(e => console.error('[DB] Startup connect failed:', e.message));
 
 // ── Create tables ─────────────────────────────────────────
 async function createTables() {
