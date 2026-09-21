@@ -268,12 +268,82 @@ function stableWorkerId(m) {
   return 'w-ip-' + String(m.ip).replace(/\./g, '-');
 }
 
+// Identity only works if it's unique. Some firmware reports a MAC (or
+// serial) that ISN'T the machine's own — a factory default, a value
+// copied across a whole production batch, or a string scraped out of a
+// boot log that reads the same on every unit of that model. When that
+// happens, every one of those machines matches the same saved record
+// and they collapse into one: the record jumps from IP to IP several
+// times a second, the other machines vanish from the fleet, and their
+// customer assignment and history are mixed together.
+//
+// A machine can legitimately change IP, but two machines cannot be at
+// two IPs at the same instant. So any MAC or serial claimed by more
+// than one machine in the SAME poll is not an identity — it's dropped
+// for matching, and those machines fall through to the identifiers
+// that are still trustworthy (pool worker ID, then IP).
+// Shortest believable gap between the same machine being seen at one
+// farm and then another: it has to be physically moved.
+const RELOCATION_MIN_GAP_MS = 5 * 60 * 1000;
+
+function scrubCollidingIds(farmId, miners) {
+  const seen = { mac: new Map(), serial: new Map() };
+  miners.forEach(m => {
+    if (!m) return;
+    ['mac', 'serial'].forEach(field => {
+      const v = m[field];
+      if (!v) return;
+      if (!seen[field].has(v)) seen[field].set(v, []);
+      seen[field].get(v).push(m);
+    });
+  });
+
+  const collisions = [];
+  ['mac', 'serial'].forEach(field => {
+    seen[field].forEach((claimants, value) => {
+      if (claimants.length < 2) return;
+      collisions.push({
+        field, value,
+        ips: claimants.map(m => m.ip),
+        source: claimants[0].mac_source || 'firmware',
+      });
+      claimants.forEach(m => {
+        m['bad_' + field] = value;   // kept for display, never for matching
+        m[field] = null;
+      });
+    });
+  });
+
+  collisions.forEach(c => {
+    console.warn(`[DB] ⚠ ${c.ips.length} machines on ${farmId} all report ${c.field} ${c.value} ` +
+                 `(via ${c.source}) — ignoring it as an identity for: ${c.ips.join(', ')}`);
+  });
+  return collisions;
+}
+
 async function upsertWorkersByIp(farmId, minersFoundNow) {
-  if (useFallback || !pool) return upsertWorkersFallback(farmId, minersFoundNow);
+  minersFoundNow = minersFoundNow || [];
+  const collisions = scrubCollidingIds(farmId, minersFoundNow);
+  if (useFallback || !pool) return upsertWorkersFallback(farmId, minersFoundNow, collisions);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const nowIps = new Set(minersFoundNow.map(m => m.ip));
+
+    // A record already saved under a colliding ID is poisoned too — it
+    // holds whichever machine wrote last. Clear the bad value off it so
+    // it stops matching, and so the "Find & Merge Duplicates" tool
+    // doesn't see several different machines as copies of one.
+    for (const c of collisions) {
+      const patch = {};
+      patch[c.field] = null;
+      patch['bad_' + c.field] = c.value;
+      const r = await client.query(
+        `UPDATE workers SET data = data || $2::jsonb WHERE data->>$3 = $1`,
+        [c.value, JSON.stringify(patch), c.field]
+      );
+      if (r.rowCount > 0) console.warn(`[DB]   cleared that ${c.field} off ${r.rowCount} saved record(s)`);
+    }
 
     // Update or insert every miner the poll found — merge new readings
     // into the existing saved record so user-set fields (customer
@@ -285,14 +355,28 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
       // before assuming this IP represents a brand-new machine. This is
       // what stops a moved miner from showing up as a duplicate under a
       // second record at its new address.
+      // The same collision can also span two farms — one site's batch
+      // can't see the other's. A machine CAN be physically moved
+      // between farms, but not in the seconds between two polls: that
+      // takes unracking, transport and re-racking. So a record that
+      // another farm updated moments ago isn't this machine.
+      const claimedElsewhere = (row) => {
+        if (!row || row.farm_id === farmId) return false;
+        const age = Date.now() - new Date(row.updated_at).getTime();
+        if (age > RELOCATION_MIN_GAP_MS) return false;   // plausible move
+        console.warn(`[DB] ⚠ ${m.ip} (${farmId}) claims the identity of a machine ` +
+                     `${row.farm_id} reported ${Math.round(age/1000)}s ago — treating as a duplicate ID, not a move`);
+        return true;
+      };
+
       let existing = null;
       if (m.mac) {
-        const byMac = await client.query(`SELECT id, data FROM workers WHERE data->>'mac' = $1`, [m.mac]);
-        if (byMac.rows.length > 0) existing = byMac.rows[0];
+        const byMac = await client.query(`SELECT id, data, farm_id, updated_at FROM workers WHERE data->>'mac' = $1`, [m.mac]);
+        if (byMac.rows.length > 0 && !claimedElsewhere(byMac.rows[0])) existing = byMac.rows[0];
       }
       if (!existing && m.serial) {
-        const bySerial = await client.query(`SELECT id, data FROM workers WHERE data->>'serial' = $1`, [m.serial]);
-        if (bySerial.rows.length > 0) existing = bySerial.rows[0];
+        const bySerial = await client.query(`SELECT id, data, farm_id, updated_at FROM workers WHERE data->>'serial' = $1`, [m.serial]);
+        if (bySerial.rows.length > 0 && !claimedElsewhere(bySerial.rows[0])) existing = bySerial.rows[0];
       }
       // Last hardware-based fallback: the pool Worker ID (the
       // wallet.worker-name string configured ON the miner) survives a
@@ -303,10 +387,10 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
       // orphan plus a brand-new "unknown machine" record at its new IP.
       if (!existing && m.worker_id && m.worker_id !== '—') {
         const byWid = await client.query(
-          `SELECT id, data FROM workers WHERE data->>'worker_id' = $1 AND data->>'worker_id' != '—'`,
+          `SELECT id, data, farm_id, updated_at FROM workers WHERE data->>'worker_id' = $1 AND data->>'worker_id' != '—'`,
           [m.worker_id]
         );
-        if (byWid.rows.length > 0) existing = byWid.rows[0];
+        if (byWid.rows.length > 0 && !claimedElsewhere(byWid.rows[0])) existing = byWid.rows[0];
       }
       if (!existing) {
         const byIp = await client.query(`SELECT id, data FROM workers WHERE data->>'ip' = $1 AND farm_id = $2`, [m.ip, farmId]);
@@ -369,10 +453,17 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
   } finally { client.release(); }
 }
 
-function upsertWorkersFallback(farmId, minersFoundNow) {
+function upsertWorkersFallback(farmId, minersFoundNow, collisions) {
   // File-based fallback — same MAC/Serial-first matching as above,
   // simplified for the in-memory/file store
   const existing = loadFallback('workers');
+  // Same clean-up as the database path: a saved record holding a
+  // colliding ID must stop matching on it.
+  (collisions || []).forEach(c => {
+    existing.forEach(w => {
+      if (w && w[c.field] === c.value) { w['bad_' + c.field] = c.value; w[c.field] = null; }
+    });
+  });
   const nowIps = new Set(minersFoundNow.map(m => m.ip));
   const byId = new Map(existing.map(w => [w.id, w]));
 
