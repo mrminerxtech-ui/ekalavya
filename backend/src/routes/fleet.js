@@ -60,6 +60,7 @@ router.post('/save', authMiddleware, async (req, res) => {
   if (processedCustomers.length > 0) {
     const existing = await db.loadCustomers();
     const existingById = new Map(existing.map(c => [c.id, c]));
+    const orphaned = [];
     processedCustomers = processedCustomers.map(c => {
       const old = existingById.get(c.id);
       if (c.password && !isHashed(c.password)) {
@@ -72,8 +73,26 @@ router.post('/save', authMiddleware, async (req, res) => {
         // whatever is already stored rather than wiping it out
         return { ...c, password: old.password };
       }
+      // No password here, and none on record either — but the browser
+      // believes this customer HAS one (has_password came back true on
+      // its last load). The password hash is never sent to the browser,
+      // so a device can't supply it: this means the stored record was
+      // lost since that device last synced. Recreating the customer
+      // without a password would leave a portal account that silently
+      // rejects every login, and hide the fact that anything was lost.
+      // The record is kept, portal access is switched off, and it's
+      // said out loud instead.
+      if (!c.password && !old && c.has_password) {
+        orphaned.push(c.name || c.id);
+        return { ...c, portal: false, has_password: false };
+      }
       return c;
     });
+    if (orphaned.length > 0) {
+      console.warn(`[FLEET] ⚠ ${orphaned.length} customer(s) restored from a device's local copy WITHOUT their password: ${orphaned.join(', ')}`);
+      console.warn('[FLEET]   Their stored record was lost (see the [DB] warnings at startup — most likely the database was unreachable and data went to the ephemeral fallback file).');
+      console.warn('[FLEET]   Portal access is off for them until an admin sets a new password in Customers → Edit.');
+    }
   }
 
   // A "Clear All" wipes the server's tables, but every other device
