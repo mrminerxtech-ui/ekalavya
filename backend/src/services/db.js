@@ -164,6 +164,20 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
         const bySerial = await client.query(`SELECT id, data FROM workers WHERE data->>'serial' = $1`, [m.serial]);
         if (bySerial.rows.length > 0) existing = bySerial.rows[0];
       }
+      // Last hardware-based fallback: the pool Worker ID (the
+      // wallet.worker-name string configured ON the miner) survives a
+      // reboot and a new DHCP lease even on a machine whose MAC/Serial
+      // were never successfully read — exactly the case when an entire
+      // farm reboots at once after a power outage. Without this, every
+      // such machine would silently split into a permanently-offline
+      // orphan plus a brand-new "unknown machine" record at its new IP.
+      if (!existing && m.worker_id && m.worker_id !== '—') {
+        const byWid = await client.query(
+          `SELECT id, data FROM workers WHERE data->>'worker_id' = $1 AND data->>'worker_id' != '—'`,
+          [m.worker_id]
+        );
+        if (byWid.rows.length > 0) existing = byWid.rows[0];
+      }
       if (!existing) {
         const byIp = await client.query(`SELECT id, data FROM workers WHERE data->>'ip' = $1 AND farm_id = $2`, [m.ip, farmId]);
         if (byIp.rows.length > 0) existing = byIp.rows[0];
@@ -230,6 +244,11 @@ function upsertWorkersFallback(farmId, minersFoundNow) {
   function findExisting(m) {
     if (m.mac)    { const f = existing.find(w => w.mac === m.mac); if (f) return f; }
     if (m.serial) { const f = existing.find(w => w.serial === m.serial); if (f) return f; }
+    // Pool Worker ID fallback — see the matching comment in
+    // upsertWorkersByIp above for why this matters after a reboot.
+    if (m.worker_id && m.worker_id !== '—') {
+      const f = existing.find(w => w.worker_id === m.worker_id && w.worker_id !== '—'); if (f) return f;
+    }
     return existing.find(w => w.ip === m.ip && w.farm_id === farmId) || null;
   }
 
@@ -420,6 +439,48 @@ async function deleteWorker(id) {
     console.error('[DB] deleteWorker error:', e.message);
     return false;
   }
+}
+
+// A machine can end up recorded twice: once under its original identity,
+// and again under a fresh one, when it couldn't be recognised as "the
+// same machine" on a later poll. That happens whenever BOTH its MAC and
+// serial number are unavailable (some firmware never exposes either) —
+// its only identity is then its IP, and any IP change (a DHCP renewal
+// after a reboot, a router replacement, a whole farm's power coming
+// back on at once) makes the poll treat it as brand-new. The old record
+// sits there orphaned and offline; a second, freshly-created record
+// carries its real current readings under a new id.
+//
+// This merges the two back into one: KEEP's identity (id, name, customer
+// assignment, disabled state, added_at — everything a person set) is
+// preserved, and DISCARD's live readings (ip, mac, serial, hashrate,
+// temp, status, pool info, etc.) are copied on top, since those are
+// what's actually current. DISCARD is then deleted.
+const LIVE_WORKER_FIELDS = [
+  'ip', 'mac', 'serial', 'model', 'brand', 'algo',
+  'hashrate', 'hr_unit', 'hr_display', 'temp', 'fan', 'power', 'uptime',
+  'pool', 'worker', 'worker_id', 'pool_status', 'pools',
+  'accepted', 'rejected', 'hw_errors', 'boards', 'status', 'source',
+  'farm', 'farm_id',
+];
+async function mergeWorkers(keepId, discardId) {
+  if (!keepId || !discardId || keepId === discardId) {
+    return { ok: false, error: 'keep_id and discard_id must both be set and different' };
+  }
+  const [keep, discard] = await Promise.all([getWorkerById(keepId), getWorkerById(discardId)]);
+  if (!keep)    return { ok: false, error: 'Machine to keep not found' };
+  if (!discard) return { ok: false, error: 'Machine to discard not found' };
+
+  const merged = { ...keep };
+  LIVE_WORKER_FIELDS.forEach(f => { if (discard[f] !== undefined) merged[f] = discard[f]; });
+  // The discarded record's own id must never leak into the kept one
+  merged.id = keep.id;
+
+  const saved = await saveWorkers([merged]); // upsert — touches only this one record
+  if (!saved) return { ok: false, error: 'Failed to save merged machine' };
+  const deleted = await deleteWorker(discardId);
+  if (!deleted) console.error(`[DB] mergeWorkers: merged into ${keepId} but failed to delete duplicate ${discardId} — it will need removing by hand`);
+  return { ok: true, worker: merged };
 }
 
 async function deleteCustomer(id) {
@@ -691,5 +752,4 @@ async function getUptimeReport(days, farmId) {
   }
 }
 
-module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, upsertWorkersByIp, saveCustomers, loadCustomers, deleteCustomer, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport };
-
+module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, saveCustomers, loadCustomers, deleteCustomer, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport };
