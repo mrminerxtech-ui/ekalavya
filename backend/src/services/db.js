@@ -286,6 +286,44 @@ function stableWorkerId(m) {
 // farm and then another: it has to be physically moved.
 const RELOCATION_MIN_GAP_MS = 5 * 60 * 1000;
 
+// ── A machine that isn't running isn't producing readings ──────────
+// Hashrate, temperature and fan speed are only meaningful while a
+// machine is actually up. The poll paths below already clear them when
+// they mark something offline, but that was never the only way a record
+// got written: every browser and phone with the app open pushes its
+// WHOLE local fleet list back through POST /api/fleet/save, and that
+// save overwrote the stored record verbatim. A device holding a cached
+// copy from before a machine went down would therefore re-upload the old
+// hashrate and temperature straight over the cleared values — and
+// because the poll's clearing pass skips rows that are already marked
+// offline, nothing ever cleaned it up again. The row stayed offline and
+// "hashing at 15 GH/s, 80°C" indefinitely.
+//
+// So this is enforced at the point of storage instead of at each caller.
+// Whatever the source — poll, agent disconnect, or a client push — a
+// record that isn't online or in warning cannot carry live readings into
+// the database. 'warn' is kept because a machine over temperature is
+// still mining, which is exactly why it's worth warning about.
+const LIVE_STATUSES = ['online', 'warn'];
+
+function sanitizeWorkerReadings(w) {
+  if (!w || typeof w !== 'object') return w;
+  if (LIVE_STATUSES.includes(w.status)) return w;
+  if (!w.hashrate && w.temp == null && w.fan == null &&
+      (!w.hr_display || w.hr_display === '—')) return w;   // already clean
+  return { ...w, hashrate: 0, hr_display: '—', temp: null, fan: null };
+}
+
+// True when a stored row is offline but still carrying readings — the
+// state described above. Used to re-clean records that were poisoned
+// before this rule existed, since they're already marked offline and so
+// would otherwise be skipped by the mark-offline passes forever.
+function hasStaleReadings(w) {
+  if (!w || LIVE_STATUSES.includes(w.status)) return false;
+  return !!w.hashrate || w.temp != null || w.fan != null ||
+         (!!w.hr_display && w.hr_display !== '—');
+}
+
 function scrubCollidingIds(farmId, miners) {
   const seen = { mac: new Map(), serial: new Map() };
   miners.forEach(m => {
@@ -409,7 +447,7 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
                    status: m.status || 'online' };
         await client.query(
           `UPDATE workers SET data=$1, farm_id=$2, updated_at=NOW() WHERE id=$3`,
-          [JSON.stringify(merged), merged.farm_id, old.id]
+          [JSON.stringify(sanitizeWorkerReadings(merged)), merged.farm_id, old.id]
         );
         if (moved) console.log(`[DB] Miner ${old.id} moved: ${old.farm_id}(${old.ip}) → ${farmId}(${m.ip})`);
       } else {
@@ -436,13 +474,32 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
     // stale number in place made a genuinely dead machine's row look
     // like it was still mining right up until someone opened it.
     const allForFarm = await client.query(`SELECT id, data FROM workers WHERE farm_id = $1`, [farmId]);
+    let cleaned = 0;
     for (const row of allForFarm.rows) {
-      if (!nowIps.has(row.data.ip) && row.data.status !== 'offline' && !row.data.disabled) {
-        const updated = { ...row.data, status: 'offline',
-          hashrate: 0, hr_display: '—', temp: null, fan: null };
-        await client.query(`UPDATE workers SET data=$1, updated_at=NOW() WHERE id=$2`, [JSON.stringify(updated), row.id]);
-      }
+      if (nowIps.has(row.data.ip) || row.data.disabled) continue;
+      const goingOffline = row.data.status !== 'offline';
+      // A row that is ALREADY marked offline used to be skipped outright,
+      // which is why records that had been re-seeded with stale readings
+      // by a client push stayed "offline at 15 GH/s, 80°C" forever. They
+      // are re-cleaned here instead of being passed over.
+      const dirty = hasStaleReadings(row.data);
+      if (!goingOffline && !dirty) continue;
+      const updated = { ...row.data, status: 'offline',
+        hashrate: 0, hr_display: '—', temp: null, fan: null };
+      // Only a genuine status change bumps updated_at. A silent cleanup
+      // must not: another farm's poller reads updated_at to decide
+      // whether a machine could plausibly have been moved here, and a
+      // freshly-touched timestamp would make a real relocation look like
+      // a duplicate identity for the next few minutes.
+      await client.query(
+        goingOffline
+          ? `UPDATE workers SET data=$1, updated_at=NOW() WHERE id=$2`
+          : `UPDATE workers SET data=$1 WHERE id=$2`,
+        [JSON.stringify(updated), row.id]
+      );
+      if (!goingOffline) cleaned++;
     }
+    if (cleaned) console.log(`[DB] Cleared stale readings from ${cleaned} offline record(s) on ${farmId}`);
 
     await client.query('COMMIT');
     return true;
@@ -501,12 +558,54 @@ function upsertWorkersFallback(farmId, minersFoundNow, collisions) {
   // clear their last-known readings along with it — see the matching
   // comment in upsertWorkersByIp above for why.
   byId.forEach((w, id) => {
-    if (w.farm_id === farmId && !nowIps.has(w.ip) && w.status !== 'offline' && !w.disabled) {
-      byId.set(id, { ...w, status: 'offline', hashrate: 0, hr_display: '—', temp: null, fan: null });
-    }
+    if (w.farm_id !== farmId || nowIps.has(w.ip) || w.disabled) return;
+    // Already-offline rows are re-cleaned rather than skipped — see the
+    // matching comment in upsertWorkersByIp for why they can be dirty.
+    if (w.status === 'offline' && !hasStaleReadings(w)) return;
+    byId.set(id, { ...w, status: 'offline', hashrate: 0, hr_display: '—', temp: null, fan: null });
   });
 
   return saveFallback('workers', Array.from(byId.values()));
+}
+
+// ── Clear live readings the moment an agent connection itself is lost
+// (explicit disconnect, or a missed-heartbeat timeout) — not tied to any
+// poll. upsertWorkersByIp/Fallback only run when a poll actually arrives
+// from that farm; if the agent is down, no poll ever arrives, so nothing
+// clears the last hashrate/temp/fan it reported. That left a genuinely
+// dead machine's row looking like it was still hashing, badged OFFLINE
+// only because the frontend separately checks agent connectivity.
+async function clearFarmReadings(farmId) {
+  if (useFallback || !pool) {
+    const existing = loadFallback('workers');
+    let changed = false;
+    existing.forEach(w => {
+      if (!w || w.farm_id !== farmId || w.disabled) return;
+      if (w.status === 'offline' && !hasStaleReadings(w)) return;
+      w.status = 'offline'; w.hashrate = 0; w.hr_display = '—'; w.temp = null; w.fan = null;
+      changed = true;
+    });
+    if (changed) saveFallback('workers', existing);
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    const res = await client.query(`SELECT id, data FROM workers WHERE farm_id = $1`, [farmId]);
+    for (const row of res.rows) {
+      if (row.data.disabled) continue;
+      const goingOffline = row.data.status !== 'offline';
+      if (!goingOffline && !hasStaleReadings(row.data)) continue;
+      const updated = { ...row.data, status: 'offline', hashrate: 0, hr_display: '—', temp: null, fan: null };
+      await client.query(
+        goingOffline
+          ? `UPDATE workers SET data=$1, updated_at=NOW() WHERE id=$2`
+          : `UPDATE workers SET data=$1 WHERE id=$2`,
+        [JSON.stringify(updated), row.id]
+      );
+    }
+  } catch(e) {
+    console.error('[DB] clearFarmReadings error:', e.message);
+  } finally { client.release(); }
 }
 
 async function saveWorkers(workersList, clearAll) {
@@ -519,7 +618,11 @@ async function saveWorkers(workersList, clearAll) {
     // comment history: an unconditional delete-then-reinsert here used
     // to silently destroy data from other sessions/agents on every save.
     if (clearAll) await client.query('DELETE FROM workers');
-    for (const w of workersList) {
+    for (const raw of workersList) {
+      // Clients push their whole cached fleet here. A cached copy of a
+      // machine that has since gone down still carries its last reading,
+      // so it is stripped on the way in — see sanitizeWorkerReadings.
+      const w = sanitizeWorkerReadings(raw);
       await client.query(
         `INSERT INTO workers(id, data, farm_id) VALUES($1,$2,$3)
          ON CONFLICT (id) DO UPDATE SET data=$2, farm_id=$3, updated_at=NOW()`,
@@ -625,6 +728,9 @@ async function loadAllAgentConfigs() {
 // ── File fallback ─────────────────────────────────────────
 function saveFallback(key, data, clearAll) {
   try {
+    // Same rule as the database path — an offline machine's record can't
+    // carry live readings, whichever store is in use.
+    if (key === 'workers' && Array.isArray(data)) data = data.map(sanitizeWorkerReadings);
     let store = {};
     if (fs.existsSync(FALLBACK_FILE)) store = JSON.parse(fs.readFileSync(FALLBACK_FILE,'utf8'));
     if (clearAll || !Array.isArray(store[key])) {
@@ -1092,4 +1198,4 @@ async function getUptimeReport(days, farmId) {
   }
 }
 
-module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, addTombstone, clearTombstone, loadTombstones, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport };
+module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, clearFarmReadings, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, addTombstone, clearTombstone, loadTombstones, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport };
