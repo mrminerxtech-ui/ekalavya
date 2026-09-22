@@ -70,7 +70,7 @@ function buildAuthorizeUrl(stateToken) {
     redirectUrl,
     nonce:        crypto.randomBytes(8).toString('hex'),
     grantType:    'authorization_code',
-    showQRCode:   'false',
+    showQRCode:   'true',
   });
   return 'https://c2ccdn.coolkit.cc/oauth/index.html?' + params.toString();
 }
