@@ -671,7 +671,9 @@ function loadModelPower(cb) {
 
 // Save one model's wattage. The backend stores it centrally, so this
 // is what makes the figure reach the other sites and devices.
-function saveModelPower(modelLabel, watts) {
+// `force` = trust this OVER the miner's own live reading, for a model
+// whose firmware reports a number but the number is wrong.
+function saveModelPower(modelLabel, watts, force) {
   const token = localStorage.getItem('ekl_token');
   const w = Number(watts);
   if (!isFinite(w) || w <= 0) { toast('Enter the wattage as a number', 'var(--warn)'); return; }
@@ -679,14 +681,14 @@ function saveModelPower(modelLabel, watts) {
   fetch(API_BASE + '/api/power/models', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (token||'') },
-    body: JSON.stringify({ model: modelLabel, watts: w }),
+    body: JSON.stringify({ model: modelLabel, watts: w, force: !!force }),
   })
     .then(function(r){ return r.json().then(function(d){ return { ok: r.ok, d: d }; }); })
     .then(function(res){
       if (!res.ok) { toast(res.d.error || 'Could not save', 'var(--red)'); return; }
       modelPowerOverrides = res.d.models || [];
       const n = machinesCoveredBy(normalizeModelKey(modelLabel));
-      toast(modelLabel + ' set to ' + Math.round(w) + 'W — applied to ' + n + ' machine(s) fleet-wide', 'var(--green)');
+      toast(modelLabel + ' set to ' + Math.round(w) + 'W' + (force ? ' (overriding reported readings)' : '') + ' — applied to ' + n + ' machine(s) fleet-wide', 'var(--green)');
       renderPowerPanel();
       try { renderDash(); } catch(e) {}
     })
@@ -708,12 +710,38 @@ function removeModelPower(modelKey) {
     .catch(function(){ toast('Could not remove', 'var(--red)'); });
 }
 
-// Called from the inline "Set" buttons in the power panel
+// Called from the inline "Set"/"Update"/"Apply" buttons in the power panel
 function submitModelPower(btn) {
   const wrap  = btn.closest('[data-model]');
   if (!wrap) return;
-  const input = wrap.querySelector('input');
-  saveModelPower(wrap.getAttribute('data-model'), input ? input.value : '');
+  const input = wrap.querySelector('input[type=number]');
+  const check = wrap.querySelector('input[type=checkbox]');
+  saveModelPower(wrap.getAttribute('data-model'), input ? input.value : '', check ? check.checked : false);
+}
+
+// The "+ Correct a model" mini form — for a model that already reports
+// a number (so it never shows up in the "not counted" list) but the
+// number is wrong. Distinct from the quick-add rows above it, which are
+// only for models with no reading at all.
+function showAddModelCorrection() {
+  const el = document.getElementById('addModelCorrectionForm');
+  if (el) el.style.display = 'flex';
+  const btn = document.getElementById('addModelCorrectionBtn');
+  if (btn) btn.style.display = 'none';
+  const inp = document.getElementById('newCorrModel');
+  if (inp) inp.focus();
+}
+function submitNewModelCorrection() {
+  const model = document.getElementById('newCorrModel');
+  const watts = document.getElementById('newCorrWatts');
+  const force = document.getElementById('newCorrForce');
+  if (!model || !model.value.trim()) { toast('Enter the model name as it appears in the fleet', 'var(--warn)'); return; }
+  saveModelPower(model.value.trim(), watts ? watts.value : '', force ? force.checked : true);
+  model.value = ''; if (watts) watts.value = '';
+  const el = document.getElementById('addModelCorrectionForm');
+  if (el) el.style.display = 'none';
+  const btn = document.getElementById('addModelCorrectionBtn');
+  if (btn) btn.style.display = '';
 }
 
 // Firmware occasionally reports a power field that isn't watts at all
@@ -729,6 +757,20 @@ const PLAUSIBLE_WATTS_MAX = 25000;
 function minerWatts(w) {
   const st = effectiveStatus(w);
   if (st !== 'online' && st !== 'warn') return { watts: 0, source: 'off' };
+
+  const manual = overrideWattsFor(w);
+
+  // A "forced" entry means someone checked this model against reality
+  // (a clamp meter, the PDU) and found the firmware's own number
+  // wrong — not missing, WRONG. That is a different problem from a
+  // model that never reports at all, and the ordinary "measured beats
+  // everything" rule can't fix it, because the bad reading still looks
+  // like a plausible wattage and passes the sanity check below. So a
+  // forced entry is checked first and, when it applies, wins outright.
+  if (manual && manual.force && manual.watts > 0) {
+    return { watts: manual.watts, source: 'manual', key: manual.model_key, forced: true };
+  }
+
   const measured = Number(w.power) || 0;
   if (measured >= PLAUSIBLE_WATTS_MIN && measured <= PLAUSIBLE_WATTS_MAX) {
     return { watts: measured, source: 'measured' };
@@ -737,7 +779,6 @@ function minerWatts(w) {
   // table: they measured these actual machines with a clamp meter or
   // read the PDU, which is worth more than a manufacturer's rating —
   // and it's the only way a model the table doesn't know gets counted.
-  const manual = overrideWattsFor(w);
   if (manual && manual.watts > 0) return { watts: manual.watts, source: 'manual', key: manual.model_key };
   const spec = specWattsFor(w);
   if (spec > 0) return { watts: spec, source: 'spec' };
@@ -863,7 +904,7 @@ function renderPowerPanel() {
           + '<span style="flex:1;min-width:130px;font-family:Share Tech Mono,monospace;font-size:11px;color:var(--txt)">'
           +   escHtml(m) + ' <span style="color:var(--mute)">&times;' + p.total.unknownModels[m] + '</span></span>'
           + '<input type="number" min="50" max="25000" step="10" placeholder="watts"'
-          +   ' onkeydown="if(event.key===\'Enter\'){submitModelPower(this.nextElementSibling);}"'
+          +   ' onkeydown="if(event.key===\'Enter\'){submitModelPower(this.closest(\'[data-model]\').querySelector(\'button\'));}"'
           +   ' style="width:84px;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:5px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none">'
           + '<button class="abtn" onclick="submitModelPower(this)" style="border-color:var(--green);color:var(--green)">Apply to all</button>'
           + '</div>';
@@ -889,20 +930,39 @@ function renderPowerPanel() {
       return String(a.label||'').localeCompare(String(b.label||''));
     }).map(function(o){
       const n = machinesCoveredBy(o.model_key);
+      const forcedBadge = o.force
+        ? '<span title="This figure is trusted over the miner\'s own reported reading" style="margin-left:6px;padding:1px 6px;border-radius:3px;background:rgba(255,176,32,.15);border:1px solid rgba(255,176,32,.35);color:var(--warn);font-size:9px;white-space:nowrap">OVERRIDE</span>'
+        : '';
       return '<div data-model="' + escHtml(o.label || o.model_key) + '" style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap">'
         + '<span style="flex:1;min-width:130px;font-family:Share Tech Mono,monospace;font-size:11px">'
-        +   escHtml(o.label || o.model_key)
+        +   escHtml(o.label || o.model_key) + forcedBadge
         +   ' <span style="color:' + (n ? 'var(--mute)' : 'var(--warn)') + '">' + (n ? '&rarr; ' + n + ' machine(s)' : 'matches nothing right now') + '</span></span>'
         + '<input type="number" min="50" max="25000" step="10" value="' + Number(o.watts) + '"'
-        +   ' onkeydown="if(event.key===\'Enter\'){submitModelPower(this.nextElementSibling);}"'
+        +   ' onkeydown="if(event.key===\'Enter\'){submitModelPower(this.closest(\'[data-model]\').querySelector(\'.mp-update\'));}"'
         +   ' style="width:84px;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:5px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none">'
-        + '<button class="abtn" onclick="submitModelPower(this)">Update</button>'
+        + '<label style="display:flex;align-items:center;gap:4px;font-size:9px;color:var(--mute);white-space:nowrap;cursor:pointer">'
+        +   '<input type="checkbox" ' + (o.force ? 'checked' : '') + ' style="accent-color:var(--warn)"> override live reading</label>'
+        + '<button class="abtn mp-update" onclick="submitModelPower(this)">Update</button>'
         + '<button class="abtn" onclick="removeModelPower(\'' + escHtml(o.model_key) + '\')" style="border-color:var(--red);color:var(--red)">&times;</button>'
         + '</div>';
     }).join('');
     manualList = '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--b1)">'
-      + '<div style="font-size:10px;color:var(--mute);margin-bottom:2px">Power entered by hand &mdash; shared across all sites and devices</div>'
-      + items + '</div>';
+      + '<div style="font-size:10px;color:var(--mute);margin-bottom:2px">Power entered by hand &mdash; shared across all sites and devices. '
+      + '"Override live reading" means this figure is trusted even when the miner reports its own number, for a model whose firmware is known to report the wrong watts.</div>'
+      + items
+      + '<div style="margin-top:10px">'
+      +   '<button class="abtn" id="addModelCorrectionBtn" onclick="showAddModelCorrection()">+ Correct a model\'s reported power</button>'
+      +   '<div id="addModelCorrectionForm" style="display:none;margin-top:8px;align-items:center;gap:8px;flex-wrap:wrap">'
+      +     '<input id="newCorrModel" type="text" placeholder="Model name (e.g. Antminer S21 Hyd)"'
+      +       ' style="flex:1;min-width:160px;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:5px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none">'
+      +     '<input id="newCorrWatts" type="number" min="50" max="25000" step="10" placeholder="watts"'
+      +       ' style="width:84px;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:5px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none">'
+      +     '<label style="display:flex;align-items:center;gap:4px;font-size:9px;color:var(--mute);white-space:nowrap;cursor:pointer">'
+      +       '<input id="newCorrForce" type="checkbox" checked style="accent-color:var(--warn)"> override live reading</label>'
+      +     '<button class="abtn" onclick="submitNewModelCorrection()" style="border-color:var(--green);color:var(--green)">Save</button>'
+      +   '</div>'
+      + '</div>'
+      + '</div>';
   }
 
   // Details (which models are uncounted, and the hand-entered list) are
