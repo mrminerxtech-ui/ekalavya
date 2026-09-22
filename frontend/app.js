@@ -215,9 +215,9 @@ function renderWorkers() {
       + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (w.ip || '—') + '</td>'
       + '<td style="font-size:11px">' + (w.farm || (ag ? ag.name : '—')) + '</td>'
       + '<td style="font-size:11px">' + (cust ? cust.name : '<span style="color:var(--mute)">—</span>') + '</td>'
-      + '<td style="color:var(--green);font-family:Share Tech Mono,monospace;font-size:11px">' + hrDisplay(w) + '</td>'
-      + '<td style="' + tc + ';font-family:Share Tech Mono,monospace;font-size:11px">' + (w.temp > 0 ? w.temp + '\u00b0C' : '—') + '</td>'
-      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (w.fan > 0 ? w.fan : '—') + '</td>'
+      + '<td style="color:var(--green);font-family:Share Tech Mono,monospace;font-size:11px">' + (eSt === 'online' ? hrDisplay(w) : '<span style="color:var(--mute)">—</span>') + '</td>'
+      + '<td style="' + tc + ';font-family:Share Tech Mono,monospace;font-size:11px">' + (eSt === 'online' && w.temp > 0 ? w.temp + '\u00b0C' : '—') + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (eSt === 'online' && w.fan > 0 ? w.fan : '—') + '</td>'
       + '<td style="font-size:10px;color:var(--mute)">' + (w.pool || '—') + '</td>'
       + '<td><span class="badge ' + sb + '">' + st + '</span></td>'
       + '<td><button class="abtn open-ctrl-btn" data-wid="' + w.id + '">Manage</button></td>'
@@ -842,9 +842,9 @@ function renderPortal() {
       + '<td><span class="sdot ' + sdot(w) + '"></span></td>'
       + '<td style="font-family:Share Tech Mono,monospace;font-size:12px;color:var(--cyan);font-weight:700">' + (w.name || w.ip) + '</td>'
       + '<td style="font-size:11px">' + cleanBrandModel(w.brand) + ' ' + cleanBrandModel(w.model) + '</td>'
-      + '<td style="color:var(--green);font-family:Share Tech Mono,monospace;font-size:11px">' + (w.hr_display || '—') + '</td>'
-      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (w.temp > 0 ? w.temp + '°C' : '—') + '</td>'
-      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (w.fan > 0 ? w.fan : '—') + '</td>'
+      + '<td style="color:var(--green);font-family:Share Tech Mono,monospace;font-size:11px">' + (eff === 'online' ? (w.hr_display || '—') : '—') + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (eff === 'online' && w.temp > 0 ? w.temp + '°C' : '—') + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (eff === 'online' && w.fan > 0 ? w.fan : '—') + '</td>'
       + '<td style="font-size:10px;color:var(--mute)">' + (w.pool || '—') + '</td>'
       + '<td><span class="badge ' + sb + '">' + (w.disabled ? 'REPAIR' : eff.toUpperCase()) + '</span></td>'
       + '<td><button class="abtn" onclick="openCtrl(\'' + w.id + '\')">Manage</button></td>'
@@ -1859,18 +1859,32 @@ function loadFleetFromBackend(cb) {
               workers.push(bw); added++;
             } else if (!existing.disabled) {
               let changedThis = false;
-              if (existing.status !== bw.status) {
-                // Sync live status/readings from the server's poll-based
-                // record (which reflects whether the agent actually saw
-                // this machine in its last scan) — but never touch
-                // user-set fields like name, model, or manual MAC/serial
-                existing.status   = bw.status;
-                existing.hashrate = bw.hashrate ?? existing.hashrate;
-                existing.temp     = bw.temp     ?? existing.temp;
-                existing.fan      = bw.fan      ?? existing.fan;
-                existing.hr_display = bw.hr_display || existing.hr_display;
-                changedThis = true;
-              }
+              // Sync live status AND readings from the server's poll-based
+              // record (which reflects whether the agent actually saw this
+              // machine in its last scan) — but never touch user-set
+              // fields like name, model, or manual MAC/serial.
+              //
+              // This used to run only when the status STRING changed, and
+              // to fall back to the local value whenever the server sent
+              // null. Both meant a machine that went down kept showing its
+              // last hashrate and temperature here indefinitely: the server
+              // cleared them to 0/null, but with the status already
+              // 'offline' on both sides there was nothing to trigger the
+              // sync, and null would have been ignored in favour of the
+              // stale local number even if there had been. The device then
+              // pushed those numbers back on the next save. The server is
+              // authoritative for all four of these, including when it
+              // says there is no reading.
+              if (existing.status !== bw.status) { existing.status = bw.status; changedThis = true; }
+              const live = (bw.status === 'online' || bw.status === 'warn');
+              const nHr   = live ? (bw.hashrate || 0)      : 0;
+              const nTemp = live ? (bw.temp ?? null)       : null;
+              const nFan  = live ? (bw.fan  ?? null)       : null;
+              const nDisp = live ? (bw.hr_display || '—')  : '—';
+              if (existing.hashrate   !== nHr)   { existing.hashrate   = nHr;   changedThis = true; }
+              if (existing.temp       !== nTemp) { existing.temp       = nTemp; changedThis = true; }
+              if (existing.fan        !== nFan)  { existing.fan        = nFan;  changedThis = true; }
+              if (existing.hr_display !== nDisp) { existing.hr_display = nDisp; changedThis = true; }
               // Customer assignment (cid) is authoritative from the
               // backend, always — unlike hashrate/temp there's no
               // legitimate reason a device's LOCAL cache would ever be
@@ -2937,12 +2951,13 @@ function openFarmDetail(farmId){
       </tr></thead>
       <tbody>${farmWorkers.map(w=>{
         const tc=w.temp>=90?'color:var(--red)':w.temp>=80?'color:var(--warn)':'';
+        const eSt=effectiveStatus(w);
         return `<tr style="border-bottom:1px solid rgba(26,42,58,.4)">
           <td style="padding:7px 10px"><span class="sdot ${sdot(w)}"></span></td>
           <td style="padding:7px 10px"><div style="font-family:'Exo 2',sans-serif;font-weight:600">${w.name}</div><div style="font-size:9px;color:var(--mute)">${w.ip}</div></td>
           <td style="padding:7px 10px;color:var(--mute)">${w.brand||''} ${w.model}</td>
-          <td style="padding:7px 10px;color:var(--green)">${hrDisplay(w)}</td>
-          <td style="padding:7px 10px;${tc}">${w.temp>0?w.temp+'°C':'—'}</td>
+          <td style="padding:7px 10px;color:var(--green)">${eSt==='online'?hrDisplay(w):'—'}</td>
+          <td style="padding:7px 10px;${tc}">${eSt==='online'&&w.temp>0?w.temp+'°C':'—'}</td>
           <td style="padding:7px 10px;font-size:10px;color:var(--mute)">${w.pool||'—'}</td>
         </tr>`;
       }).join('')}</tbody>
