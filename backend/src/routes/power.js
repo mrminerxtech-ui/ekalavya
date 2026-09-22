@@ -31,8 +31,17 @@ router.get('/models', authMiddleware, async (req, res) => {
 });
 
 // POST /api/power/models — set (or correct) one model's wattage
+//
+// `force` (default false): a miner's own live reading normally wins
+// over this entry — it's a measurement, this is someone's figure.
+// Setting force means the entered number was checked against reality
+// (a clamp meter, the site's PDU) and should be trusted OVER what that
+// model's firmware reports, because the firmware reading itself is
+// known to be wrong rather than simply absent. That's the case at a
+// hydro site where a model reports a plausible-looking wattage that
+// doesn't match what it's actually pulling.
 router.post('/models', authMiddleware, requireRole('admin', 'manager', 'technician'), async (req, res) => {
-  const { model, watts } = req.body || {};
+  const { model, watts, force } = req.body || {};
   if (!model || !String(model).trim()) {
     return res.status(400).json({ error: 'model is required' });
   }
@@ -44,10 +53,10 @@ router.post('/models', authMiddleware, requireRole('admin', 'manager', 'technici
     });
   }
   const label = String(model).trim();
-  const ok = await db.saveModelPower(label, w, label, req.user?.name || req.user?.id || 'unknown');
+  const ok = await db.saveModelPower(label, w, label, req.user?.name || req.user?.id || 'unknown', !!force);
   if (!ok) return res.status(500).json({ error: 'Could not save that model power' });
 
-  console.log(`[POWER] ${label} set to ${Math.round(w)}W by ${req.user?.name || req.user?.id}`);
+  console.log(`[POWER] ${label} set to ${Math.round(w)}W${force ? ' (overriding the miner\'s own reading)' : ''} by ${req.user?.name || req.user?.id}`);
   const models = await db.loadModelPower();
   res.json({ ok: true, models });
 });
