@@ -905,15 +905,36 @@ function renderPowerPanel() {
       + items + '</div>';
   }
 
+  // Details (which models are uncounted, and the hand-entered list) are
+  // used rarely once the fleet's models are filled in, so they're
+  // tucked behind a toggle rather than always taking up space. The
+  // summary line stays visible either way — it's the one-glance check
+  // that the total can be trusted — and remembers open/closed per device.
+  const hasDetails = !!(missing || manualList);
+  const open = localStorage.getItem('ekl_power_details_open') === '1';
+
   body.innerHTML =
       '<table class="tbl" style="width:100%"><thead><tr>'
     + '<th style="text-align:left">Site</th><th style="text-align:left">Running</th>'
     + '<th style="text-align:left">Power Draw</th><th style="text-align:left">Per Day</th>'
     + '<th style="text-align:left">Cost / Day</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table>'
-    + '<div style="margin-top:8px;font-size:10px;color:var(--mute)">Based on: ' + prov + '</div>'
-    + missing
-    + manualList;
+    + '<div style="margin-top:8px;font-size:10px;color:var(--mute);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    +   '<span>Based on: ' + prov + '</span>'
+    +   (hasDetails
+          ? '<a href="#" onclick="togglePowerDetails();return false" style="color:var(--cyan);white-space:nowrap">'
+            + (open ? '&#x25B2; Hide details' : '&#x25BC; Show details') + '</a>'
+          : '')
+    + '</div>'
+    + (hasDetails
+        ? '<div id="powerDetails" style="display:' + (open ? '' : 'none') + '">' + missing + manualList + '</div>'
+        : '');
+}
+
+function togglePowerDetails() {
+  const open = localStorage.getItem('ekl_power_details_open') === '1';
+  localStorage.setItem('ekl_power_details_open', open ? '0' : '1');
+  renderPowerPanel();
 }
 
 // ── Profitability Calculator ─────────────────────────────────
