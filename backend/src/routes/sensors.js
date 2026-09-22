@@ -44,7 +44,33 @@ router.post('/ewelink/exchange', authMiddleware, async (req, res) => {
 router.get('/devices', authMiddleware, async (req, res) => {
   const result = await ewelink.getDevices();
   if (result.error) return res.status(400).json({ error: result.error });
-  res.json({ ok: true, devices: result.devices });
+  // The device key is deliberately not part of the normal list — it's
+  // the credential for controlling the device directly. Admin-only, on
+  // its own endpoint below.
+  const devices = (result.devices || []).map(({ devicekey, ...rest }) => ({
+    ...rest, has_key: !!devicekey,
+  }));
+  res.json({ ok: true, devices });
+});
+
+// GET /api/sensors/device-keys — the per-device LAN keys, admin only.
+//
+// These are what a device needs before it will accept anything over the
+// LAN. eWeLink only hands them out through the cloud API, so this is
+// the one place they can be read from. Local control matters here
+// because it keeps working when the internet is down — which at a
+// mining site is exactly when you want to know the room temperature.
+router.get('/device-keys', authMiddleware, async (req, res) => {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  const result = await ewelink.getDevices();
+  if (result.error) return res.status(400).json({ error: result.error });
+  const keys = (result.devices || [])
+    .filter(d => d.devicekey)
+    .map(d => ({ deviceid: d.deviceid, name: d.name, devicekey: d.devicekey }));
+  console.log(`[SENSOR] Device keys read by ${req.user.name || req.user.id} (${keys.length} device(s))`);
+  res.json({ ok: true, count: keys.length, keys });
 });
 
 // GET /api/sensors/readings — all current readings
