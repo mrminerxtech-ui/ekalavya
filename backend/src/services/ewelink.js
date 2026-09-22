@@ -162,6 +162,12 @@ async function getDevices() {
     online:   t.itemData?.online,
     params:   t.itemData?.params,
     extra:    t.itemData?.extra,
+    // The per-device key eWeLink issues at pairing. It was being
+    // discarded here, even though it's the one thing needed to talk to
+    // these devices directly over the LAN — which keeps working when
+    // the internet doesn't. Never included in the normal device list
+    // response; see GET /api/sensors/device-keys.
+    devicekey: t.itemData?.devicekey || null,
   })).filter(d => d.deviceid);
 
   return { ok: true, devices: state.devices };
