@@ -65,6 +65,7 @@ function detectBrand(model){ const m=(model||'').toLowerCase(); if(m.includes('a
 // ── Render functions ──────────────────────────────────────
 function renderAll(){
   try{ renderDash(); }catch(e){ console.error('renderDash:',e); }
+  try{ renderPowerPanel(); }catch(e){ console.error('renderPowerPanel:',e); }
   try{ renderWorkers(); }catch(e){ console.error('renderWorkers:',e); }
   try{ renderAgents(); }catch(e){}
   try{ renderCustomers(); }catch(e){}
@@ -516,6 +517,240 @@ function renderPools() {
   }).join('');
 }
 
+// ── Site power draw ──────────────────────────────────────────
+// Nameplate wattage per model, read from asicminervalue.com
+// (checked September 2026). These are the manufacturer's rated
+// figures at stock settings — they are the FALLBACK, used only for
+// machines whose firmware doesn't report its own power draw.
+//
+// Where a miner does report it, that measured figure is used instead,
+// because it reflects what the machine is actually pulling right now:
+// underclocked or overclocked units, degraded PSUs and hot-weather
+// derating all move real draw well away from the spec sheet. Which of
+// the two a number came from is shown in the panel rather than being
+// quietly averaged together, since one is a measurement and the other
+// is an assumption.
+//
+// Keys are model names with everything but letters and digits removed,
+// so they survive the many ways firmware writes a model string
+// ("Antminer L9", "ANTMINER-L9", "Bitmain Antminer L9 (17Gh)").
+const POWER_SPECS = {
+  // ── Bitmain, Scrypt (LTC/DOGE) ──
+  'antminerl9':          3570,   // 17 Gh/s
+  'antminerl7':          3425,   // 9.16 Gh/s
+  'antminerl11hyd2u':    5775,   // 35 Gh/s
+  'antminerl11hyd6u':    5676,   // 33 Gh/s
+  // ── Bitmain, SHA-256 ──
+  'antminers21pro':      3510,   // 245 Th/s
+  'antminers21xpplushyd': 5500,  // 500 Th/s ("S21 XP+ Hyd")
+  'antminers21exphyd3u': 11180,  // 860 Th/s
+  'antminers21':         3550,   // 200 Th/s
+  'antminers23hyd3u':    11020,  // 1.16 Ph/s
+  'antminers23exphyd2u': 8650,   // 865 Th/s
+  'antminers23xphyd':    5340,   // 600 Th/s
+  'antminers23hyd':      5510,   // 580 Th/s
+  'antminers19jproplus': 3355,   // 122 Th/s ("S19j Pro+")
+  'antminers19jpro':     3068,   // 104 Th/s
+  'antminers19pro':      3250,   // 110 Th/s
+  'antminers19xp':       3010,   // 140 Th/s
+  // ── Bitmain, other algorithms ──
+  'antminerka3':         3154,   // 166 Th/s KHeavyHash
+  'antminerz15pro':      2780,
+  'antminerz15k':        2483,
+  'antminerz15':         1510,
+  'antminerz11':         1418,
+  'antminerx9':          2472,
+  // ── ElphaPEX, Scrypt ──
+  'elphapexdg1plus':     3920,   // 14 Gh/s
+  'elphapexdghome1':      620,   // 2 Gh/s
+  'elphapexdg1':         3420,   // 11 Gh/s
+  'dg1plus':             3920,   // firmware often omits the brand
+  'dghome1':              620,
+  'dg1':                 3420,
+  // ── MicroBT ──
+  'whatsminerm79s':     20000,
+  'whatsminerm50s':      3276,
+  'whatsminerm50':       3276,
+  // ── Bitdeer SealMiner ──
+  'sealminera4ultrahydro': 8372,
+  'sealminera4prohydro':   7412,
+  'sealminera3prohydro':   8250,
+  'sealminerdl1hydro':     7823,
+  'sealminerdl1air':       3725,
+  'a9zmaster':           1550,
+};
+
+// Longest key first, so "Antminer S21 Pro" can't be matched by the
+// shorter "antminers21" entry that its name also contains.
+const POWER_SPEC_KEYS = Object.keys(POWER_SPECS).sort(function(a,b){ return b.length - a.length; });
+
+// "+" is part of the model name, not punctuation — an S21 XP+ Hyd and
+// an S21 XP Hyd are different machines with different draws, and a DG1+
+// pulls 500W more than a DG1. Stripping it as a symbol made the plus
+// variants silently match the cheaper base model, so it becomes a word
+// before the rest of the punctuation is removed.
+function normalizeModelKey(s) {
+  return String(s || '').toLowerCase().replace(/\+/g, 'plus').replace(/[^a-z0-9]/g, '');
+}
+
+function specWattsFor(w) {
+  const hay = normalizeModelKey((w.brand || '') + ' ' + (w.model || ''));
+  if (!hay) return 0;
+  for (let i = 0; i < POWER_SPEC_KEYS.length; i++) {
+    if (hay.indexOf(POWER_SPEC_KEYS[i]) !== -1) return POWER_SPECS[POWER_SPEC_KEYS[i]];
+  }
+  return 0;
+}
+
+// Firmware occasionally reports a power field that isn't watts at all
+// — a raw register value, a sentinel like 65535, or 0 when the PSU
+// isn't being read. Anything outside the range a single ASIC could
+// plausibly draw is treated as no reading rather than trusted, so one
+// bad sensor can't add a megawatt to a site total.
+const PLAUSIBLE_WATTS_MIN = 100;
+const PLAUSIBLE_WATTS_MAX = 25000;
+
+// Watts for ONE machine, with where the figure came from.
+// A machine that isn't running draws nothing worth counting.
+function minerWatts(w) {
+  const st = effectiveStatus(w);
+  if (st !== 'online' && st !== 'warn') return { watts: 0, source: 'off' };
+  const measured = Number(w.power) || 0;
+  if (measured >= PLAUSIBLE_WATTS_MIN && measured <= PLAUSIBLE_WATTS_MAX) {
+    return { watts: measured, source: 'measured' };
+  }
+  const spec = specWattsFor(w);
+  if (spec > 0) return { watts: spec, source: 'spec' };
+  return { watts: 0, source: 'unknown' };
+}
+
+// Whole-fleet roll-up, and the same figures per site.
+// `unknown` is carried through deliberately: a machine whose model
+// isn't in the table and which doesn't report its own draw contributes
+// nothing to the total, and a site total that silently omits machines
+// is worse than one that says how many it omitted.
+function computeSitePower() {
+  const byFarm = {};
+  const total  = { watts: 0, running: 0, measured: 0, spec: 0, unknown: 0, unknownModels: {} };
+
+  workers.forEach(function(w) {
+    const fid  = w.farm_id || 'unassigned';
+    if (!byFarm[fid]) {
+      byFarm[fid] = { id: fid, name: w.farm || (A(fid) ? A(fid).name : fid),
+                      watts: 0, running: 0, measured: 0, spec: 0, unknown: 0, unknownModels: {} };
+    }
+    const f = byFarm[fid];
+    if (w.farm && !f.name) f.name = w.farm;
+
+    const r = minerWatts(w);
+    if (r.source === 'off') return;
+
+    f.running++;     total.running++;
+    f.watts += r.watts; total.watts += r.watts;
+    if (r.source === 'measured') { f.measured++; total.measured++; }
+    else if (r.source === 'spec') { f.spec++; total.spec++; }
+    else {
+      f.unknown++; total.unknown++;
+      const label = (cleanBrandModel(w.brand) + ' ' + cleanBrandModel(w.model)).trim() || 'Unknown';
+      f.unknownModels[label] = (f.unknownModels[label] || 0) + 1;
+      total.unknownModels[label] = (total.unknownModels[label] || 0) + 1;
+    }
+  });
+
+  return { total: total, farms: Object.values(byFarm).sort(function(a,b){ return b.watts - a.watts; }) };
+}
+
+function fmtKW(watts) {
+  if (!watts) return '0 kW';
+  if (watts >= 1e6) return (watts / 1e6).toFixed(2) + ' MW';
+  return (watts / 1000).toFixed(watts >= 100000 ? 0 : 1) + ' kW';
+}
+
+// The rate is typed once and kept on the device — it's a local tariff,
+// not fleet data, and it differs per site operator.
+function getElecRate() {
+  const el = document.getElementById('pwrRate');
+  const v  = el ? parseFloat(el.value) : parseFloat(localStorage.getItem('ekl_elec_rate'));
+  return (isFinite(v) && v >= 0) ? v : null;
+}
+function onElecRateChange() {
+  const el = document.getElementById('pwrRate');
+  if (el) localStorage.setItem('ekl_elec_rate', el.value);
+  renderPowerPanel();
+}
+
+function renderPowerPanel() {
+  const p = computeSitePower();
+
+  // Headline card on the stats row
+  const sv = document.getElementById('dPower');
+  if (sv) sv.textContent = fmtKW(p.total.watts).replace(/ (kW|MW)$/, '');
+  const su = document.getElementById('dPowerUnit');
+  if (su) su.textContent = (p.total.watts >= 1e6 ? 'MW' : 'kW') + ' drawn now';
+
+  const body = document.getElementById('powerBySite');
+  if (!body) return;
+
+  const rate = getElecRate();
+  const dayKwh = function(watts){ return (watts / 1000) * 24; };
+
+  if (p.total.running === 0) {
+    body.innerHTML = '<div style="padding:18px;text-align:center;color:var(--mute);font-size:12px">'
+      + 'No machines are running, so nothing is drawing power right now.</div>';
+    return;
+  }
+
+  let rows = p.farms.filter(function(f){ return f.running > 0; }).map(function(f) {
+    const cost = rate !== null ? ('$' + (dayKwh(f.watts) * rate).toFixed(2)) : '<span style="color:var(--mute)">—</span>';
+    const gap  = f.unknown > 0
+      ? '<div style="font-size:9px;color:var(--warn)">' + f.unknown + ' machine(s) not counted</div>' : '';
+    return '<tr>'
+      + '<td style="font-family:Exo 2,sans-serif;font-weight:600">' + escHtml(f.name) + gap + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + f.running + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:12px;color:var(--cyan);font-weight:700">' + fmtKW(f.watts) + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + dayKwh(f.watts).toFixed(0) + ' kWh</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + cost + '</td>'
+      + '</tr>';
+  }).join('');
+
+  const totalCost = rate !== null ? ('$' + (dayKwh(p.total.watts) * rate).toFixed(2)) : '<span style="color:var(--mute)">—</span>';
+  rows += '<tr style="border-top:2px solid var(--b2)">'
+    + '<td style="font-family:Exo 2,sans-serif;font-weight:700;color:var(--txt)">ALL SITES</td>'
+    + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;font-weight:700">' + p.total.running + '</td>'
+    + '<td style="font-family:Share Tech Mono,monospace;font-size:13px;color:var(--green);font-weight:700">' + fmtKW(p.total.watts) + '</td>'
+    + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;font-weight:700">' + dayKwh(p.total.watts).toFixed(0) + ' kWh</td>'
+    + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;font-weight:700">' + totalCost + '</td>'
+    + '</tr>';
+
+  // How the total was arrived at. Stated plainly so the number can be
+  // trusted or challenged, rather than presented as a single figure of
+  // unknown provenance.
+  let prov = '<span style="color:var(--green)">' + p.total.measured + ' measured</span>';
+  if (p.total.spec > 0)    prov += ' &middot; <span style="color:var(--cyan)">' + p.total.spec + ' from model spec</span>';
+  if (p.total.unknown > 0) prov += ' &middot; <span style="color:var(--warn)">' + p.total.unknown + ' unknown, not counted</span>';
+
+  let missing = '';
+  if (p.total.unknown > 0) {
+    const list = Object.keys(p.total.unknownModels).sort(function(a,b){
+      return p.total.unknownModels[b] - p.total.unknownModels[a];
+    }).slice(0, 4).map(function(m){ return escHtml(m) + ' (' + p.total.unknownModels[m] + ')'; }).join(', ');
+    missing = '<div style="margin-top:8px;padding:8px 10px;background:rgba(255,176,32,.08);border:1px solid rgba(255,176,32,.25);border-radius:6px;font-size:10px;color:var(--warn);line-height:1.5">'
+      + '<b>' + p.total.unknown + ' running machine(s) are missing from the total.</b> '
+      + 'Their firmware doesn\'t report power draw and their model isn\'t in the spec table: ' + list + '. '
+      + 'Set the model correctly on those machines, or send the model name to have it added.'
+      + '</div>';
+  }
+
+  body.innerHTML =
+      '<table class="tbl" style="width:100%"><thead><tr>'
+    + '<th style="text-align:left">Site</th><th style="text-align:left">Running</th>'
+    + '<th style="text-align:left">Power Draw</th><th style="text-align:left">Per Day</th>'
+    + '<th style="text-align:left">Cost / Day</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table>'
+    + '<div style="margin-top:8px;font-size:10px;color:var(--mute)">Based on: ' + prov + '</div>'
+    + missing;
+}
+
 // ── Profitability Calculator ─────────────────────────────────
 // Model/algo/hashrate/power specs below were read directly from
 // asicminervalue.com (the top 20 models it server-renders by
@@ -911,6 +1146,26 @@ function openCtrl(wid) {
   // UI free of a button they can't use.
   const dangerSec = document.getElementById('ctrlDangerSec');
   if (dangerSec) dangerSec.style.display = isCustomer ? 'none' : '';
+
+  // Disable / Enable — one or the other, never both, so the panel
+  // always shows the action that applies to this machine right now.
+  const maintSec = document.getElementById('ctrlMaintSec');
+  if (maintSec) maintSec.style.display = isCustomer ? 'none' : '';
+  const disBtn  = document.getElementById('ctrlDisableBtn');
+  const enBtn   = document.getElementById('ctrlEnableBtn');
+  const disNote = document.getElementById('ctrlDisabledNote');
+  if (disBtn) disBtn.style.display = w.disabled ? 'none' : '';
+  if (enBtn)  enBtn.style.display  = w.disabled ? '' : 'none';
+  if (disNote) {
+    if (w.disabled) {
+      const since = w.disabled_at ? new Date(w.disabled_at).toLocaleString() : 'unknown date';
+      disNote.innerHTML = '<b>Out of service.</b> ' + escHtml(w.disabled_reason || 'No reason recorded')
+        + '<br><span style="color:var(--mute)">Since ' + escHtml(since) + '</span>';
+      disNote.style.display = '';
+    } else {
+      disNote.style.display = 'none';
+    }
+  }
 
   // Default to 7 days — enough to see a real trend without waiting on
   // a slow 30-day fetch every time the panel opens.
@@ -2058,7 +2313,15 @@ function doLogin(){
   });
 }
 function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).style.display='none');['ticker','topbar','appBody','bottomNav'].forEach(id=>document.getElementById(id).style.display=id==='appBody'?'flex':id==='bottomNav'?'block':'flex');const ini=currentUser.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();document.getElementById('sideAv').textContent=ini;document.getElementById('sideName').textContent=currentUser.name;document.getElementById('sideRole').textContent=isCustomer?'Customer Portal':currentUser.role==='admin'?'Super Admin':'Team Member';document.getElementById('topBadge').textContent=isCustomer?'PORTAL':'ADMIN';if(isCustomer){document.getElementById('adminNav').style.display='none';document.getElementById('custNav').style.display='block';document.getElementById('agentPill').style.display='none';document.getElementById('bnavAdmin').style.display='none';document.getElementById('bnavCust').style.display='flex';showPage('portal-home');document.getElementById('custNav').querySelector('.nav-item').classList.add('active');renderPortal();try{ fetchMarketData(function(){ try{ renderPortal(); }catch(e){} }); loadFleetFromBackend(function(){ try{ renderPortal(); }catch(e){} }); fetchEarnings(); setInterval(fetchEarnings, 10*60*1000); }catch(e){}}else{populateDropdowns();renderAll();
-}initTicker();
+}
+// Restore the electricity tariff this device had typed in, so the
+// per-day cost column isn't blank on every reload.
+try{
+  const _r = localStorage.getItem('ekl_elec_rate');
+  const _el = document.getElementById('pwrRate');
+  if (_r && _el) _el.value = _r;
+}catch(e){}
+initTicker();
 // Live prices from CoinGecko. The old demo ticker invented prices with
 // Math.random() and is gone.
 fetchCoinPrices(); setInterval(fetchCoinPrices, 60000);
@@ -2823,6 +3086,7 @@ function renderDash(){
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:10px">
           <div><div style="color:var(--mute)">Online</div><div style="font-family:'Share Tech Mono',monospace;color:var(--green)">${fOnline}/${fTotal}</div></div>
           <div><div style="color:var(--mute)">Hashrate</div><div style="font-family:'Share Tech Mono',monospace;color:var(--cyan)">${fHR>=1?fHR.toFixed(1):'<1'} TH</div></div>
+          <div style="grid-column:1/-1"><div style="color:var(--mute)">Power</div><div style="font-family:'Share Tech Mono',monospace;color:var(--purp,var(--cyan))">${fmtKW(farm.workers.reduce(function(a,w){return a+minerWatts(w).watts;},0))}</div></div>
         </div>
         <div style="margin-top:6px;font-size:9px;color:var(--mute)">${fModels.slice(0,2).join(', ')+(fModels.length>2?' +'+( fModels.length-2)+' more':'')}</div>
       </div>`;
@@ -4041,6 +4305,14 @@ function doAction(action, wid){
     body.firmware_version = fwVer ? fwVer.value.trim() : '';
   } else if (action === 'delete') {
     if (!confirm('Permanently remove ' + w.name + ' from the fleet? This cannot be undone.')) return;
+  } else if (action === 'disable') {
+    // The reason is what makes this useful weeks later — "why is this
+    // one out?" is the question the fleet list can't answer on its own.
+    var reason = prompt('Why is ' + w.name + ' being taken out of service?\n(e.g. PSU failed, hashboard 2 dead, sent to repair)', 'Taken for repair');
+    if (reason === null) return;                       // cancelled
+    body.reason = reason.trim() || 'Taken for repair';
+  } else if (action === 'enable') {
+    if (!confirm('Return ' + w.name + ' to service? It will count in fleet totals and alerts again.')) return;
   }
 
   const token = localStorage.getItem('ekl_token');
