@@ -602,6 +602,120 @@ function specWattsFor(w) {
   return 0;
 }
 
+// ── Hand-entered wattage, held per model and shared fleet-wide ────
+// Loaded from the backend so the figure typed on one device applies on
+// every other one, and to machines at every site.
+let modelPowerOverrides = [];   // [{ model_key, watts, label, set_by }]
+
+// The model string a machine reports is what everything here keys off.
+function modelKeyOf(w) {
+  return normalizeModelKey((w.brand || '') + ' ' + (w.model || ''));
+}
+
+// Finding the entry that applies to a machine is not a plain lookup,
+// because the same machine is described differently by different
+// firmware: one agent reports "Antminer L9", another "Antminer L9
+// (17Gh)". Keyed strictly, a figure entered from one site would leave
+// the other site's identical machines uncounted — which defeats the
+// point of storing it per model.
+//
+// So an entry matches when either name contains the other: an entry
+// saved as "Antminer DR7" covers a machine another agent reports as
+// "Bitmain Antminer DR7 (5Th)", and one saved with the brand attached
+// still covers a machine whose firmware omits it. Matching only on a
+// shared prefix was not enough — the brand sits at the FRONT of the
+// name, so the two strings differ exactly where a prefix test looks.
+//
+// Exact matches are preferred, then the longest partial, so a specific
+// "DG1+" entry always beats a general "DG1" one rather than the two
+// fighting over the same machines.
+const MIN_OVERRIDE_KEY_LEN = 3;   // "l9" would match far too much
+
+function overrideWattsFor(w) {
+  const key = modelKeyOf(w);
+  if (!key || !modelPowerOverrides.length) return null;
+
+  let best = null, bestLen = -1;
+  for (let i = 0; i < modelPowerOverrides.length; i++) {
+    const o = modelPowerOverrides[i];
+    const k = o.model_key;
+    if (!k || k.length < MIN_OVERRIDE_KEY_LEN) continue;
+    if (k === key) return o;                                  // exact — done
+    const related = key.indexOf(k) !== -1 || k.indexOf(key) !== -1;
+    if (related && k.length > bestLen) { best = o; bestLen = k.length; }
+  }
+  return best;
+}
+
+// How many machines in the fleet a given entry is currently covering —
+// shown in the UI so a too-broad entry is visible rather than silently
+// inflating a site total.
+function machinesCoveredBy(modelKey) {
+  return workers.filter(function(w){
+    const o = overrideWattsFor(w);
+    return o && o.model_key === modelKey;
+  }).length;
+}
+
+function loadModelPower(cb) {
+  const token = localStorage.getItem('ekl_token');
+  if (!token || !API_BASE || API_BASE.includes('localhost')) { if (cb) cb(); return; }
+  fetch(API_BASE + '/api/power/models', { headers: { 'Authorization': 'Bearer ' + token } })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if (d && d.ok && Array.isArray(d.models)) modelPowerOverrides = d.models;
+      if (cb) cb();
+    })
+    .catch(function(){ if (cb) cb(); });
+}
+
+// Save one model's wattage. The backend stores it centrally, so this
+// is what makes the figure reach the other sites and devices.
+function saveModelPower(modelLabel, watts) {
+  const token = localStorage.getItem('ekl_token');
+  const w = Number(watts);
+  if (!isFinite(w) || w <= 0) { toast('Enter the wattage as a number', 'var(--warn)'); return; }
+  toast('Saving ' + modelLabel + '...', 'var(--cyan)');
+  fetch(API_BASE + '/api/power/models', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (token||'') },
+    body: JSON.stringify({ model: modelLabel, watts: w }),
+  })
+    .then(function(r){ return r.json().then(function(d){ return { ok: r.ok, d: d }; }); })
+    .then(function(res){
+      if (!res.ok) { toast(res.d.error || 'Could not save', 'var(--red)'); return; }
+      modelPowerOverrides = res.d.models || [];
+      const n = machinesCoveredBy(normalizeModelKey(modelLabel));
+      toast(modelLabel + ' set to ' + Math.round(w) + 'W — applied to ' + n + ' machine(s) fleet-wide', 'var(--green)');
+      renderPowerPanel();
+      try { renderDash(); } catch(e) {}
+    })
+    .catch(function(e){ toast('Could not save: ' + e.message, 'var(--red)'); });
+}
+
+function removeModelPower(modelKey) {
+  if (!confirm('Remove the hand-entered power for this model?\nIts machines go back to the built-in spec figure, or become uncounted if there isn\'t one.')) return;
+  const token = localStorage.getItem('ekl_token');
+  fetch(API_BASE + '/api/power/models/' + encodeURIComponent(modelKey), {
+    method: 'DELETE',
+    headers: { 'Authorization': 'Bearer ' + (token||'') },
+  })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if (d && d.ok) { modelPowerOverrides = d.models || []; toast('Removed', 'var(--warn)'); renderPowerPanel(); }
+      else toast('Could not remove', 'var(--red)');
+    })
+    .catch(function(){ toast('Could not remove', 'var(--red)'); });
+}
+
+// Called from the inline "Set" buttons in the power panel
+function submitModelPower(btn) {
+  const wrap  = btn.closest('[data-model]');
+  if (!wrap) return;
+  const input = wrap.querySelector('input');
+  saveModelPower(wrap.getAttribute('data-model'), input ? input.value : '');
+}
+
 // Firmware occasionally reports a power field that isn't watts at all
 // — a raw register value, a sentinel like 65535, or 0 when the PSU
 // isn't being read. Anything outside the range a single ASIC could
@@ -619,6 +733,12 @@ function minerWatts(w) {
   if (measured >= PLAUSIBLE_WATTS_MIN && measured <= PLAUSIBLE_WATTS_MAX) {
     return { watts: measured, source: 'measured' };
   }
+  // A figure someone entered for this model beats the built-in spec
+  // table: they measured these actual machines with a clamp meter or
+  // read the PDU, which is worth more than a manufacturer's rating —
+  // and it's the only way a model the table doesn't know gets counted.
+  const manual = overrideWattsFor(w);
+  if (manual && manual.watts > 0) return { watts: manual.watts, source: 'manual', key: manual.model_key };
   const spec = specWattsFor(w);
   if (spec > 0) return { watts: spec, source: 'spec' };
   return { watts: 0, source: 'unknown' };
@@ -631,13 +751,13 @@ function minerWatts(w) {
 // is worse than one that says how many it omitted.
 function computeSitePower() {
   const byFarm = {};
-  const total  = { watts: 0, running: 0, measured: 0, spec: 0, unknown: 0, unknownModels: {} };
+  const total  = { watts: 0, running: 0, measured: 0, manual: 0, spec: 0, unknown: 0, unknownModels: {} };
 
   workers.forEach(function(w) {
     const fid  = w.farm_id || 'unassigned';
     if (!byFarm[fid]) {
       byFarm[fid] = { id: fid, name: w.farm || (A(fid) ? A(fid).name : fid),
-                      watts: 0, running: 0, measured: 0, spec: 0, unknown: 0, unknownModels: {} };
+                      watts: 0, running: 0, measured: 0, manual: 0, spec: 0, unknown: 0, unknownModels: {} };
     }
     const f = byFarm[fid];
     if (w.farm && !f.name) f.name = w.farm;
@@ -648,6 +768,7 @@ function computeSitePower() {
     f.running++;     total.running++;
     f.watts += r.watts; total.watts += r.watts;
     if (r.source === 'measured') { f.measured++; total.measured++; }
+    else if (r.source === 'manual') { f.manual++; total.manual++; }
     else if (r.source === 'spec') { f.spec++; total.spec++; }
     else {
       f.unknown++; total.unknown++;
@@ -726,19 +847,62 @@ function renderPowerPanel() {
   // trusted or challenged, rather than presented as a single figure of
   // unknown provenance.
   let prov = '<span style="color:var(--green)">' + p.total.measured + ' measured</span>';
+  if (p.total.manual > 0)  prov += ' &middot; <span style="color:var(--purple,var(--cyan))">' + p.total.manual + ' entered by hand</span>';
   if (p.total.spec > 0)    prov += ' &middot; <span style="color:var(--cyan)">' + p.total.spec + ' from model spec</span>';
   if (p.total.unknown > 0) prov += ' &middot; <span style="color:var(--warn)">' + p.total.unknown + ' unknown, not counted</span>';
 
+  // Machines that couldn't be accounted for, each with a box to type
+  // the model's wattage. Entering it here fixes every machine of that
+  // model at once, everywhere — not just the one that prompted it.
   let missing = '';
-  if (p.total.unknown > 0) {
-    const list = Object.keys(p.total.unknownModels).sort(function(a,b){
-      return p.total.unknownModels[b] - p.total.unknownModels[a];
-    }).slice(0, 4).map(function(m){ return escHtml(m) + ' (' + p.total.unknownModels[m] + ')'; }).join(', ');
-    missing = '<div style="margin-top:8px;padding:8px 10px;background:rgba(255,176,32,.08);border:1px solid rgba(255,176,32,.25);border-radius:6px;font-size:10px;color:var(--warn);line-height:1.5">'
-      + '<b>' + p.total.unknown + ' running machine(s) are missing from the total.</b> '
-      + 'Their firmware doesn\'t report power draw and their model isn\'t in the spec table: ' + list + '. '
-      + 'Set the model correctly on those machines, or send the model name to have it added.'
+  if (p.total.unknown > 0 && !isCustomer) {
+    const rowsFor = Object.keys(p.total.unknownModels)
+      .sort(function(a,b){ return p.total.unknownModels[b] - p.total.unknownModels[a]; })
+      .map(function(m){
+        return '<div data-model="' + escHtml(m) + '" style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap">'
+          + '<span style="flex:1;min-width:130px;font-family:Share Tech Mono,monospace;font-size:11px;color:var(--txt)">'
+          +   escHtml(m) + ' <span style="color:var(--mute)">&times;' + p.total.unknownModels[m] + '</span></span>'
+          + '<input type="number" min="50" max="25000" step="10" placeholder="watts"'
+          +   ' onkeydown="if(event.key===\'Enter\'){submitModelPower(this.nextElementSibling);}"'
+          +   ' style="width:84px;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:5px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none">'
+          + '<button class="abtn" onclick="submitModelPower(this)" style="border-color:var(--green);color:var(--green)">Apply to all</button>'
+          + '</div>';
+      }).join('');
+
+    missing = '<div style="margin-top:10px;padding:10px;background:rgba(255,176,32,.08);border:1px solid rgba(255,176,32,.25);border-radius:6px;font-size:10px;color:var(--warn);line-height:1.5">'
+      + '<b>' + p.total.unknown + ' running machine(s) are not in the total.</b> '
+      + 'Their firmware doesn\'t report power draw and the model isn\'t in the built-in spec table. '
+      + 'Type the wattage once below and it applies to every machine of that model, at every site.'
+      + rowsFor
       + '</div>';
+  } else if (p.total.unknown > 0) {
+    missing = '<div style="margin-top:8px;font-size:10px;color:var(--warn)">'
+      + p.total.unknown + ' machine(s) could not be counted.</div>';
+  }
+
+  // Everything entered by hand, so a wrong figure can be found and
+  // corrected — and so it's clear which models are running on an
+  // entered number rather than a measured or published one.
+  let manualList = '';
+  if (modelPowerOverrides.length && !isCustomer) {
+    const items = modelPowerOverrides.slice().sort(function(a,b){
+      return String(a.label||'').localeCompare(String(b.label||''));
+    }).map(function(o){
+      const n = machinesCoveredBy(o.model_key);
+      return '<div data-model="' + escHtml(o.label || o.model_key) + '" style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap">'
+        + '<span style="flex:1;min-width:130px;font-family:Share Tech Mono,monospace;font-size:11px">'
+        +   escHtml(o.label || o.model_key)
+        +   ' <span style="color:' + (n ? 'var(--mute)' : 'var(--warn)') + '">' + (n ? '&rarr; ' + n + ' machine(s)' : 'matches nothing right now') + '</span></span>'
+        + '<input type="number" min="50" max="25000" step="10" value="' + Number(o.watts) + '"'
+        +   ' onkeydown="if(event.key===\'Enter\'){submitModelPower(this.nextElementSibling);}"'
+        +   ' style="width:84px;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:5px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none">'
+        + '<button class="abtn" onclick="submitModelPower(this)">Update</button>'
+        + '<button class="abtn" onclick="removeModelPower(\'' + escHtml(o.model_key) + '\')" style="border-color:var(--red);color:var(--red)">&times;</button>'
+        + '</div>';
+    }).join('');
+    manualList = '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--b1)">'
+      + '<div style="font-size:10px;color:var(--mute);margin-bottom:2px">Power entered by hand &mdash; shared across all sites and devices</div>'
+      + items + '</div>';
   }
 
   body.innerHTML =
@@ -748,7 +912,8 @@ function renderPowerPanel() {
     + '<th style="text-align:left">Cost / Day</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table>'
     + '<div style="margin-top:8px;font-size:10px;color:var(--mute)">Based on: ' + prov + '</div>'
-    + missing;
+    + missing
+    + manualList;
 }
 
 // ── Profitability Calculator ─────────────────────────────────
@@ -2314,6 +2479,9 @@ function doLogin(){
 }
 function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).style.display='none');['ticker','topbar','appBody','bottomNav'].forEach(id=>document.getElementById(id).style.display=id==='appBody'?'flex':id==='bottomNav'?'block':'flex');const ini=currentUser.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();document.getElementById('sideAv').textContent=ini;document.getElementById('sideName').textContent=currentUser.name;document.getElementById('sideRole').textContent=isCustomer?'Customer Portal':currentUser.role==='admin'?'Super Admin':'Team Member';document.getElementById('topBadge').textContent=isCustomer?'PORTAL':'ADMIN';if(isCustomer){document.getElementById('adminNav').style.display='none';document.getElementById('custNav').style.display='block';document.getElementById('agentPill').style.display='none';document.getElementById('bnavAdmin').style.display='none';document.getElementById('bnavCust').style.display='flex';showPage('portal-home');document.getElementById('custNav').querySelector('.nav-item').classList.add('active');renderPortal();try{ fetchMarketData(function(){ try{ renderPortal(); }catch(e){} }); loadFleetFromBackend(function(){ try{ renderPortal(); }catch(e){} }); fetchEarnings(); setInterval(fetchEarnings, 10*60*1000); }catch(e){}}else{populateDropdowns();renderAll();
 }
+// Hand-entered model wattages live on the server so they apply on
+// every device — fetch them before the first power roll-up is drawn.
+try{ loadModelPower(function(){ try{ renderPowerPanel(); }catch(e){} }); }catch(e){}
 // Restore the electricity tariff this device had typed in, so the
 // per-day cost column isn't blank on every reload.
 try{
