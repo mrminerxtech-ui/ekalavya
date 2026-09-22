@@ -211,10 +211,20 @@ async function createTables() {
     -- many ways firmware writes the same model ("Antminer L9",
     -- "ANTMINER-L9", "Antminer L9 (17Gh)") all resolve to one row.
     -- label keeps the name as it was actually seen, for display.
+    --
+    -- force: a machine's own firmware reading normally wins over this —
+    -- it's a live measurement, this is someone's best guess. But some
+    -- sites have miners whose firmware reports a NUMBER, just the wrong
+    -- one (a hydro-cooled unit sharing a board with the air-cooled
+    -- variant's PSU curve, for instance), which the plausibility check
+    -- can't catch because the number itself looks like a normal wattage.
+    -- force=true means the entered figure was measured against reality
+    -- (a clamp meter, the PDU) and is trusted over what the miner says.
     CREATE TABLE IF NOT EXISTS model_power (
       model_key   TEXT PRIMARY KEY,
       watts       INTEGER NOT NULL,
       label       TEXT,
+      force       BOOLEAN NOT NULL DEFAULT false,
       set_by      TEXT,
       updated_at  TIMESTAMPTZ DEFAULT NOW()
     );
@@ -265,6 +275,14 @@ async function createTables() {
     CREATE INDEX IF NOT EXISTS miner_metrics_slot_idx   ON miner_metrics (slot DESC);
     CREATE INDEX IF NOT EXISTS miner_metrics_worker_idx ON miner_metrics (worker_id, slot DESC);
   `);
+
+  // model_power shipped before the "force" column existed. CREATE TABLE
+  // IF NOT EXISTS leaves an already-created table untouched, so a
+  // deployment that already has this table needs the column added
+  // explicitly — otherwise every saveModelPower() call with a force
+  // flag fails against a database that's never heard of it.
+  await pool.query(`ALTER TABLE model_power ADD COLUMN IF NOT EXISTS force BOOLEAN NOT NULL DEFAULT false;`);
+
   console.log('[DB] Tables ready');
 }
 
@@ -744,11 +762,11 @@ function normalizeModelKeyDb(s) {
 async function loadModelPower() {
   if (useFallback || !pool) {
     return loadFallback('model_power').map(r => ({
-      model_key: r.id, watts: r.watts, label: r.label, set_by: r.set_by, updated_at: r.updated_at,
+      model_key: r.id, watts: r.watts, label: r.label, force: !!r.force, set_by: r.set_by, updated_at: r.updated_at,
     }));
   }
   try {
-    const r = await pool.query('SELECT model_key, watts, label, set_by, updated_at FROM model_power ORDER BY label');
+    const r = await pool.query('SELECT model_key, watts, label, force, set_by, updated_at FROM model_power ORDER BY label');
     return r.rows;
   } catch(e) {
     console.error('[DB] loadModelPower error:', e.message);
@@ -756,23 +774,24 @@ async function loadModelPower() {
   }
 }
 
-async function saveModelPower(modelKey, watts, label, setBy) {
+async function saveModelPower(modelKey, watts, label, setBy, force) {
   const key = normalizeModelKeyDb(modelKey);
   if (!key) return false;
   const w = Math.round(Number(watts));
   if (!isFinite(w) || w <= 0) return false;
+  const f = !!force;
 
   if (useFallback || !pool) {
     const all = loadFallback('model_power').filter(r => r.id !== key);
-    all.push({ id: key, watts: w, label: label || key, set_by: setBy || null, updated_at: new Date().toISOString() });
+    all.push({ id: key, watts: w, label: label || key, force: f, set_by: setBy || null, updated_at: new Date().toISOString() });
     return saveFallback('model_power', all, true);
   }
   try {
     await pool.query(`
-      INSERT INTO model_power(model_key, watts, label, set_by)
-      VALUES($1,$2,$3,$4)
-      ON CONFLICT(model_key) DO UPDATE SET watts=$2, label=$3, set_by=$4, updated_at=NOW()
-    `, [key, w, label || key, setBy || null]);
+      INSERT INTO model_power(model_key, watts, label, force, set_by)
+      VALUES($1,$2,$3,$4,$5)
+      ON CONFLICT(model_key) DO UPDATE SET watts=$2, label=$3, force=$4, set_by=$5, updated_at=NOW()
+    `, [key, w, label || key, f, setBy || null]);
     return true;
   } catch(e) {
     console.error('[DB] saveModelPower error:', e.message);
