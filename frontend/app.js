@@ -822,6 +822,47 @@ function computeSitePower() {
   return { total: total, farms: Object.values(byFarm).sort(function(a,b){ return b.watts - a.watts; }) };
 }
 
+// ── Every distinct model actually running in the fleet ─────────────
+// The per-model power tools only ever surfaced a model AFTER it showed
+// up as "not counted" or after someone already knew its exact name well
+// enough to type it in. Neither helps the person who just wants to see
+// what's out there and fix a number — they don't necessarily know that
+// the miner reports itself as "Antminer S21 Hyd" rather than "S21
+// Hydro". So this reads the models straight out of the fleet itself:
+// every group here is a model that is DEFINITELY at one of the sites,
+// under the exact name its own firmware reports.
+function modelBreakdown() {
+  const groups = {};
+  workers.forEach(function(w) {
+    const key = modelKeyOf(w);
+    if (!key) return;
+    if (!groups[key]) groups[key] = { key: key, label: '', count: 0, running: 0, farms: {}, sample: null };
+    const g = groups[key];
+    g.count++;
+    const st = effectiveStatus(w);
+    if (st === 'online' || st === 'warn') g.running++;
+    const lbl = (cleanBrandModel(w.brand) + ' ' + cleanBrandModel(w.model)).trim();
+    if (lbl.length > g.label.length) g.label = lbl;               // fullest name seen wins
+    if (w.farm) g.farms[w.farm] = true;
+    // Prefer a running machine as the sample used to look up its
+    // current power — that's the reading someone would actually see
+    // if they opened this machine right now.
+    if (!g.sample || (st === 'online' && effectiveStatus(g.sample) !== 'online')) g.sample = w;
+  });
+  return Object.keys(groups).map(function(k){ return groups[k]; });
+}
+
+// What a machine of this model would draw right now, for display —
+// same precedence minerWatts() uses, just evaluated against the
+// sample machine as though it were online, so an editor can see (and
+// fix) a model's figure even while every unit of it happens to be
+// powered down for maintenance.
+function modelEffectivePower(g) {
+  if (!g.sample) return { watts: 0, source: 'unknown' };
+  const probe = Object.assign({}, g.sample, { status: 'online', disabled: false });
+  return minerWatts(probe);
+}
+
 function fmtKW(watts) {
   if (!watts) return '0 kW';
   if (watts >= 1e6) return (watts / 1e6).toFixed(2) + ' MW';
@@ -892,66 +933,79 @@ function renderPowerPanel() {
   if (p.total.spec > 0)    prov += ' &middot; <span style="color:var(--cyan)">' + p.total.spec + ' from model spec</span>';
   if (p.total.unknown > 0) prov += ' &middot; <span style="color:var(--warn)">' + p.total.unknown + ' unknown, not counted</span>';
 
-  // Machines that couldn't be accounted for, each with a box to type
-  // the model's wattage. Entering it here fixes every machine of that
-  // model at once, everywhere — not just the one that prompted it.
-  let missing = '';
-  if (p.total.unknown > 0 && !isCustomer) {
-    const rowsFor = Object.keys(p.total.unknownModels)
-      .sort(function(a,b){ return p.total.unknownModels[b] - p.total.unknownModels[a]; })
-      .map(function(m){
-        return '<div data-model="' + escHtml(m) + '" style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap">'
-          + '<span style="flex:1;min-width:130px;font-family:Share Tech Mono,monospace;font-size:11px;color:var(--txt)">'
-          +   escHtml(m) + ' <span style="color:var(--mute)">&times;' + p.total.unknownModels[m] + '</span></span>'
-          + '<input type="number" min="50" max="25000" step="10" placeholder="watts"'
-          +   ' onkeydown="if(event.key===\'Enter\'){submitModelPower(this.closest(\'[data-model]\').querySelector(\'button\'));}"'
-          +   ' style="width:84px;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:5px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none">'
-          + '<button class="abtn" onclick="submitModelPower(this)" style="border-color:var(--green);color:var(--green)">Apply to all</button>'
-          + '</div>';
-      }).join('');
+  // Every model actually seen in the fleet, with what it's currently
+  // costed at and an edit control right there — so fixing a number
+  // never depends on first knowing the exact model name to type. This
+  // is the answer to "which models are even at my sites": every row
+  // here came from a real machine, not from a name someone remembered.
+  let modelTable = '';
+  if (!isCustomer) {
+    const groups = modelBreakdown().sort(function(a, b) {
+      const ea = modelEffectivePower(a), eb = modelEffectivePower(b);
+      const unkA = ea.source === 'unknown' ? 0 : 1, unkB = eb.source === 'unknown' ? 0 : 1;
+      if (unkA !== unkB) return unkA - unkB;           // uncounted models float to the top
+      return b.count - a.count;
+    });
 
-    missing = '<div style="margin-top:10px;padding:10px;background:rgba(255,176,32,.08);border:1px solid rgba(255,176,32,.25);border-radius:6px;font-size:10px;color:var(--warn);line-height:1.5">'
-      + '<b>' + p.total.unknown + ' running machine(s) are not in the total.</b> '
-      + 'Their firmware doesn\'t report power draw and the model isn\'t in the built-in spec table. '
-      + 'Type the wattage once below and it applies to every machine of that model, at every site.'
-      + rowsFor
-      + '</div>';
-  } else if (p.total.unknown > 0) {
-    missing = '<div style="margin-top:8px;font-size:10px;color:var(--warn)">'
-      + p.total.unknown + ' machine(s) could not be counted.</div>';
-  }
+    const rowsHtml = groups.map(function(g) {
+      const eff = modelEffectivePower(g);
+      const override = modelPowerOverrides.find(function(o){ return o.model_key === g.key; });
+      const farmNames = Object.keys(g.farms).sort().join(', ') || '—';
 
-  // Everything entered by hand, so a wrong figure can be found and
-  // corrected — and so it's clear which models are running on an
-  // entered number rather than a measured or published one.
-  let manualList = '';
-  if (modelPowerOverrides.length && !isCustomer) {
-    const items = modelPowerOverrides.slice().sort(function(a,b){
-      return String(a.label||'').localeCompare(String(b.label||''));
-    }).map(function(o){
-      const n = machinesCoveredBy(o.model_key);
-      const forcedBadge = o.force
-        ? '<span title="This figure is trusted over the miner\'s own reported reading" style="margin-left:6px;padding:1px 6px;border-radius:3px;background:rgba(255,176,32,.15);border:1px solid rgba(255,176,32,.35);color:var(--warn);font-size:9px;white-space:nowrap">OVERRIDE</span>'
-        : '';
-      return '<div data-model="' + escHtml(o.label || o.model_key) + '" style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap">'
-        + '<span style="flex:1;min-width:130px;font-family:Share Tech Mono,monospace;font-size:11px">'
-        +   escHtml(o.label || o.model_key) + forcedBadge
-        +   ' <span style="color:' + (n ? 'var(--mute)' : 'var(--warn)') + '">' + (n ? '&rarr; ' + n + ' machine(s)' : 'matches nothing right now') + '</span></span>'
-        + '<input type="number" min="50" max="25000" step="10" value="' + Number(o.watts) + '"'
-        +   ' onkeydown="if(event.key===\'Enter\'){submitModelPower(this.closest(\'[data-model]\').querySelector(\'.mp-update\'));}"'
-        +   ' style="width:84px;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:5px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none">'
-        + '<label style="display:flex;align-items:center;gap:4px;font-size:9px;color:var(--mute);white-space:nowrap;cursor:pointer">'
-        +   '<input type="checkbox" ' + (o.force ? 'checked' : '') + ' style="accent-color:var(--warn)"> override live reading</label>'
-        + '<button class="abtn mp-update" onclick="submitModelPower(this)">Update</button>'
-        + '<button class="abtn" onclick="removeModelPower(\'' + escHtml(o.model_key) + '\')" style="border-color:var(--red);color:var(--red)">&times;</button>'
-        + '</div>';
+      let badge;
+      if (eff.forced)                badge = '<span style="padding:1px 6px;border-radius:3px;background:rgba(255,176,32,.15);border:1px solid rgba(255,176,32,.35);color:var(--warn);font-size:9px;white-space:nowrap">OVERRIDE</span>';
+      else if (eff.source==='measured') badge = '<span style="padding:1px 6px;border-radius:3px;background:rgba(0,220,130,.12);border:1px solid rgba(0,220,130,.3);color:var(--green);font-size:9px;white-space:nowrap">MEASURED</span>';
+      else if (eff.source==='manual')   badge = '<span style="padding:1px 6px;border-radius:3px;background:rgba(120,160,255,.12);border:1px solid rgba(120,160,255,.3);color:#8fb0ff;font-size:9px;white-space:nowrap">MANUAL</span>';
+      else if (eff.source==='spec')     badge = '<span style="padding:1px 6px;border-radius:3px;background:rgba(0,200,255,.1);border:1px solid rgba(0,200,255,.3);color:var(--cyan);font-size:9px;white-space:nowrap">SPEC</span>';
+      else                               badge = '<span style="padding:1px 6px;border-radius:3px;background:rgba(255,176,32,.15);border:1px solid rgba(255,176,32,.35);color:var(--warn);font-size:9px;white-space:nowrap">NOT COUNTED</span>';
+
+      const prefillWatts = override ? Number(override.watts) : (eff.watts > 0 ? eff.watts : '');
+      const rowBg = eff.source === 'unknown' ? 'background:rgba(255,176,32,.05)' : '';
+
+      return '<tr data-model="' + escHtml(g.label) + '" style="' + rowBg + '">'
+        + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;padding:6px 8px">' + escHtml(g.label || g.key)
+        +   '<div style="font-size:9px;color:var(--mute)">' + escHtml(farmNames) + '</div></td>'
+        + '<td style="font-size:11px;padding:6px 8px">' + g.count + (g.running < g.count ? ' <span style="color:var(--mute)">(' + g.running + ' running)</span>' : '') + '</td>'
+        + '<td style="padding:6px 8px">' + badge + '</td>'
+        + '<td style="padding:6px 8px">'
+        +   '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+        +     '<input type="number" min="50" max="25000" step="10" value="' + prefillWatts + '" placeholder="watts"'
+        +       ' onkeydown="if(event.key===\'Enter\'){submitModelPower(this.closest(\'tr\').querySelector(\'.mp-update\'));}"'
+        +       ' style="width:76px;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:4px 6px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none">'
+        +     '<label style="display:flex;align-items:center;gap:3px;font-size:9px;color:var(--mute);white-space:nowrap;cursor:pointer" title="Trust this figure even when the miner reports its own (wrong) reading">'
+        +       '<input type="checkbox" ' + (override && override.force ? 'checked' : '') + ' style="accent-color:var(--warn)">override</label>'
+        +     '<button class="abtn mp-update" onclick="submitModelPower(this)">Save</button>'
+        +     (override ? '<button class="abtn" onclick="removeModelPower(\'' + escHtml(g.key) + '\')" style="border-color:var(--red);color:var(--red)">&times;</button>' : '')
+        +   '</div>'
+        + '</td>'
+        + '</tr>';
     }).join('');
-    manualList = '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--b1)">'
-      + '<div style="font-size:10px;color:var(--mute);margin-bottom:2px">Power entered by hand &mdash; shared across all sites and devices. '
-      + '"Override live reading" means this figure is trusted even when the miner reports its own number, for a model whose firmware is known to report the wrong watts.</div>'
-      + items
+
+    // Overrides that were typed in but no longer match any machine
+    // currently in the fleet — a typo, or a model that's since been
+    // retired. Surfaced rather than silently ignored, since an entry
+    // like this looks like it's doing something and isn't.
+    const matchedKeys = {};
+    groups.forEach(function(g){ if (modelPowerOverrides.find(function(o){return o.model_key===g.key;})) matchedKeys[g.key] = true; });
+    const orphans = modelPowerOverrides.filter(function(o){ return !matchedKeys[o.model_key]; });
+    const orphanHtml = orphans.length ? ('<div style="margin-top:10px;padding:8px 10px;background:rgba(255,176,32,.06);border:1px solid rgba(255,176,32,.2);border-radius:6px">'
+      + '<div style="font-size:10px;color:var(--warn);margin-bottom:6px">Saved but matching no machine right now &mdash; check for a typo, or remove it:</div>'
+      + orphans.map(function(o){
+          return '<div style="display:flex;align-items:center;gap:8px;font-size:11px;font-family:Share Tech Mono,monospace;margin-top:4px">'
+            + '<span style="flex:1">' + escHtml(o.label || o.model_key) + ' &mdash; ' + Number(o.watts) + 'W' + (o.force?' (override)':'') + '</span>'
+            + '<button class="abtn" onclick="removeModelPower(\'' + escHtml(o.model_key) + '\')" style="border-color:var(--red);color:var(--red)">&times; Remove</button>'
+            + '</div>';
+        }).join('')
+      + '</div>') : '';
+
+    modelTable = '<div style="margin-top:10px">'
+      + '<table class="tbl" style="width:100%"><thead><tr>'
+      +   '<th style="text-align:left">Model</th><th style="text-align:left">Machines</th>'
+      +   '<th style="text-align:left">Source</th><th style="text-align:left">Watts / Edit</th>'
+      + '</tr></thead><tbody>' + rowsHtml + '</tbody></table>'
+      + orphanHtml
       + '<div style="margin-top:10px">'
-      +   '<button class="abtn" id="addModelCorrectionBtn" onclick="showAddModelCorrection()">+ Correct a model\'s reported power</button>'
+      +   '<button class="abtn" id="addModelCorrectionBtn" onclick="showAddModelCorrection()">+ Add a model not listed above</button>'
       +   '<div id="addModelCorrectionForm" style="display:none;margin-top:8px;align-items:center;gap:8px;flex-wrap:wrap">'
       +     '<input id="newCorrModel" type="text" placeholder="Model name (e.g. Antminer S21 Hyd)"'
       +       ' style="flex:1;min-width:160px;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:5px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none">'
@@ -965,12 +1019,12 @@ function renderPowerPanel() {
       + '</div>';
   }
 
-  // Details (which models are uncounted, and the hand-entered list) are
-  // used rarely once the fleet's models are filled in, so they're
-  // tucked behind a toggle rather than always taking up space. The
-  // summary line stays visible either way — it's the one-glance check
-  // that the total can be trusted — and remembers open/closed per device.
-  const hasDetails = !!(missing || manualList);
+  // Details (the full model list) are used rarely once the fleet's
+  // models are filled in, so they're tucked behind a toggle rather than
+  // always taking up space. The summary line stays visible either way —
+  // it's the one-glance check that the total can be trusted — and
+  // remembers open/closed per device.
+  const hasDetails = !!modelTable;
   const open = localStorage.getItem('ekl_power_details_open') === '1';
 
   body.innerHTML =
@@ -987,7 +1041,7 @@ function renderPowerPanel() {
           : '')
     + '</div>'
     + (hasDetails
-        ? '<div id="powerDetails" style="display:' + (open ? '' : 'none') + '">' + missing + manualList + '</div>'
+        ? '<div id="powerDetails" style="display:' + (open ? '' : 'none') + '">' + modelTable + '</div>'
         : '');
 }
 
