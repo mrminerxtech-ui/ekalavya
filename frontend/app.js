@@ -1948,7 +1948,7 @@ function mergeDuplicateGroup(group){
 
   const losingIds = group.filter(function(w){ return w !== winner; }).map(function(w){ return w.id; });
   workers = workers.filter(function(w){ return losingIds.indexOf(w.id) === -1; });
-  return { winner: winner, removed: losingIds.length };
+  return { winner: winner, removed: losingIds.length, removedIds: losingIds };
 }
 
 function findAndMergeDuplicates(){
@@ -1966,14 +1966,34 @@ function findAndMergeDuplicates(){
   if(!confirm('Found ' + dupGroups.length + ' duplicate miner(s), ' + totalDupes + ' extra record(s) to remove:\n\n' + preview + more + '\n\nMerge now? The most recently active copy of each is kept.')) return;
 
   let totalRemoved = 0;
+  let allRemovedIds = [];
   dupGroups.forEach(function(g){
     const result = mergeDuplicateGroup(g);
     totalRemoved += result.removed;
+    allRemovedIds = allRemovedIds.concat(result.removedIds);
   });
 
   _fleetHash = ''; _workersHash = '';
   saveFleet();
   saveFleetToBackend();
+
+  // The splice above only removes these from THIS device's local copy.
+  // Without an explicit delete, the backend's upsert-only /api/fleet/save
+  // never learns these records are gone \u2014 they stay in the database,
+  // and every other device (and this one, on its next load) pulls them
+  // straight back in, since loadFleetFromBackend is deliberately
+  // additive-only. Deleting each one server-side records a tombstone,
+  // so the removal actually propagates everywhere via pruneDeletedLocally.
+  const token = localStorage.getItem('ekl_token');
+  if (token && API_BASE && !API_BASE.includes('localhost')) {
+    allRemovedIds.forEach(function(id){
+      fetch(API_BASE + '/api/fleet/worker/' + encodeURIComponent(id), {
+        method: 'DELETE',
+        headers: {'Authorization':'Bearer '+token}
+      }).catch(function(){});
+    });
+  }
+
   renderWorkers(); renderDash();
   toast('\u2713 Merged ' + dupGroups.length + ' duplicate(s) \u2014 removed ' + totalRemoved + ' extra record(s)', 'var(--green)');
 }
