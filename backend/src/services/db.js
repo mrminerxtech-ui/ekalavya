@@ -198,6 +198,27 @@ async function createTables() {
       PRIMARY KEY (id, kind)
     );
 
+    -- Hand-entered power draw, per MODEL rather than per machine.
+    --
+    -- Plenty of miners never report their own wattage, and not every
+    -- model is in the built-in spec table — so those machines can't be
+    -- counted in a site's power total at all. Rather than making
+    -- someone type a figure into all 40 machines of that model, the
+    -- number is stored once against the model and every machine of that
+    -- model picks it up, at every site, on every device.
+    --
+    -- model_key is the model name reduced to letters and digits, so the
+    -- many ways firmware writes the same model ("Antminer L9",
+    -- "ANTMINER-L9", "Antminer L9 (17Gh)") all resolve to one row.
+    -- label keeps the name as it was actually seen, for display.
+    CREATE TABLE IF NOT EXISTS model_power (
+      model_key   TEXT PRIMARY KEY,
+      watts       INTEGER NOT NULL,
+      label       TEXT,
+      set_by      TEXT,
+      updated_at  TIMESTAMPTZ DEFAULT NOW()
+    );
+
     -- Cumulative customer earnings, accrued in short slots by the
     -- backend rather than calculated on the fly when someone opens a
     -- page. Accruing on view would double-count with two viewers and
@@ -709,6 +730,71 @@ async function saveAgentConfig(farmId, subnets, name) {
   }
 }
 
+// ── Hand-entered power per model ──────────────────────────
+// Shared fleet-wide on purpose: entering a wattage once should make
+// every machine of that model countable, at every site.
+function normalizeModelKeyDb(s) {
+  // Must stay identical to normalizeModelKey() in the frontend, or a
+  // figure saved from the browser would be filed under a key the
+  // lookup never asks for. "+" is a model name ("DG1+"), not
+  // punctuation, so it becomes a word instead of being dropped.
+  return String(s || '').toLowerCase().replace(/\+/g, 'plus').replace(/[^a-z0-9]/g, '');
+}
+
+async function loadModelPower() {
+  if (useFallback || !pool) {
+    return loadFallback('model_power').map(r => ({
+      model_key: r.id, watts: r.watts, label: r.label, set_by: r.set_by, updated_at: r.updated_at,
+    }));
+  }
+  try {
+    const r = await pool.query('SELECT model_key, watts, label, set_by, updated_at FROM model_power ORDER BY label');
+    return r.rows;
+  } catch(e) {
+    console.error('[DB] loadModelPower error:', e.message);
+    return [];
+  }
+}
+
+async function saveModelPower(modelKey, watts, label, setBy) {
+  const key = normalizeModelKeyDb(modelKey);
+  if (!key) return false;
+  const w = Math.round(Number(watts));
+  if (!isFinite(w) || w <= 0) return false;
+
+  if (useFallback || !pool) {
+    const all = loadFallback('model_power').filter(r => r.id !== key);
+    all.push({ id: key, watts: w, label: label || key, set_by: setBy || null, updated_at: new Date().toISOString() });
+    return saveFallback('model_power', all, true);
+  }
+  try {
+    await pool.query(`
+      INSERT INTO model_power(model_key, watts, label, set_by)
+      VALUES($1,$2,$3,$4)
+      ON CONFLICT(model_key) DO UPDATE SET watts=$2, label=$3, set_by=$4, updated_at=NOW()
+    `, [key, w, label || key, setBy || null]);
+    return true;
+  } catch(e) {
+    console.error('[DB] saveModelPower error:', e.message);
+    return false;
+  }
+}
+
+async function deleteModelPower(modelKey) {
+  const key = normalizeModelKeyDb(modelKey);
+  if (!key) return false;
+  if (useFallback || !pool) {
+    return saveFallback('model_power', loadFallback('model_power').filter(r => r.id !== key), true);
+  }
+  try {
+    await pool.query('DELETE FROM model_power WHERE model_key=$1', [key]);
+    return true;
+  } catch(e) {
+    console.error('[DB] deleteModelPower error:', e.message);
+    return false;
+  }
+}
+
 async function loadAgentConfig(farmId) {
   if (useFallback || !pool) return null;
   try {
@@ -1198,4 +1284,4 @@ async function getUptimeReport(days, farmId) {
   }
 }
 
-module.exports = { connect, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, clearFarmReadings, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, addTombstone, clearTombstone, loadTombstones, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport };
+module.exports = { connect, loadModelPower, saveModelPower, deleteModelPower, normalizeModelKeyDb, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, clearFarmReadings, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, addTombstone, clearTombstone, loadTombstones, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport };
