@@ -2633,6 +2633,14 @@ function doLogin(){
   });
 }
 function launchApp(){['loginScreen'].forEach(id=>document.getElementById(id).style.display='none');['ticker','topbar','appBody','bottomNav'].forEach(id=>document.getElementById(id).style.display=id==='appBody'?'flex':id==='bottomNav'?'block':'flex');const ini=currentUser.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();document.getElementById('sideAv').textContent=ini;document.getElementById('sideName').textContent=currentUser.name;document.getElementById('sideRole').textContent=isCustomer?'Customer Portal':currentUser.role==='admin'?'Super Admin':'Team Member';document.getElementById('topBadge').textContent=isCustomer?'PORTAL':'ADMIN';if(isCustomer){document.getElementById('adminNav').style.display='none';document.getElementById('custNav').style.display='block';document.getElementById('agentPill').style.display='none';document.getElementById('bnavAdmin').style.display='none';document.getElementById('bnavCust').style.display='flex';showPage('portal-home');document.getElementById('custNav').querySelector('.nav-item').classList.add('active');renderPortal();try{ fetchMarketData(function(){ try{ renderPortal(); }catch(e){} }); loadFleetFromBackend(function(){ try{ renderPortal(); }catch(e){} }); fetchEarnings(); setInterval(fetchEarnings, 10*60*1000); }catch(e){}}else{populateDropdowns();renderAll();
+// The fleet data driving stats/power was whatever this browser had
+// cached locally (possibly nothing, e.g. right after "clear site
+// data"). The only other refresh was a background interval kicked
+// off at page load — before login — which could take up to 60s to
+// fire again with a real token. Pulling fresh data the moment login
+// succeeds closes that gap instead of leaving the dashboard looking
+// like data was lost until the interval happens to catch up.
+try{ loadFleetFromBackend(function(){ try{ renderAll(); }catch(e){} }); }catch(e){}
 }
 // Hand-entered model wattages live on the server so they apply on
 // every device — fetch them before the first power roll-up is drawn.
