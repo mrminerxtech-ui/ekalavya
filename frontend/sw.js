@@ -1,5 +1,5 @@
 // Force update: bump version number to bust the cache
-const CACHE = 'ekalavya-v32';
+const CACHE = 'ekalavya-v33';
 
 self.addEventListener('install', e => {
   // Skip waiting immediately — don't wait for old tabs to close
