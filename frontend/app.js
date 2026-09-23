@@ -797,7 +797,22 @@ function computeSitePower() {
   workers.forEach(function(w) {
     const fid  = w.farm_id || 'unassigned';
     if (!byFarm[fid]) {
-      byFarm[fid] = { id: fid, name: w.farm || (A(fid) ? A(fid).name : fid),
+      // NOTE: this used to call a helper named A(fid) to fall back to
+      // the connected agent's name when a worker record had no .farm
+      // string of its own. That A() only ever existed as a LOCAL const
+      // inside renderWorkers() — a different function entirely — so
+      // calling it here threw "ReferenceError: A is not defined" the
+      // instant any worker with a falsy .farm was encountered. Because
+      // JS's || short-circuits, that only fired for SOME fleets (any
+      // worker missing .farm), which is exactly why this looked like it
+      // came and went rather than being reliably broken. The whole
+      // computeSitePower() call — and therefore the entire "Power
+      // Consumption by Site" panel — silently failed every time it hit
+      // one of these workers, which also matches machines whose NAME
+      // wasn't showing on the Workers page: same underlying gap, a
+      // worker record missing metadata the agent hasn't backfilled yet.
+      const agent = agents.find(function(a){ return a.id === fid; });
+      byFarm[fid] = { id: fid, name: w.farm || (agent ? agent.name : fid),
                       watts: 0, running: 0, measured: 0, manual: 0, spec: 0, unknown: 0, unknownModels: {} };
     }
     const f = byFarm[fid];
