@@ -2486,6 +2486,18 @@ function loadFleetFromBackend(cb) {
               // could work correctly on a fresh device but stay stuck
               // showing nothing on one that had opened the app before.
               if (existing.cid !== bw.cid) { existing.cid = bw.cid; changedThis = true; }
+              // Name only fills in when THIS device's copy has none —
+              // never overwrites a name someone actually typed in.
+              // Machines discovered before the server-side backfill (see
+              // db.js) got cached here locally with a blank name, same
+              // as the server had at the time; the backfill fixed the
+              // server's copy, but this additive merge never touches
+              // `name` on a record that already exists locally, so a
+              // device that had already cached the blank version kept
+              // showing it forever even after the server was fixed —
+              // exactly why the phone (which loaded fresh) was right
+              // while the PC (which loaded before the fix) stayed blank.
+              if (!existing.name && bw.name) { existing.name = bw.name; changedThis = true; }
               if (changedThis) updated++;
             }
           });
