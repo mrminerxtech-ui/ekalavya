@@ -283,6 +283,34 @@ async function createTables() {
   // flag fails against a database that's never heard of it.
   await pool.query(`ALTER TABLE model_power ADD COLUMN IF NOT EXISTS force BOOLEAN NOT NULL DEFAULT false;`);
 
+  // One-time backfill for machines that were auto-discovered before the
+  // fix below existed. upsertWorkersByIp's fresh-insert path used to
+  // spread the agent's raw poll data straight into a new row with no
+  // fallback for `name` at all — and the agent's own payload never
+  // includes one — so every machine first discovered server-side (the
+  // normal case; this is what every device actually loads from) ended
+  // up with a permanently blank name. The insert path is fixed to set
+  // a sensible default going forward (the miner's own pool worker name,
+  // or its IP with dots turned to dashes), but rows already sitting in
+  // the database from before that fix need the same default applied
+  // once, here, rather than staying blank forever.
+  try {
+    const backfilled = await pool.query(`
+      UPDATE workers
+      SET data = data || jsonb_build_object('name',
+        COALESCE(
+          NULLIF(data->>'worker', ''),
+          NULLIF(data->>'name', ''),
+          replace(data->>'ip', '.', '-'),
+          id
+        ))
+      WHERE COALESCE(data->>'name', '') = ''
+    `);
+    if (backfilled.rowCount > 0) console.log(`[DB] Backfilled a default name onto ${backfilled.rowCount} previously-unnamed machine(s)`);
+  } catch(e) {
+    console.error('[DB] Worker name backfill failed (non-fatal):', e.message);
+  }
+
   console.log('[DB] Tables ready');
 }
 
@@ -490,8 +518,21 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
         );
         if (moved) console.log(`[DB] Miner ${old.id} moved: ${old.farm_id}(${old.ip}) → ${farmId}(${m.ip})`);
       } else {
+        // Every OTHER place a fresh worker record gets built (the
+        // frontend's own mergePollResults, for the live-WebSocket path)
+        // defaults name to the miner's configured pool worker name, or
+        // its IP with dots turned to dashes, if nothing else is set.
+        // This insert path — the one that actually runs server-side on
+        // every poll, DB-backed and authoritative for every device —
+        // never did that: it just spread `m` as-is, and the agent's own
+        // poll payload has no `name` field at all. So a machine first
+        // discovered here (which is the normal case) got no name ever,
+        // and every device loading from /api/fleet/load saw it as blank
+        // forever, since loadFleetFromBackend never invents one either.
+        const defaultName = m.name || m.worker || (m.ip ? m.ip.replace(/\./g, '-') : stableWorkerId(m));
         const fresh = { ...m, id: stableWorkerId(m), farm_id: farmId, cid: '',
                    disabled: false, status: 'online', source: 'auto-poll',
+                   name: defaultName,
                    added_at: new Date().toISOString() };
         await client.query(
           `INSERT INTO workers(id, data, farm_id) VALUES($1,$2,$3)`,
@@ -585,8 +626,10 @@ function upsertWorkersFallback(farmId, minersFoundNow, collisions) {
         status: m.status || 'online' });
     } else {
       const id = stableWorkerId(m);
+      // Same missing-name fix as upsertWorkersByIp above.
+      const defaultName = m.name || m.worker || (m.ip ? m.ip.replace(/\./g, '-') : id);
       byId.set(id, { ...m, id, farm_id: farmId, cid: '',
-        disabled: false, status: 'online', source: 'auto-poll', added_at: new Date().toISOString() });
+        disabled: false, status: 'online', source: 'auto-poll', name: defaultName, added_at: new Date().toISOString() });
       // Rediscovered after deletion — see the matching comment in
       // upsertWorkersByIp above.
       clearTombstone('worker', id).catch(function(){});
