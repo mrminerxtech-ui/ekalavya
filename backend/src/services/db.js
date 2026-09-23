@@ -505,12 +505,24 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
       if (existing) {
         const old = existing.data;
         const moved = old.ip !== m.ip || old.farm_id !== farmId;
+        // This is why the name backfill kept "not sticking": `{...old,
+        // ...m}` lets ANY key present in the agent's own poll payload
+        // silently win over what's already saved, and the agent's miner
+        // objects apparently do carry a `name` key of their own (usually
+        // blank) — so every ~30s poll was overwriting the backfilled
+        // name right back to blank again, undoing the migration within
+        // one poll cycle of it running. name is now protected the same
+        // way cid/disabled already are: only ever take the agent's name
+        // when it's a real non-empty value, never let a blank one win.
+        const newName = (m.name && String(m.name).trim()) ? m.name
+          : (old.name || m.worker || (m.ip ? m.ip.replace(/\./g, '-') : old.id));
         const merged = { ...old, ...m, id: old.id, cid: old.cid, disabled: old.disabled,
                    disabled_reason: old.disabled_reason, disabled_at: old.disabled_at,
                    // If it moved, adopt the NEW farm/ip — that's genuinely
                    // where it is now. Otherwise keep exactly as before.
                    farm: moved ? (m.farm || old.farm) : old.farm,
                    farm_id: moved ? farmId : old.farm_id,
+                   name: newName,
                    status: m.status || 'online' };
         await client.query(
           `UPDATE workers SET data=$1, farm_id=$2, updated_at=NOW() WHERE id=$3`,
@@ -619,10 +631,14 @@ function upsertWorkersFallback(farmId, minersFoundNow, collisions) {
     const old = findExisting(m);
     if (old) {
       const moved = old.ip !== m.ip || old.farm_id !== farmId;
+      // Same name-protection fix as upsertWorkersByIp above.
+      const newName = (m.name && String(m.name).trim()) ? m.name
+        : (old.name || m.worker || (m.ip ? m.ip.replace(/\./g, '-') : old.id));
       byId.set(old.id, { ...old, ...m, id: old.id, cid: old.cid, disabled: old.disabled,
         disabled_reason: old.disabled_reason, disabled_at: old.disabled_at,
         farm: moved ? (m.farm || old.farm) : old.farm,
         farm_id: moved ? farmId : old.farm_id,
+        name: newName,
         status: m.status || 'online' });
     } else {
       const id = stableWorkerId(m);
