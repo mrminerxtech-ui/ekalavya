@@ -1103,7 +1103,19 @@ async function doPollMiners() {
     for (let i = 0; i < ips.length; i += BATCH) {
       const batch = ips.slice(i, i + BATCH);
       const results = await Promise.all(batch.map(async ip => {
-        if (!await checkPort(ip, CGPORT, 1500)) return null;
+        // This was the real reason the ElphaPEX at 19.3.19.46 never got
+        // any of the pools.cgi fixes above a chance to run: every recurring
+        // poll cycle gated entry on the cgminer TCP port (4028) alone, so
+        // a unit whose firmware doesn't run that service at all (or
+        // answers it too slowly) was silently skipped here, BEFORE
+        // getMinerInfo() — and therefore every one of its HTTP fallbacks —
+        // ever got called. It only ever showed up via a manual "Scan
+        // Network", whose isAsic() check already accepts port 80 too;
+        // this recurring poll now does the same, so a unit reachable only
+        // over HTTP keeps getting refreshed every cycle instead of going
+        // stale/blank forever after its first scan.
+        const reachable = await checkPort(ip, CGPORT, 1500) || await checkPort(ip, 80, 1500);
+        if (!reachable) return null;
         return getMinerInfo(ip).catch(() => null);
       }));
       live.push(...results.filter(Boolean));
