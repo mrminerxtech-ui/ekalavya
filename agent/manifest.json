@@ -1,8 +1,9 @@
 {
-  "version": "1.1.30",
-  "released_at": "2026-09-24T17:20:00Z",
+  "version": "1.1.31",
+  "released_at": "2026-09-24T18:10:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
+    "Found why the v1.1.29 pools.cgi fix never took effect: the recurring 30s poll only ever considered a unit for polling if it answered the cgminer TCP port (4028) within 1.5s — a unit whose firmware doesn't run that service at all (confirmed: 19.3.19.46 was simply never appearing in the agent's own console output, cycle after cycle) was silently skipped before getMinerInfo() — and every one of its HTTP fallbacks — ever ran. It only ever got added to the fleet via a one-off manual 'Scan Network', whose own reachability check already accepted HTTP (port 80) too; the recurring poll now does the same, so an HTTP-only unit keeps getting refreshed every cycle instead of silently going stale after its first scan.",
     "The v1.1.29 fix for ElphaPEX at 19.3.19.46 isn't showing up on the Workers page despite matching the raw pools.cgi JSON — temporarily logs '[EP-DEBUG2]' lines pinned to that exact IP (unconditional, not gated by brand this time) showing httpPools, the TCP pools response, the resolved active pool, and the final worker/model/brand values, so the actual break point can be read off the console. Remove once root-caused.",
     "Root-caused the ElphaPEX blank worker/pool/model fields, confirmed against this exact firmware's own /cgi-bin/pools.cgi response: it uses entirely lowercase field names (user/url/status/priority) instead of stock cgminer's capitalized ones (User/URL/Status/Priority), so every read of those fields was silently matching nothing. All pool/worker reads now check both casings. Also now reads the model and serial number directly from pools.cgi's structured 'INFO' block ({\"type\":\"DG1+\",\"dev_sn\":\"...\"}) as a cleaner, more reliable source than scraping the boot log for them, and falls back to pools.cgi entirely for pool data on units where the cgminer TCP port doesn't return it at all.",
     "Fix the single-instance lock refusing to ever start: it only checked whether SOME process currently has the old PID number, not whether that process is actually the agent. After a crash or a PC reboot, Windows/Node quickly reassigns that same PID to an unrelated process, so the check kept reporting a false 'already running' forever and the agent never started \u2014 exactly what happened on the Ghummadh site PC (stuck in a restart loop, never actually polling any miner). The lock file's own last-touched time is now checked too: a genuinely running agent refreshes it every 8s, so anything older than 3 minutes is treated as abandoned and reclaimed, regardless of what process now happens to hold that PID.",
@@ -14,8 +15,8 @@
   "files": [
     {
       "name": "agent.js",
-      "sha256": "06f82fe68789eca78543781f77c3217a9397e46fcc7c3fac75a8b0a166525dcc",
-      "size": 84573
+      "sha256": "58fbc6b632a8780d39ca9cd7ea08f8decabf32fff88ce56c1968c83b0b27ae23",
+      "size": 85428
     },
     {
       "name": "sonoff-th.js",
