@@ -268,12 +268,13 @@ tr:last-child td{border-bottom:none;}
   background:#000;display:flex;align-items:center;justify-content:center;}
 #splashScreen.hide{opacity:0;pointer-events:none;}
 
-/* Back to a self-contained radar screen (not bleeding off the edges) —
-   sized off vmin, the SMALLER of viewport width/height, which keeps it
-   a clean circle that fits fully on screen on phones AND wide PC
-   monitors alike, capped at 420px so it doesn't balloon on a big
-   desktop display. */
-.radar-wrap{position:relative;width:min(62vmin,420px);aspect-ratio:1/1;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
+/* Sized off vw so the circle's diameter always matches the full width
+   of whatever screen it's running on — phone or PC. aspect-ratio:1/1
+   keeps it a true circle (height = width), which on a wide PC window
+   means it runs taller than the viewport; #splashScreen's overflow:
+   hidden just clips the top/bottom overflow rather than shrinking it,
+   so the full-width look holds on every screen shape. */
+.radar-wrap{position:relative;width:100vw;aspect-ratio:1/1;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
 .radar-grid{position:absolute;left:50%;top:50%;width:100%;aspect-ratio:1/1;transform:translate(-50%,-50%);border-radius:50%;border:1px solid rgba(0,200,255,.16);}
 .radar-grid::before{content:"";position:absolute;inset:14%;border-radius:50%;border:1px solid rgba(0,200,255,.13);}
 .radar-grid::after{content:"";position:absolute;inset:28%;border-radius:50%;border:1px solid rgba(0,200,255,.1);}
@@ -294,7 +295,7 @@ tr:last-child td{border-bottom:none;}
 @keyframes radarSpin{to{transform:rotate(360deg);}}
 
 .radar-digits span{position:absolute;left:50%;top:50%;font-family:"Share Tech Mono",monospace;
-  font-size:min(2.4vmin,14px);font-weight:700;color:rgba(0,200,255,.85);text-shadow:0 0 6px rgba(0,200,255,.7);
+  font-size:min(3.6vw,20px);font-weight:700;color:rgba(0,200,255,.85);text-shadow:0 0 6px rgba(0,200,255,.7);
   opacity:0;animation:digitBlip 4s ease-in-out infinite;}
 @keyframes digitBlip{0%,84%{opacity:0;}88%{opacity:1;}93%{opacity:.8;}100%{opacity:0;}}
 
@@ -329,26 +330,26 @@ tr:last-child td{border-bottom:none;}
     <div class="radar-cross"></div>
     <div class="radar-sweep"></div>
     <div class="radar-digits">
-      <span style="transform:translate(21.7vmin,3.8vmin);animation-delay:0s">1</span>
-      <span style="transform:translate(11.3vmin,7.9vmin);animation-delay:.2s">0</span>
-      <span style="transform:translate(15.1vmin,21.6vmin);animation-delay:.4s">1</span>
-      <span style="transform:translate(3.1vmin,17.9vmin);animation-delay:.6s">0</span>
-      <span style="transform:translate(-4.8vmin,27.1vmin);animation-delay:.8s">1</span>
-      <span style="transform:translate(-9.5vmin,13.5vmin);animation-delay:1s">0</span>
-      <span style="transform:translate(-21.5vmin,12.4vmin);animation-delay:1.2s">1</span>
-      <span style="transform:translate(-11.9vmin,2.1vmin);animation-delay:1.4s">0</span>
-      <span style="transform:translate(-20.2vmin,-5.4vmin);animation-delay:1.6s">1</span>
-      <span style="transform:translate(-12.2vmin,-8.5vmin);animation-delay:1.8s">0</span>
-      <span style="transform:translate(-15.1vmin,-21.6vmin);animation-delay:2s">1</span>
-      <span style="transform:translate(-4.6vmin,-17vmin);animation-delay:2.2s">0</span>
-      <span style="transform:translate(4.8vmin,-27.1vmin);animation-delay:2.4s">1</span>
-      <span style="transform:translate(6.6vmin,-11.4vmin);animation-delay:2.6s">0</span>
-      <span style="transform:translate(17.7vmin,-14.9vmin);animation-delay:2.8s">1</span>
-      <span style="transform:translate(15.5vmin,-5.7vmin);animation-delay:3s">0</span>
-      <span style="transform:translate(26.9vmin,9.8vmin);animation-delay:3.2s">1</span>
-      <span style="transform:translate(4.7vmin,10vmin);animation-delay:3.4s">0</span>
-      <span style="transform:translate(-21.9vmin,18.4vmin);animation-delay:3.6s">1</span>
-      <span style="transform:translate(-1.7vmin,-9.7vmin);animation-delay:3.8s">0</span>
+      <span style="transform:translate(34.9vw,6.1vw);animation-delay:0s">1</span>
+      <span style="transform:translate(18.2vw,12.7vw);animation-delay:.2s">0</span>
+      <span style="transform:translate(24.3vw,34.8vw);animation-delay:.4s">1</span>
+      <span style="transform:translate(5vw,28.8vw);animation-delay:.6s">0</span>
+      <span style="transform:translate(-7.7vw,43.6vw);animation-delay:.8s">1</span>
+      <span style="transform:translate(-15.3vw,21.7vw);animation-delay:1s">0</span>
+      <span style="transform:translate(-34.6vw,20vw);animation-delay:1.2s">1</span>
+      <span style="transform:translate(-19.2vw,3.4vw);animation-delay:1.4s">0</span>
+      <span style="transform:translate(-32.5vw,-8.7vw);animation-delay:1.6s">1</span>
+      <span style="transform:translate(-19.6vw,-13.7vw);animation-delay:1.8s">0</span>
+      <span style="transform:translate(-24.3vw,-34.8vw);animation-delay:2s">1</span>
+      <span style="transform:translate(-7.4vw,-27.4vw);animation-delay:2.2s">0</span>
+      <span style="transform:translate(7.7vw,-43.6vw);animation-delay:2.4s">1</span>
+      <span style="transform:translate(10.6vw,-18.4vw);animation-delay:2.6s">0</span>
+      <span style="transform:translate(28.5vw,-24vw);animation-delay:2.8s">1</span>
+      <span style="transform:translate(25vw,-9.2vw);animation-delay:3s">0</span>
+      <span style="transform:translate(43.3vw,15.8vw);animation-delay:3.2s">1</span>
+      <span style="transform:translate(7.6vw,16.1vw);animation-delay:3.4s">0</span>
+      <span style="transform:translate(-35.3vw,29.6vw);animation-delay:3.6s">1</span>
+      <span style="transform:translate(-2.7vw,-15.6vw);animation-delay:3.8s">0</span>
     </div>
     <div class="splash-content">
       <img src="icon-512.png" alt="">
