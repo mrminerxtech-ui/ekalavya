@@ -679,6 +679,18 @@ async function getMinerInfo(ip) {
   const algo  = getAlgo(model);
   const brand = getBrand(model);
 
+  // TEMP DIAGNOSTIC — remove once the ElphaPEX worker/field issue is
+  // root-caused. Dumps exactly what this unit's cgminer API returns for
+  // summary/pools/devs, so the actual field names it uses (which may not
+  // match stock cgminer, or may fail to parse at all) can be read off
+  // the console instead of guessed at blind.
+  if (brand === 'ElphaPEX') {
+    console.log(`[ELPHAPEX-DEBUG] ${ip} summary:`, JSON.stringify(summary));
+    console.log(`[ELPHAPEX-DEBUG] ${ip} pools:`,   JSON.stringify(pools));
+    console.log(`[ELPHAPEX-DEBUG] ${ip} devs:`,    JSON.stringify(devs));
+    console.log(`[ELPHAPEX-DEBUG] ${ip} stats:`,   JSON.stringify(stats).slice(0, 1500));
+  }
+
   // Hashrate from summary
   const s      = summary?.SUMMARY?.[0] || {};
   let   rawMhs = parseFloat(s['MHS 5s'] || s['MHS av'] || (s['GHS 5s']||0)*1000 || (s['THS 5s']||0)*1e6 || 0);
