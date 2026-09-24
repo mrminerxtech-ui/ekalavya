@@ -163,9 +163,13 @@ tr:last-child td{border-bottom:none;}
 .scan-log{background:var(--bg);border:1px solid var(--b1);border-radius:6px;padding:10px;max-height:160px;overflow-y:auto;font-family:"Share Tech Mono",monospace;font-size:11px;line-height:1.8;}
 .ll.found{color:var(--green);}.ll.scan{color:var(--mute);}.ll.err{color:var(--red);}.ll.info{color:var(--cyan);}
 .portal-hero{background:linear-gradient(135deg,var(--s1),rgba(0,200,255,.04));border:1px solid var(--b2);border-radius:12px;padding:20px;margin-bottom:16px;display:flex;align-items:center;gap:16px;}
-#loginScreen{position:fixed;inset:0;background:var(--bg);z-index:300;display:flex;align-items:center;justify-content:center;padding:24px;}
+#loginScreen{position:fixed;inset:0;background:var(--bg);z-index:300;display:flex;align-items:center;justify-content:center;padding:0;}
 .login-glow{position:absolute;top:30%;left:50%;transform:translate(-50%,-50%);width:300px;height:300px;background:radial-gradient(circle,rgba(0,200,255,.07) 0%,transparent 70%);pointer-events:none;}
-.login-card{width:100%;max-width:380px;background:var(--s1);border:1px solid var(--b2);border-radius:14px;padding:32px 28px;position:relative;}
+/* Full-bleed instead of a small boxed card floating in the middle of a
+   lot of empty background — edge to edge, no border or rounded
+   corners, its own scroll if content is ever taller than the screen
+   (a long custom-login error, a very short phone). */
+.login-card{width:100%;height:100%;max-width:520px;margin:0 auto;background:var(--s1);border:none;border-radius:0;padding:48px 28px;position:relative;display:flex;flex-direction:column;justify-content:center;overflow-y:auto;}
 .login-logo{font-family:"Orbitron",sans-serif;font-weight:900;font-size:22px;color:var(--cyan);text-shadow:var(--glow);letter-spacing:3px;text-align:center;margin-bottom:4px;}
 .login-hex{font-size:32px;text-align:center;margin-bottom:8px;}
 .login-sub{text-align:center;font-size:11px;color:var(--mute);letter-spacing:2px;text-transform:uppercase;margin-bottom:24px;}
@@ -256,8 +260,7 @@ tr:last-child td{border-bottom:none;}
 <div id="loginScreen">
   <div class="login-glow"></div>
   <div class="login-card">
-    <img src="logo-full.png" alt="EKY Monitoring" style="width:180px;height:auto;display:block;margin:0 auto 8px">
-    <div class="login-sub">Remote ASIC Management</div>
+    <img src="logo-full.png" alt="EKY Monitoring" style="width:280px;max-width:80%;height:auto;display:block;margin:0 auto 28px">
     <div class="ltabs">
       <div class="ltab active" onclick="setLTab('admin',this)">Admin</div>
       <div class="ltab" onclick="setLTab('team',this)">Team</div>
