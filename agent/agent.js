@@ -87,6 +87,8 @@ const CGPORT    = parseInt(process.env.CGMINER_PORT || '4028');
 // same PC — someone starts agent.js by hand while update-check.js is
 // already supervising one. A lock file makes that impossible to do by
 // accident, and says so clearly rather than failing mysteriously.
+const LOCK_STALE_MS = 3 * 60 * 1000; // see touchLock() below
+let touchLockInterval = null;
 (function claimSingleInstance() {
   const fsLock   = require('fs');
   const pathLock = require('path');
@@ -94,7 +96,22 @@ const CGPORT    = parseInt(process.env.CGMINER_PORT || '4028');
   try {
     if (fsLock.existsSync(lockFile)) {
       const prev = parseInt(fsLock.readFileSync(lockFile, 'utf8').trim(), 10);
-      if (prev && prev !== process.pid) {
+      // How long ago the lock file was last written/touched. A genuinely
+      // alive agent updates this every 8s (see touchLockInterval below),
+      // so anything much older than that means whatever wrote it is gone
+      // — even if process.kill(prev, 0) below still reports "alive",
+      // which happens whenever the OS has since reassigned that same PID
+      // number to a completely unrelated process. That reassignment is
+      // exactly what was hitting this farm's PC: the real fix for "a
+      // stale lock left behind by a crashed agent" (changelog, v1.1.26)
+      // has to be based on the lock's age, not just on whether some
+      // process happens to occupy that PID number today — checking the
+      // PID alone was never enough, and kept refusing to start.
+      let ageMs = Infinity;
+      try { ageMs = Date.now() - fsLock.statSync(lockFile).mtimeMs; } catch(e) {}
+      const stale = ageMs > LOCK_STALE_MS;
+
+      if (prev && prev !== process.pid && !stale) {
         let alive = false;
         // Signal 0 checks for the process without touching it.
         try { process.kill(prev, 0); alive = true; } catch(e) { alive = false; }
@@ -112,10 +129,19 @@ const CGPORT    = parseInt(process.env.CGMINER_PORT || '4028');
           console.error('');
           process.exit(0);   // 0 = deliberate, so the supervisor doesn't count it as a crash
         }
+      } else if (prev && prev !== process.pid && stale) {
+        console.log(`[LOCK] Found a stale lock from process ${prev} (last touched ${Math.round(ageMs/1000)}s ago) — reclaiming it.`);
       }
     }
     fsLock.writeFileSync(lockFile, String(process.pid), 'utf8');
-    const release = () => { try { fsLock.unlinkSync(lockFile); } catch(e) {} };
+    const release = () => { try { fsLock.unlinkSync(lockFile); } catch(e) {} if (touchLockInterval) clearInterval(touchLockInterval); };
+    // Keep the lock file's mtime current for as long as this process is
+    // actually alive, so a future startup can tell "still running" apart
+    // from "crashed a while ago" purely from the file, regardless of PID
+    // reuse. Cleared again in release() above.
+    touchLockInterval = setInterval(() => {
+      try { fsLock.utimesSync(lockFile, new Date(), new Date()); } catch(e) {}
+    }, 8000);
     process.on('exit', release);
     process.on('SIGINT',  () => { release(); process.exit(0); });
     process.on('SIGTERM', () => { release(); process.exit(0); });
@@ -713,8 +739,12 @@ async function getMinerInfo(ip) {
   const power = parseInt(st0.power || st0.Power || s.Power || 0);
   const uptime = formatUptime(parseInt(s.Elapsed||0));
 
-  // Full worker ID as configured on the miner — includes wallet/worker suffix
-  const fullWorkerId = activePool.User || allPools.map(p => p.User).find(u => u && u !== '') || '—';
+  // Full worker ID as configured on the miner — includes wallet/worker suffix.
+  // Stock cgminer always calls this field "User", but some forks (seen on
+  // ElphaPEX firmware) use different casing/naming for the same value, so
+  // check the common variants rather than only the one stock field name.
+  const userField = p => p && (p.User || p.user || p.Username || p.username || p['User Name']);
+  const fullWorkerId = userField(activePool) || allPools.map(userField).find(u => u && u !== '') || '—';
 
 
   // HW errors and shares
