@@ -256,28 +256,40 @@ tr:last-child td{border-bottom:none;}
 /* SPLASH — plays once on every cold load, ahead of the login screen
    (which sits underneath it the whole time and is simply revealed
    once this is hidden, rather than being built or shown separately).
-   A soft radial glow behind everything, three expanding "radar" rings
-   giving it continuous motion instead of a single static pulse, the
-   icon itself brightening twice with a gentle scale-up (the original
-   ask), rounded corners instead of a hard square edge so it doesn't
-   read as a boxed-in logo, and the wordmark fading up underneath once
-   the icon settles. 10s total, then a quick fade to login. */
+   Background matches the icon's own black exactly, so its square
+   edge has no seam to show against — simpler and more reliable than
+   trying to mask the edge with rounded corners. Behind the icon, a
+   radar sweep rotates continuously and "detects" scattered 0/1 digits
+   that flash on as the beam passes them — on-theme for a mining rig
+   rather than a generic pulse effect. The icon itself still brightens
+   twice with a gentle scale-up (the original ask), and the wordmark
+   fades up once it settles. 10s total, then a quick fade to login. */
 #splashScreen{position:fixed;inset:0;z-index:500;overflow:hidden;transition:opacity .7s ease;
-  background:radial-gradient(circle at 50% 42%,#0f2436 0%,#081722 45%,var(--bg) 100%);
-  display:flex;align-items:center;justify-content:center;}
+  background:#000;display:flex;align-items:center;justify-content:center;}
 #splashScreen.hide{opacity:0;pointer-events:none;}
-.splash-rings{position:absolute;left:50%;top:42%;width:0;height:0;}
-.splash-rings span{position:absolute;left:0;top:0;width:170px;height:170px;margin:-85px 0 0 -85px;
-  border:1.5px solid rgba(0,200,255,.55);border-radius:50%;opacity:0;animation:ringPulse 3s ease-out infinite;}
-.splash-rings span:nth-child(2){animation-delay:1s;}
-.splash-rings span:nth-child(3){animation-delay:2s;}
-@keyframes ringPulse{
-  0%   {transform:scale(.55);opacity:.65;}
-  100% {transform:scale(2.6);opacity:0;}
-}
-.splash-content{position:relative;display:flex;flex-direction:column;align-items:center;}
-#splashScreen img{width:148px;height:148px;border-radius:30px;animation:splashPulse 10s cubic-bezier(.4,0,.2,1) forwards;}
-.splash-word{margin-top:22px;font-family:"Orbitron",sans-serif;font-weight:700;font-size:20px;color:#fff;
+
+.radar-wrap{position:relative;width:300px;height:300px;display:flex;align-items:center;justify-content:center;}
+.radar-grid{position:absolute;inset:0;border-radius:50%;border:1px solid rgba(0,200,255,.16);}
+.radar-grid::before{content:"";position:absolute;inset:42px;border-radius:50%;border:1px solid rgba(0,200,255,.13);}
+.radar-grid::after{content:"";position:absolute;inset:84px;border-radius:50%;border:1px solid rgba(0,200,255,.1);}
+.radar-cross{position:absolute;inset:0;}
+.radar-cross::before,.radar-cross::after{content:"";position:absolute;background:rgba(0,200,255,.1);}
+.radar-cross::before{left:0;right:0;top:50%;height:1px;}
+.radar-cross::after{top:0;bottom:0;left:50%;width:1px;}
+.radar-sweep{position:absolute;inset:0;border-radius:50%;
+  background:conic-gradient(from 0deg,rgba(0,200,255,.5),rgba(0,200,255,0) 32%,transparent 100%);
+  animation:radarSpin 3.34s linear infinite;mix-blend-mode:screen;}
+@keyframes radarSpin{to{transform:rotate(360deg);}}
+
+.radar-digits span{position:absolute;left:50%;top:50%;font-family:"Share Tech Mono",monospace;
+  font-size:13px;font-weight:700;color:rgba(0,200,255,.95);text-shadow:0 0 8px rgba(0,200,255,.9);
+  opacity:0;animation:digitBlip 3.34s ease-in-out infinite;}
+@keyframes digitBlip{0%,86%{opacity:0;}89%{opacity:1;}94%{opacity:.8;}100%{opacity:0;}}
+
+.splash-content{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  display:flex;flex-direction:column;align-items:center;}
+#splashScreen img{width:136px;height:136px;border-radius:26px;animation:splashPulse 10s cubic-bezier(.4,0,.2,1) forwards;}
+.splash-word{margin-top:20px;font-family:"Orbitron",sans-serif;font-weight:700;font-size:20px;color:#fff;
   opacity:0;transform:translateY(10px);letter-spacing:8px;animation:wordFade 1.4s ease-out 2.4s forwards;}
 @keyframes wordFade{
   0%   {opacity:0;transform:translateY(10px);letter-spacing:9px;}
@@ -300,10 +312,28 @@ tr:last-child td{border-bottom:none;}
      cold load, then fades out and removes itself, revealing the login
      screen underneath (which has been sitting there the whole time). -->
 <div id="splashScreen">
-  <div class="splash-rings"><span></span><span></span><span></span></div>
-  <div class="splash-content">
-    <img src="icon-512.png" alt="">
-    <div class="splash-word">EKALAVYA</div>
+  <div class="radar-wrap">
+    <div class="radar-grid"></div>
+    <div class="radar-cross"></div>
+    <div class="radar-sweep"></div>
+    <div class="radar-digits">
+      <span style="transform:translate(106px,28px);animation-delay:0s">1</span>
+      <span style="transform:translate(55px,78px);animation-delay:.28s">0</span>
+      <span style="transform:translate(-11px,130px);animation-delay:.56s">1</span>
+      <span style="transform:translate(-77px,64px);animation-delay:.84s">1</span>
+      <span style="transform:translate(-120px,11px);animation-delay:1.11s">0</span>
+      <span style="transform:translate(-78px,-45px);animation-delay:1.39s">0</span>
+      <span style="transform:translate(-49px,-104px);animation-delay:1.67s">1</span>
+      <span style="transform:translate(18px,-103px);animation-delay:1.95s">0</span>
+      <span style="transform:translate(96px,-80px);animation-delay:2.23s">1</span>
+      <span style="transform:translate(94px,-17px);animation-delay:2.5s">0</span>
+      <span style="transform:translate(70px,121px);animation-delay:2.78s">1</span>
+      <span style="transform:translate(-127px,-46px);animation-delay:3.06s">0</span>
+    </div>
+    <div class="splash-content">
+      <img src="icon-512.png" alt="">
+      <div class="splash-word">EKALAVYA</div>
+    </div>
   </div>
 </div>
 <script>
