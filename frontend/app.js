@@ -2485,6 +2485,26 @@ function loadFleetFromBackend(cb) {
               if (existing.temp       !== nTemp) { existing.temp       = nTemp; changedThis = true; }
               if (existing.fan        !== nFan)  { existing.fan        = nFan;  changedThis = true; }
               if (existing.hr_display !== nDisp) { existing.hr_display = nDisp; changedThis = true; }
+              // model/brand/worker/worker_id/pool were never synced here at
+              // all — this loop only ever touched status/hashrate/temp/fan/
+              // hr_display/cid/name. So once a device's local cache had
+              // "Unknown"/blank baked in for one of these (e.g. from a poll
+              // that happened before a server-side identification fix, or
+              // one that hit the miner's web server while it was too busy
+              // to answer), it stayed stuck showing that forever on THIS
+              // device — even after the backend had the correct value —
+              // because nothing here ever pulled the fix down. Backend is
+              // authoritative once it has a real (non-blank) reading, same
+              // "never let a blank value win" rule as db.js's keepIfBetter.
+              const syncIfBetter = (field, blanks) => {
+                const v = bw[field];
+                if (v && !blanks.includes(v) && existing[field] !== v) { existing[field] = v; changedThis = true; }
+              };
+              syncIfBetter('model', ['Unknown']);
+              syncIfBetter('brand', ['']);
+              syncIfBetter('worker', ['—']);
+              syncIfBetter('worker_id', ['—']);
+              syncIfBetter('pool', ['—']);
               // Customer assignment (cid) is authoritative from the
               // backend, always — unlike hashrate/temp there's no
               // legitimate reason a device's LOCAL cache would ever be
