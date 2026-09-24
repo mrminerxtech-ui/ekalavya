@@ -268,10 +268,14 @@ tr:last-child td{border-bottom:none;}
   background:#000;display:flex;align-items:center;justify-content:center;}
 #splashScreen.hide{opacity:0;pointer-events:none;}
 
-.radar-wrap{position:relative;width:300px;height:300px;display:flex;align-items:center;justify-content:center;}
+/* Sized off the viewport (vmin, so it scales the same way on a tall
+   phone or a wide desktop window) instead of a fixed 300px — the
+   circle now bleeds off the edges of the screen instead of sitting
+   as a small medallion in the middle of a mostly-empty background. */
+.radar-wrap{position:relative;width:min(130vmin,780px);height:min(130vmin,780px);display:flex;align-items:center;justify-content:center;}
 .radar-grid{position:absolute;inset:0;border-radius:50%;border:1px solid rgba(0,200,255,.16);}
-.radar-grid::before{content:"";position:absolute;inset:42px;border-radius:50%;border:1px solid rgba(0,200,255,.13);}
-.radar-grid::after{content:"";position:absolute;inset:84px;border-radius:50%;border:1px solid rgba(0,200,255,.1);}
+.radar-grid::before{content:"";position:absolute;inset:14%;border-radius:50%;border:1px solid rgba(0,200,255,.13);}
+.radar-grid::after{content:"";position:absolute;inset:28%;border-radius:50%;border:1px solid rgba(0,200,255,.1);}
 .radar-cross{position:absolute;inset:0;}
 .radar-cross::before,.radar-cross::after{content:"";position:absolute;background:rgba(0,200,255,.1);}
 .radar-cross::before{left:0;right:0;top:50%;height:1px;}
@@ -282,13 +286,13 @@ tr:last-child td{border-bottom:none;}
 @keyframes radarSpin{to{transform:rotate(360deg);}}
 
 .radar-digits span{position:absolute;left:50%;top:50%;font-family:"Share Tech Mono",monospace;
-  font-size:13px;font-weight:700;color:rgba(0,200,255,.95);text-shadow:0 0 8px rgba(0,200,255,.9);
+  font-size:min(3.6vmin,20px);font-weight:700;color:rgba(0,200,255,.95);text-shadow:0 0 8px rgba(0,200,255,.9);
   opacity:0;animation:digitBlip 3.34s ease-in-out infinite;}
 @keyframes digitBlip{0%,86%{opacity:0;}89%{opacity:1;}94%{opacity:.8;}100%{opacity:0;}}
 
 .splash-content{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
   display:flex;flex-direction:column;align-items:center;}
-#splashScreen img{width:136px;height:136px;border-radius:26px;animation:splashPulse 10s cubic-bezier(.4,0,.2,1) forwards;}
+#splashScreen img{width:min(34vmin,190px);height:min(34vmin,190px);border-radius:20%;animation:splashPulse 10s cubic-bezier(.4,0,.2,1) forwards;}
 .splash-word{margin-top:20px;font-family:"Orbitron",sans-serif;font-weight:700;font-size:20px;color:#fff;
   opacity:0;transform:translateY(10px);letter-spacing:8px;animation:wordFade 1.4s ease-out 2.4s forwards;}
 @keyframes wordFade{
@@ -308,7 +312,7 @@ tr:last-child td{border-bottom:none;}
 </head>
 <body>
 
-<!-- SPLASH — sits on top of the login screen for the first 5s of every
+<!-- SPLASH — sits on top of the login screen for the first 10s of every
      cold load, then fades out and removes itself, revealing the login
      screen underneath (which has been sitting there the whole time). -->
 <div id="splashScreen">
@@ -317,18 +321,18 @@ tr:last-child td{border-bottom:none;}
     <div class="radar-cross"></div>
     <div class="radar-sweep"></div>
     <div class="radar-digits">
-      <span style="transform:translate(106px,28px);animation-delay:0s">1</span>
-      <span style="transform:translate(55px,78px);animation-delay:.28s">0</span>
-      <span style="transform:translate(-11px,130px);animation-delay:.56s">1</span>
-      <span style="transform:translate(-77px,64px);animation-delay:.84s">1</span>
-      <span style="transform:translate(-120px,11px);animation-delay:1.11s">0</span>
-      <span style="transform:translate(-78px,-45px);animation-delay:1.39s">0</span>
-      <span style="transform:translate(-49px,-104px);animation-delay:1.67s">1</span>
-      <span style="transform:translate(18px,-103px);animation-delay:1.95s">0</span>
-      <span style="transform:translate(96px,-80px);animation-delay:2.23s">1</span>
-      <span style="transform:translate(94px,-17px);animation-delay:2.5s">0</span>
-      <span style="transform:translate(70px,121px);animation-delay:2.78s">1</span>
-      <span style="transform:translate(-127px,-46px);animation-delay:3.06s">0</span>
+      <span style="transform:translate(45.9vmin,12.1vmin);animation-delay:0s">1</span>
+      <span style="transform:translate(23.8vmin,33.8vmin);animation-delay:.28s">0</span>
+      <span style="transform:translate(-4.8vmin,56.3vmin);animation-delay:.56s">1</span>
+      <span style="transform:translate(-33.4vmin,27.7vmin);animation-delay:.84s">1</span>
+      <span style="transform:translate(-52vmin,4.8vmin);animation-delay:1.11s">0</span>
+      <span style="transform:translate(-33.8vmin,-19.5vmin);animation-delay:1.39s">0</span>
+      <span style="transform:translate(-21.2vmin,-45.1vmin);animation-delay:1.67s">1</span>
+      <span style="transform:translate(7.8vmin,-44.6vmin);animation-delay:1.95s">0</span>
+      <span style="transform:translate(41.6vmin,-34.7vmin);animation-delay:2.23s">1</span>
+      <span style="transform:translate(40.7vmin,-7.4vmin);animation-delay:2.5s">0</span>
+      <span style="transform:translate(30.3vmin,52.4vmin);animation-delay:2.78s">1</span>
+      <span style="transform:translate(-55vmin,-19.9vmin);animation-delay:3.06s">0</span>
     </div>
     <div class="splash-content">
       <img src="icon-512.png" alt="">
