@@ -1,8 +1,9 @@
 {
-  "version": "1.1.27",
-  "released_at": "2026-09-24T16:15:00Z",
+  "version": "1.1.28",
+  "released_at": "2026-09-24T16:25:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
+    "ElphaPEX still blank on worker/other fields even with the agent now running (v1.1.27) \u2014 temporarily logs the RAW summary/pools/devs/stats response this unit's cgminer API actually returns, so the real field names/format can be read off the console instead of guessed at. Look for '[ELPHAPEX-DEBUG]' lines in the agent console. Remove once root-caused.",
     "Fix the single-instance lock refusing to ever start: it only checked whether SOME process currently has the old PID number, not whether that process is actually the agent. After a crash or a PC reboot, Windows/Node quickly reassigns that same PID to an unrelated process, so the check kept reporting a false 'already running' forever and the agent never started \u2014 exactly what happened on the Ghummadh site PC (stuck in a restart loop, never actually polling any miner). The lock file's own last-touched time is now checked too: a genuinely running agent refreshes it every 8s, so anything older than 3 minutes is treated as abandoned and reclaimed, regardless of what process now happens to hold that PID.",
     "ElphaPEX (and any cgminer fork using non-standard field casing): read the pool worker name from 'user'/'Username' as well as the stock 'User' field, instead of only the stock name \u2014 fixes worker name showing blank on these units even once hashrate is being read correctly.",
     "Fix ElphaPEX (DG1/DG1+) hashrate and model showing blank/offline: the boot-log read those values depend on was only ever fetched when a machine's MAC and serial number were BOTH still unknown, so a unit that had already been identified some other way silently never got its hashrate parsed at all. The log is now read directly whenever hashrate comes back empty, regardless of why.",
@@ -13,8 +14,8 @@
   "files": [
     {
       "name": "agent.js",
-      "sha256": "f9219a69c6911678efd156850d548f7a2e73f33c96c0dc715968e0c8c3802834",
-      "size": 81609
+      "sha256": "725f7ce99c26382368a576f73d69a7a7c7e72728cdc88cdfce256a3389858879",
+      "size": 82296
     },
     {
       "name": "sonoff-th.js",
