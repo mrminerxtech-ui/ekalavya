@@ -1,8 +1,9 @@
 {
-  "version": "1.1.31",
-  "released_at": "2026-09-24T18:10:00Z",
+  "version": "1.1.32",
+  "released_at": "2026-09-24T18:30:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
+    "Fix a regression from v1.1.31: widening the recurring poll to also accept port 80 (needed for the ElphaPEX, which doesn't run the cgminer TCP service at all) had no verification step, so literally any device answering on port 80 — a router, a camera, a printer — got swept in and treated as a miner. isAsic() (the same real signature check the manual 'Scan Network' already used) now gates the port-80 case; a port-4028 hit is still accepted directly since that's already a reliable enough signal on its own. Also taught isAsic() to recognize ElphaPEX's own /cgi-bin/pools.cgi signature, since it previously matched none of the existing cgminer/Antminer/Avalon/Whatsminer checks and would have been wrongly rejected by this same verification step.",
     "Found why the v1.1.29 pools.cgi fix never took effect: the recurring 30s poll only ever considered a unit for polling if it answered the cgminer TCP port (4028) within 1.5s — a unit whose firmware doesn't run that service at all (confirmed: 19.3.19.46 was simply never appearing in the agent's own console output, cycle after cycle) was silently skipped before getMinerInfo() — and every one of its HTTP fallbacks — ever ran. It only ever got added to the fleet via a one-off manual 'Scan Network', whose own reachability check already accepted HTTP (port 80) too; the recurring poll now does the same, so an HTTP-only unit keeps getting refreshed every cycle instead of silently going stale after its first scan.",
     "The v1.1.29 fix for ElphaPEX at 19.3.19.46 isn't showing up on the Workers page despite matching the raw pools.cgi JSON — temporarily logs '[EP-DEBUG2]' lines pinned to that exact IP (unconditional, not gated by brand this time) showing httpPools, the TCP pools response, the resolved active pool, and the final worker/model/brand values, so the actual break point can be read off the console. Remove once root-caused.",
     "Root-caused the ElphaPEX blank worker/pool/model fields, confirmed against this exact firmware's own /cgi-bin/pools.cgi response: it uses entirely lowercase field names (user/url/status/priority) instead of stock cgminer's capitalized ones (User/URL/Status/Priority), so every read of those fields was silently matching nothing. All pool/worker reads now check both casings. Also now reads the model and serial number directly from pools.cgi's structured 'INFO' block ({\"type\":\"DG1+\",\"dev_sn\":\"...\"}) as a cleaner, more reliable source than scraping the boot log for them, and falls back to pools.cgi entirely for pool data on units where the cgminer TCP port doesn't return it at all.",
@@ -15,8 +16,8 @@
   "files": [
     {
       "name": "agent.js",
-      "sha256": "58fbc6b632a8780d39ca9cd7ea08f8decabf32fff88ce56c1968c83b0b27ae23",
-      "size": 85428
+      "sha256": "3533719b0fc952f1b0ba4bc3aafe5ea5cf9d4bbb43926c7ffcfa947bef1f2e92",
+      "size": 86402
     },
     {
       "name": "sonoff-th.js",
