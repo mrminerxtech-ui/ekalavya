@@ -775,6 +775,19 @@ async function getMinerInfo(ip) {
   const userField = p => poolField(p, 'User','user','Username','username','User Name');
   const fullWorkerId = userField(activePool) || allPools.map(userField).find(u => u && u !== '') || '—';
 
+  // TEMP DIAGNOSTIC — the v1.1.29 pool/model fix isn't showing up on the
+  // Workers page despite looking correct against the raw pools.cgi JSON.
+  // Pinned to this one known-problem IP (not brand, which was the trap
+  // last time) so it fires unconditionally and shows exactly which stage
+  // of the pipeline actually has the data and which doesn't. Remove once
+  // this is root-caused.
+  if (ip === '19.3.19.46') {
+    console.log(`[EP-DEBUG2] ${ip} httpPools raw:`, JSON.stringify(httpPools));
+    console.log(`[EP-DEBUG2] ${ip} pools(tcp) raw:`, JSON.stringify(pools));
+    console.log(`[EP-DEBUG2] ${ip} poolsSrc.POOLS.length=${allPools.length} activePool=`, JSON.stringify(activePool));
+    console.log(`[EP-DEBUG2] ${ip} fullWorkerId="${fullWorkerId}" model="${model}" brand="${brand}"`);
+  }
+
 
   // HW errors and shares
   const accepted  = parseInt(s.Accepted||0);
