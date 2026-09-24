@@ -255,7 +255,8 @@ router.use('/:farmId/:ip', async (req, res) => {
     const pathOnly      = minerPath.split('?')[0].toLowerCase();
     const looksLikeJs   = pathOnly.endsWith('.js');
     const isJs          = looksLikeJs || declaredType.includes('javascript');
-    const isHtml        = !isJs && (declaredType.includes('text/html') || (!declaredType && (pathOnly === '/' || pathOnly.endsWith('/') || pathOnly.endsWith('.html'))));
+    const isCss         = !isJs && (pathOnly.endsWith('.css') || declaredType.includes('text/css'));
+    const isHtml        = !isJs && !isCss && (declaredType.includes('text/html') || (!declaredType && (pathOnly === '/' || pathOnly.endsWith('/') || pathOnly.endsWith('.html'))));
 
     // Falling back to text/html for ANY file the miner didn't label was
     // actively harmful: helmet sends X-Content-Type-Options: nosniff, and
@@ -318,7 +319,19 @@ router.use('/:farmId/:ip', async (req, res) => {
       // matter which mechanism sets it.
       const interceptShim = '<script>' +
         '(function(){' +
-        'function fix(u){if(typeof u==="string"&&u.charAt(0)==="/"&&u.charAt(1)!=="/"){return u.slice(1);}return u;}' +
+        // Braiins OS+'s GraphQL client builds its endpoint as
+        // `location.origin + "/graphql"` — a fully-qualified absolute
+        // URL, not a bare "/graphql" string. That form skipped the
+        // leading-slash check entirely and hit our own backend's root
+        // ("Cannot POST /graphql" is literally Express's own 404 text,
+        // not the miner's — the giveaway that the request never reached
+        // the tunnel at all). Stripping window.location.origin off the
+        // front first, when present, reduces this case to the same
+        // leading-slash fix already handled below.
+        'function fix(u){' +
+        'if(typeof u!=="string")return u;' +
+        'if(u.indexOf(window.location.origin)===0){u=u.slice(window.location.origin.length);}' +
+        'if(u.charAt(0)==="/"&&u.charAt(1)!=="/"){return u.slice(1);}return u;}' +
         'var oF=window.fetch;' +
         'window.fetch=function(i,init){' +
         'if(typeof i==="string")i=fix(i);' +
@@ -382,6 +395,20 @@ router.use('/:farmId/:ip', async (req, res) => {
       let js = bodyBuf.toString('utf8');
       js = js.replace(/(?<![a-zA-Z0-9_])url\((["']?)\/(?!\/)/g, 'url($1');
       bodyBuf = Buffer.from(js, 'utf8');
+    }
+
+    // Same leading-slash problem, but for an ACTUAL .css file — the case
+    // above only ever covered url(...) baked into a JS-injected <style>,
+    // never a real stylesheet the miner serves as its own file. Braiins
+    // OS+ declares its fonts via @font-face { src: url(/static/font/…) }
+    // in exactly this kind of file, so every font 404'd against our own
+    // backend's root instead of the tunnel folder — the page rendered
+    // with its default fallback font and no visible error, which is why
+    // this one was easy to miss next to the louder GraphQL failure.
+    if (isCss) {
+      let css = bodyBuf.toString('utf8');
+      css = css.replace(/url\((["']?)\/(?!\/)/g, 'url($1');
+      bodyBuf = Buffer.from(css, 'utf8');
     }
 
     // Name every failing file and say WHICH layer refused it. A 502 in
