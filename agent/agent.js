@@ -442,6 +442,14 @@ async function isAsic(ip) {
   const wm = await httpGet(ip, '/cgi-bin/luci/admin/status/overview', 'root:root');
   if (typeof wm === 'string' && (wm.includes('Whatsminer') || wm.includes('MicroBT'))) return { via: 'whatsminer-http' };
 
+  // 6. ElphaPEX HTTP — this firmware doesn't run the cgminer TCP service
+  // at all (confirmed: it never answers port 4028), only this HTTP
+  // endpoint, so it would otherwise never pass ANY of the checks above
+  // and get treated as "not an ASIC" — exactly the bug that made it
+  // silently drop out of every recurring poll.
+  const epPools = await httpGet(ip, '/cgi-bin/pools.cgi');
+  if (epPools?.POOLS || epPools?.INFO) return { via: 'elphapex-http' };
+
   return null; // Not an ASIC
 }
 
@@ -1106,16 +1114,24 @@ async function doPollMiners() {
         // This was the real reason the ElphaPEX at 19.3.19.46 never got
         // any of the pools.cgi fixes above a chance to run: every recurring
         // poll cycle gated entry on the cgminer TCP port (4028) alone, so
-        // a unit whose firmware doesn't run that service at all (or
-        // answers it too slowly) was silently skipped here, BEFORE
-        // getMinerInfo() — and therefore every one of its HTTP fallbacks —
-        // ever got called. It only ever showed up via a manual "Scan
-        // Network", whose isAsic() check already accepts port 80 too;
-        // this recurring poll now does the same, so a unit reachable only
-        // over HTTP keeps getting refreshed every cycle instead of going
-        // stale/blank forever after its first scan.
-        const reachable = await checkPort(ip, CGPORT, 1500) || await checkPort(ip, 80, 1500);
-        if (!reachable) return null;
+        // a unit whose firmware doesn't run that service at all was
+        // silently skipped here, BEFORE getMinerInfo() — and therefore
+        // every one of its HTTP fallbacks — ever got called. It only ever
+        // showed up via a manual "Scan Network", whose isAsic() check
+        // already accepts HTTP-only units too.
+        //
+        // Widening this to "port 4028 OR port 80" on its own (an earlier
+        // version of this fix) caused a regression: literally ANY device
+        // that answers on port 80 — a router, a camera, a printer — got
+        // treated as a miner. isAsic() is the actual verification step
+        // (checks for real cgminer/Antminer/Avalon/Whatsminer/ElphaPEX
+        // signatures, not just "something is listening"); it's only run
+        // for the HTTP-only case, since a port-4028 hit is already a
+        // reliable enough signal on its own and doesn't need the extra
+        // round trip on every one of a farm's machines every cycle.
+        if (await checkPort(ip, CGPORT, 1500)) return getMinerInfo(ip).catch(() => null);
+        if (!(await checkPort(ip, 80, 1500))) return null;
+        if (!(await isAsic(ip))) return null;
         return getMinerInfo(ip).catch(() => null);
       }));
       live.push(...results.filter(Boolean));
