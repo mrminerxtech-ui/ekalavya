@@ -1016,6 +1016,27 @@ async function scanNetwork(subnet, ports, timeout, sessionId, isLast=true) {
 
 // ── Poll miners ────────────────────────────────────────────
 let pollInProgress = false;
+
+// Once a port-80-only unit (no cgminer TCP service) has been verified as
+// a genuine ASIC by isAsic(), remember it here so the recurring poll can
+// skip straight to getMinerInfo() next cycle instead of re-running the
+// full up-to-6-request isAsic() cascade against it every ~30s forever.
+// This matters a lot for units whose embedded web server can only serve
+// ONE connection at a time (confirmed true of at least one ElphaPEX on
+// this fleet) — piling 6 extra probe requests in FRONT of the one that
+// actually matters, every single cycle, was starving that real request
+// of its turn on the server often enough that the machine kept showing
+// up in a manual "Scan Network" (a single, isolated burst of requests)
+// but never in the recurring poll (continuous load, always contending
+// with whatever else — a browser tab, another cycle's own requests — is
+// also trying to reach that same one-at-a-time server).
+// Re-verified periodically rather than cached forever, so a device that
+// later gets a DIFFERENT machine's IP via DHCP (e.g. a router taking
+// over a decommissioned miner's old address) doesn't stay wrongly
+// trusted — this is exactly the router false-positive this fleet hit
+// before, just guarded against recurring instead of prevented outright.
+const knownAsicIps = new Map();   // ip -> last-verified timestamp
+const ASIC_RECHECK_MS = 10 * 60 * 1000;   // re-run isAsic() at most this often
 // ── ARP-based MAC lookup ────────────────────────────────────────
 // Many miners don't expose their MAC through their web API at all
 // (agent logs show plenty of "MAC: not found"). But the agent sits on
@@ -1130,8 +1151,16 @@ async function doPollMiners() {
         // reliable enough signal on its own and doesn't need the extra
         // round trip on every one of a farm's machines every cycle.
         if (await checkPort(ip, CGPORT, 1500)) return getMinerInfo(ip).catch(() => null);
-        if (!(await checkPort(ip, 80, 1500))) return null;
-        if (!(await isAsic(ip))) return null;
+        if (!(await checkPort(ip, 80, 1500))) { knownAsicIps.delete(ip); return null; }
+        // Skip the isAsic() cascade for a unit already verified recently —
+        // see the comment on knownAsicIps above for why this matters for
+        // one-connection-at-a-time embedded servers like the ElphaPEX's.
+        const knownAt = knownAsicIps.get(ip);
+        const stillTrusted = knownAt && (Date.now() - knownAt) < ASIC_RECHECK_MS;
+        if (!stillTrusted) {
+          if (!(await isAsic(ip))) { knownAsicIps.delete(ip); return null; }
+          knownAsicIps.set(ip, Date.now());
+        }
         return getMinerInfo(ip).catch(() => null);
       }));
       live.push(...results.filter(Boolean));
