@@ -45,6 +45,16 @@ const fleetRoutes    = require('./routes/fleet');
 const app    = express();
 const server = http.createServer(app);
 
+// Railway puts one proxy in front of this app, so every request's
+// socket address is that proxy's, and the visitor's real address is in
+// X-Forwarded-For. Without this, the rate limiter below saw everyone
+// as the same single visitor: every user, tab and tunnel page shared
+// one 300-per-minute allowance, so one busy miner page could get
+// everyone else's requests refused. It also logged
+// ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on every startup.
+// 1 = trust exactly one hop (Railway's), not arbitrary client headers.
+app.set('trust proxy', 1);
+
 app.use(cors({ origin: '*', credentials: true }));
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
