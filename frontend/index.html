@@ -252,9 +252,38 @@ tr:last-child td{border-bottom:none;}
 .sortable-th{cursor:pointer;user-select:none;white-space:nowrap;transition:color .15s;}
 .sortable-th:hover{color:var(--cyan);}
 .sort-arrow{font-size:9px;color:var(--cyan);display:inline-block;width:8px;}
+
+/* SPLASH — plays once on every cold load, ahead of the login screen
+   (which sits underneath it the whole time and is simply revealed
+   once this is hidden, rather than being built or shown separately).
+   Two dim→bright pulses over 5s, then a quick fade-out to login. */
+#splashScreen{position:fixed;inset:0;background:var(--bg);z-index:500;display:flex;align-items:center;justify-content:center;transition:opacity .6s ease;}
+#splashScreen.hide{opacity:0;pointer-events:none;}
+#splashScreen img{width:160px;height:160px;animation:splashPulse 5s ease-in-out forwards;filter:drop-shadow(0 0 24px rgba(0,200,255,.35));}
+@keyframes splashPulse{
+  0%   {opacity:.12;filter:drop-shadow(0 0 4px rgba(0,200,255,.1)) brightness(.55);}
+  22%  {opacity:1;   filter:drop-shadow(0 0 30px rgba(0,200,255,.5)) brightness(1.25);}
+  50%  {opacity:.12;filter:drop-shadow(0 0 4px rgba(0,200,255,.1)) brightness(.55);}
+  72%  {opacity:1;   filter:drop-shadow(0 0 30px rgba(0,200,255,.5)) brightness(1.25);}
+  100% {opacity:1;   filter:drop-shadow(0 0 18px rgba(0,200,255,.3)) brightness(1);}
+}
 </style>
 </head>
 <body>
+
+<!-- SPLASH — sits on top of the login screen for the first 5s of every
+     cold load, then fades out and removes itself, revealing the login
+     screen underneath (which has been sitting there the whole time). -->
+<div id="splashScreen"><img src="icon-512.png" alt=""></div>
+<script>
+(function(){
+  var el = document.getElementById('splashScreen');
+  setTimeout(function(){
+    el.classList.add('hide');
+    setTimeout(function(){ el.remove(); }, 650); // matches the CSS fade duration
+  }, 5000);
+})();
+</script>
 
 <!-- LOGIN -->
 <div id="loginScreen">
