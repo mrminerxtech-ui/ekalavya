@@ -1307,11 +1307,25 @@ function handleWebuiProxyRequestNow(msg) {
   const { request_id, ip, method, path: reqPath, headers, body } = msg;
   const REQUEST_USER = 'root', REQUEST_PASS = 'root'; // every Antminer unit uses this
 
+  // Extensions that are ALWAYS binary, whatever Content-Type the miner's
+  // own web server claims. This exists because Braiins OS+'s embedded
+  // server mislabels its font files (a generic text-ish type instead of
+  // a real font/* one) — trusting that label made the isText check below
+  // run buf.toString('utf8') on raw font bytes, which is a LOSSY,
+  // irreversible conversion for arbitrary binary data (invalid byte
+  // sequences get silently replaced, corrupting the file before it even
+  // leaves this PC). No fix on the backend can undo that after the fact,
+  // since the original bytes are already gone by the time it arrives —
+  // this has to be caught here, at the only place that still has them.
+  const ALWAYS_BINARY_EXT = /\.(woff2?|ttf|otf|eot|png|jpe?g|gif|ico|webp|bmp|mp4|webm|pdf|zip|gz)(\?|$)/i;
+
   function sendResponse(res, buf) {
     const contentType = res.headers['content-type'] || '';
     // Text content goes over the wire as plain UTF-8; anything else
-    // (images, fonts, etc.) is base64-encoded so it survives JSON
-    const isText = /text|json|javascript|xml|css/i.test(contentType);
+    // (images, fonts, etc.) is base64-encoded so it survives JSON.
+    // The extension check runs FIRST and wins over a misleading
+    // Content-Type — see ALWAYS_BINARY_EXT above.
+    const isText = !ALWAYS_BINARY_EXT.test(reqPath || '') && /text|json|javascript|xml|css/i.test(contentType);
     send({
       type: 'webui_proxy_response',
       request_id,
@@ -1639,4 +1653,3 @@ function connect() {
 }
 
 connect();
-
