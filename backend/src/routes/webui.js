@@ -405,9 +405,21 @@ router.use('/:farmId/:ip', async (req, res) => {
     // backend's root instead of the tunnel folder — the page rendered
     // with its default fallback font and no visible error, which is why
     // this one was easy to miss next to the louder GraphQL failure.
+    //
+    // Unlike HTML and JS-injected styles, a url() inside a .css FILE
+    // resolves relative to the stylesheet's own folder, not the page's.
+    // So just stripping the slash (as the first version of this did)
+    // turned url(/static/font/x.woff2) in /static/css/734.css into
+    // /static/css/static/font/x.woff2, a path that doesn't exist. The
+    // miner's app answers unknown paths with its index.html, so the
+    // browser received an HTML page labelled as a font ("OTS parsing
+    // error: invalid sfntVersion 1008813135" is the bytes "<!DO").
+    // Pointing each url() at the full tunnel path works whatever folder
+    // the stylesheet lives in.
     if (isCss) {
+      const tunnelRoot = '/api/webui/' + encodeURIComponent(farmId) + '/' + ip + '/';
       let css = bodyBuf.toString('utf8');
-      css = css.replace(/url\((["']?)\/(?!\/)/g, 'url($1');
+      css = css.replace(/url\((["']?)\/(?!\/)/g, (_m, q) => 'url(' + q + tunnelRoot);
       bodyBuf = Buffer.from(css, 'utf8');
     }
 
