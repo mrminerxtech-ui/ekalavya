@@ -474,13 +474,26 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
         return true;
       };
 
+      // FOR UPDATE below: without it, this SELECT takes a plain snapshot
+      // of the row and the merge further down builds on THAT snapshot —
+      // so if a human's "Assign Miners" action commits a new cid (or a
+      // disable/rename) on this same row in the gap between this read
+      // and this transaction's own write, that update is invisible here
+      // and gets silently reverted back to the stale value read a moment
+      // ago. This is exactly the bug that made 3 of 6 newly-assigned
+      // customer miners "vanish" — their farm's ~30s auto-poll happened
+      // to race the assign click. FOR UPDATE takes a row lock at read
+      // time; if another transaction (the assign flow's own saveWorkers
+      // upsert) is mid-write on this row, this SELECT blocks until it
+      // commits, then reads its LATEST value instead of a stale one —
+      // so cid/disabled/name can no longer be reverted by a racing poll.
       let existing = null;
       if (m.mac) {
-        const byMac = await client.query(`SELECT id, data, farm_id, updated_at FROM workers WHERE data->>'mac' = $1`, [m.mac]);
+        const byMac = await client.query(`SELECT id, data, farm_id, updated_at FROM workers WHERE data->>'mac' = $1 FOR UPDATE`, [m.mac]);
         if (byMac.rows.length > 0 && !claimedElsewhere(byMac.rows[0])) existing = byMac.rows[0];
       }
       if (!existing && m.serial) {
-        const bySerial = await client.query(`SELECT id, data, farm_id, updated_at FROM workers WHERE data->>'serial' = $1`, [m.serial]);
+        const bySerial = await client.query(`SELECT id, data, farm_id, updated_at FROM workers WHERE data->>'serial' = $1 FOR UPDATE`, [m.serial]);
         if (bySerial.rows.length > 0 && !claimedElsewhere(bySerial.rows[0])) existing = bySerial.rows[0];
       }
       // Last hardware-based fallback: the pool Worker ID (the
@@ -492,13 +505,13 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
       // orphan plus a brand-new "unknown machine" record at its new IP.
       if (!existing && m.worker_id && m.worker_id !== '—') {
         const byWid = await client.query(
-          `SELECT id, data, farm_id, updated_at FROM workers WHERE data->>'worker_id' = $1 AND data->>'worker_id' != '—'`,
+          `SELECT id, data, farm_id, updated_at FROM workers WHERE data->>'worker_id' = $1 AND data->>'worker_id' != '—' FOR UPDATE`,
           [m.worker_id]
         );
         if (byWid.rows.length > 0 && !claimedElsewhere(byWid.rows[0])) existing = byWid.rows[0];
       }
       if (!existing) {
-        const byIp = await client.query(`SELECT id, data FROM workers WHERE data->>'ip' = $1 AND farm_id = $2`, [m.ip, farmId]);
+        const byIp = await client.query(`SELECT id, data FROM workers WHERE data->>'ip' = $1 AND farm_id = $2 FOR UPDATE`, [m.ip, farmId]);
         if (byIp.rows.length > 0) existing = byIp.rows[0];
       }
 
