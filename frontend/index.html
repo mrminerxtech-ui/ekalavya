@@ -230,6 +230,16 @@ tr:last-child td{border-bottom:none;}
 .bi.active{color:var(--cyan);}.bi-icon{font-size:20px;}.bi-lbl{font-size:9px;font-family:"Exo 2",sans-serif;font-weight:600;}
 .bi-badge{position:absolute;top:4px;right:calc(50% - 18px);width:15px;height:15px;background:var(--red);border-radius:50%;font-size:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;}
 @media(max-width:768px){#sidebar{display:none;}#bottomNav{display:block;}.scan-grid{grid-template-columns:1fr;}.two-col{grid-template-columns:1fr;}.action-grid{grid-template-columns:repeat(2,1fr);}.three-col{grid-template-columns:1fr 1fr;}
+/* dash-top-row (Fleet Status pie + Farms Overview) sets its own
+   grid-template-columns as an INLINE style, which beats any normal
+   class rule regardless of media query — !important is the only way
+   a stylesheet can still win here. Without this, the 200px chart
+   column and the farms list stayed side-by-side on a phone screen,
+   the list never had room to shrink into, and the whole page scrolled
+   sideways to show it — which is why most of the dashboard looked
+   "hidden" off the right edge on a phone. Stacked to one column, each
+   piece gets the full screen width instead. */
+.dash-top-row{grid-template-columns:1fr!important;}
 /* Lift toasts clear of the 56px bottom nav. At the desktop offset of
    24px they land on top of the nav bar on a phone — the one place a
    person is least likely to read them, which made every error message
@@ -329,7 +339,7 @@ tr:last-child td{border-bottom:none;}
         <div class="sc sr"><div class="sl">Alerts</div><div class="sv" id="dAlerts">0</div></div>
       </div>
       <!-- Pie chart + farm summary row -->
-      <div style="display:grid;grid-template-columns:200px 1fr;gap:12px;margin-bottom:14px">
+      <div class="dash-top-row" style="display:grid;grid-template-columns:200px 1fr;gap:12px;margin-bottom:14px">
         <div class="panel" style="margin-bottom:0">
           <div class="ph"><div class="phd">Fleet Status</div></div>
           <div style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:10px">
