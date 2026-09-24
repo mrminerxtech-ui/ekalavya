@@ -608,12 +608,21 @@ async function getHardwareIds(ip) {
 // ── Full miner info ────────────────────────────────────────
 async function getMinerInfo(ip) {
   // Parallel API calls via CGMiner TCP + hardware IDs via HTTP
-  const [summary, stats, devs, pools, hwIds] = await Promise.all([
+  const [summary, stats, devs, pools, hwIds, httpPools] = await Promise.all([
     cgCmd(ip, 'summary'),
     cgCmd(ip, 'stats'),
     cgCmd(ip, 'devs'),
     cgCmd(ip, 'pools'),
     getHardwareIds(ip),
+    // ElphaPEX confirmed directly from its own web dashboard: the same
+    // pool/worker/model data cgminer's TCP API is SUPPOSED to expose on
+    // port 4028 is also served here over plain HTTP, as
+    // {"POOLS":[{"user":...,"url":...,"status":...}],"INFO":{"type":
+    // "DG1+","dev_sn":...}} — note the lowercase field names, unlike
+    // stock cgminer's capitalized ones. Fetched unconditionally (cheap,
+    // and brand isn't known yet at this point) and only relied on below
+    // when the TCP response doesn't already have what's needed.
+    httpGet(ip, '/cgi-bin/pools.cgi'),
   ]);
 
   let model = extractModel(stats, summary);
@@ -626,6 +635,15 @@ async function getMinerInfo(ip) {
     if (s.length < 3 || s.length > 60) return false;
     if (/<[a-z]|not found|error|refused|forbidden|unauthorized|timeout|http\//i.test(s)) return false;
     return true;
+  }
+
+  // ElphaPEX's pools.cgi (see httpPools above) carries a clean, structured
+  // "INFO" block with the model right on it — e.g. {"type":"DG1+",
+  // "dev_sn":"...","hw_version":"DG1+_HW_V1.0"}. Far more reliable than
+  // scraping the boot log for it, so it's tried before that fallback.
+  if (!isValidModel(model) && httpPools?.INFO?.type) {
+    const infoCandidate = 'ElphaPEX ' + httpPools.INFO.type;
+    if (isValidModel(infoCandidate)) model = infoCandidate;
   }
 
   // Fallback: try Antminer HTTP for model
@@ -675,21 +693,14 @@ async function getMinerInfo(ip) {
   }
 
   if (!isValidModel(model)) model = 'Unknown';
-  
+
   const algo  = getAlgo(model);
   const brand = getBrand(model);
 
-  // TEMP DIAGNOSTIC — remove once the ElphaPEX worker/field issue is
-  // root-caused. Dumps exactly what this unit's cgminer API returns for
-  // summary/pools/devs, so the actual field names it uses (which may not
-  // match stock cgminer, or may fail to parse at all) can be read off
-  // the console instead of guessed at blind.
-  if (brand === 'ElphaPEX') {
-    console.log(`[ELPHAPEX-DEBUG] ${ip} summary:`, JSON.stringify(summary));
-    console.log(`[ELPHAPEX-DEBUG] ${ip} pools:`,   JSON.stringify(pools));
-    console.log(`[ELPHAPEX-DEBUG] ${ip} devs:`,    JSON.stringify(devs));
-    console.log(`[ELPHAPEX-DEBUG] ${ip} stats:`,   JSON.stringify(stats).slice(0, 1500));
-  }
+  // Serial fallback — same reasoning as the model fallback above: pools.cgi's
+  // INFO block has it directly (dev_sn) when the generic hwIds lookups (which
+  // never checked this endpoint) come up empty.
+  if (!hwIds.serial && httpPools?.INFO?.dev_sn) hwIds.serial = httpPools.INFO.dev_sn;
 
   // Hashrate from summary
   const s      = summary?.SUMMARY?.[0] || {};
@@ -743,19 +754,25 @@ async function getMinerInfo(ip) {
     .map(k => parseInt(st0[k]||devs?.DEVS?.[0]?.[k]||0)).filter(v=>v>0);
   const fan = fanValues.length ? Math.max(...fanValues) : 0;
 
-  // Pool info — check all configured pools, prefer the active one
-  const allPools = pools?.POOLS || [];
-  const activePool = allPools.find(p => p.Stratum === true || p['Stratum Active'] === true)
-                   || allPools.find(p => p.Status === 'Alive')
+  // Pool info — check all configured pools, prefer the active one.
+  // Some firmware (confirmed on ElphaPEX, via its own pools.cgi) uses
+  // entirely lowercase field names — user/url/status/priority — instead
+  // of stock cgminer's User/URL/Status/Priority/Stratum. Every read below
+  // checks both. Also falls back from the TCP `pools` response to the
+  // HTTP `httpPools` one when the TCP side came back empty — on units
+  // where port 4028 doesn't answer 'pools' usefully at all, the HTTP
+  // endpoint (proven working against this exact firmware) still does.
+  const poolField = (p, ...names) => { for (const n of names) { if (p && p[n] !== undefined && p[n] !== '') return p[n]; } return undefined; };
+  const poolsSrc  = (pools?.POOLS?.length ? pools : null) || (httpPools?.POOLS?.length ? httpPools : null) || pools || httpPools || {};
+  const allPools  = poolsSrc?.POOLS || [];
+  const activePool = allPools.find(p => poolField(p,'Stratum','stratum') === true || poolField(p,'Stratum Active','stratum active') === true)
+                   || allPools.find(p => poolField(p,'Status','status') === 'Alive')
                    || allPools[0] || {};
   const power = parseInt(st0.power || st0.Power || s.Power || 0);
   const uptime = formatUptime(parseInt(s.Elapsed||0));
 
   // Full worker ID as configured on the miner — includes wallet/worker suffix.
-  // Stock cgminer always calls this field "User", but some forks (seen on
-  // ElphaPEX firmware) use different casing/naming for the same value, so
-  // check the common variants rather than only the one stock field name.
-  const userField = p => p && (p.User || p.user || p.Username || p.username || p['User Name']);
+  const userField = p => poolField(p, 'User','user','Username','username','User Name');
   const fullWorkerId = userField(activePool) || allPools.map(userField).find(u => u && u !== '') || '—';
 
 
@@ -776,11 +793,16 @@ async function getMinerInfo(ip) {
     hr_unit:     hr.unit,
     hr_display:  isActuallyMining ? hr.display : '—',
     temp, fan, power, uptime,
-    pool:        activePool.URL     || '—',
+    pool:        poolField(activePool,'URL','url')     || '—',
     worker:      fullWorkerId,
     worker_id:   fullWorkerId,   // full string exactly as configured on the miner
-    pool_status: activePool.Status  || '—',
-    pools:       allPools.map(p => ({ url: p.URL, user: p.User, status: p.Status, priority: p.Priority })),
+    pool_status: poolField(activePool,'Status','status')  || '—',
+    pools:       allPools.map(p => ({
+      url:      poolField(p,'URL','url'),
+      user:     userField(p),
+      status:   poolField(p,'Status','status'),
+      priority: poolField(p,'Priority','priority'),
+    })),
     mac:         hwIds.mac    || null,   // machine's network MAC address
     serial:      hwIds.serial || null,   // manufacturer serial number
     accepted, rejected, hw_errors: hwErrors,
