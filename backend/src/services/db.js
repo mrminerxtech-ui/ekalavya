@@ -529,6 +529,17 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
         // when it's a real non-empty value, never let a blank one win.
         const newName = (m.name && String(m.name).trim()) ? m.name
           : (old.name || m.worker || (m.ip ? m.ip.replace(/\./g, '-') : old.id));
+        // Same "never let a blank reading overwrite a good one" protection
+        // as name/cid/disabled, extended to model/worker/pool. These were
+        // still exposed to the plain {...old, ...m} spread, so a single
+        // poll cycle where the miner's own web server was too busy to
+        // answer in time (confirmed happening — its embedded server can
+        // only handle so much, and something was hammering it once a
+        // second) silently reset a correctly-identified machine back to
+        // "Unknown"/blank, even though the underlying read that produced
+        // those was itself a genuine success just moments earlier.
+        const keepIfBetter = (newVal, oldVal, blankValues) =>
+          (newVal && !blankValues.includes(newVal)) ? newVal : (oldVal || newVal);
         const merged = { ...old, ...m, id: old.id, cid: old.cid, disabled: old.disabled,
                    disabled_reason: old.disabled_reason, disabled_at: old.disabled_at,
                    // If it moved, adopt the NEW farm/ip — that's genuinely
@@ -536,6 +547,11 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
                    farm: moved ? (m.farm || old.farm) : old.farm,
                    farm_id: moved ? farmId : old.farm_id,
                    name: newName,
+                   model:     keepIfBetter(m.model,     old.model,     ['Unknown']),
+                   brand:     keepIfBetter(m.brand,      old.brand,     ['']),
+                   worker:    keepIfBetter(m.worker,     old.worker,    ['—']),
+                   worker_id: keepIfBetter(m.worker_id,  old.worker_id, ['—']),
+                   pool:      keepIfBetter(m.pool,       old.pool,      ['—']),
                    status: m.status || 'online' };
         await client.query(
           `UPDATE workers SET data=$1, farm_id=$2, updated_at=NOW() WHERE id=$3`,
