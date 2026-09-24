@@ -1,1789 +1,1841 @@
-require('dotenv').config();
-const WebSocket = require('ws');
-const crypto = require('crypto');
-const net       = require('net');
-const http      = require('http');
-const https     = require('https');
-const os        = require('os');
-const { execFile } = require('child_process');
 
-// ── Sonoff TH16 — Live LAN Sensors ───────────────────────
-const th16 = require('./sonoff-th');
+// ── Missing functions prepended ──────────────────────────
 
-// Parse sensors from env: IP or IP:deviceId:apikey (comma separated)
-function parseTHEnv() {
-  return (process.env.TH16_SENSORS || '').split(',')
-    .map(s => { const [ip,did,key] = s.trim().split(':'); return ip?{ip,deviceId:did||'',apikey:key||'',name:ip}:null; })
-    .filter(Boolean);
+// API and URL setup
+const API_BASE = sanitizeUrl(window.EKL_API_BASE)
+  || sanitizeUrl(localStorage.getItem('ekl_api_base'))
+  || 'http://localhost:3001';
+
+// ── Coin ticker ──────────────────────────────────────────
+// Symbols, icons and colours only. Prices are NOT stored here —
+// they come live from CoinGecko via /api/market/prices. There is
+// deliberately no fallback price: an out-of-date number that looks
+// current is worse than no number at all, so an unavailable feed
+// shows "—" instead.
+const COIN_META = {
+  BTC: {ico:'₿', col:'#f7931a'},
+  ETH: {ico:'Ξ', col:'#627eea'},
+  LTC: {ico:'Ł', col:'#bfbbbb'},
+  KAS: {ico:'⬡', col:'#49dbc0'},
+};
+let coinPrices = null;   // {BTC:{usd,change_24h}, …} once loaded
+const CC = ['#e74c3c','#3498db','#2ecc71','#9b59b6','#e67e22','#1abc9c','#f39c12','#34495e'];
+
+// App state
+let isCustomer = false, currentUser = null, activeWid = null;
+let loginTab = 'admin';
+let agents = [], workers = [], customers = [];
+// Declared here (not down near its other filter-by-site code) because
+// renderWorkers() -> refreshAgentFilterOptions() reads it, and renderWorkers()
+// can run very early (e.g. from a fast-resolving backend load callback) —
+// while the script is still executing further down the file. A `let`
+// declared later is in the temporal dead zone until its own line runs, so
+// that early call hit "Cannot access 'workerAgentFilter' before
+// initialization" and aborted mid-render, which is why the Workers table
+// silently stopped refreshing and the Power panel kept recomputing off of
+// whatever the last successful render had left behind.
+let workerAgentFilter = 'all';
+let sensorReadings = {};
+let alertsData = [];
+const STORE_KEY = 'ekl_v2';
+const SENSOR_KEY = 'ekl_sensors_v1';
+let _fleetHash = '', _workersHash = '';
+let _sensorPollInt = null;
+let currentFarmId = null;
+let scanning = false, scanInt = null, scanTInt = null;
+let scanSecs = 0, scanFound = 0;
+let currentScanSession = null, currentScanFarmId = null, currentScanFarmName = null;
+let _lastScanResults = {};
+let _saveTimer = null;
+let scadaToken = localStorage.getItem('scada_token') || null;
+let scadaData = {}, scadaRefInt = null;
+let _cfgAgentId = null;
+let pendingAssign = [];
+
+const LANLI = {
+  'cabinet-1': {name:'Cabinet 1', model:'MY16-542', type:'Multi-Channel Controller', rated_w:542},
+  'cabinet-2': {name:'Cabinet 2', model:'1to1-535', type:'Micro-Hydro Inverter', rated_w:535},
+  'cabinet-3': {name:'Cabinet 3', model:'1to1-288', type:'Micro-Hydro Inverter', rated_w:288},
+};
+
+const IDOSP_URL = 'http://www.idosp.net/idosp/login.html';
+
+// ── Sector badge helper ───────────────────────────────────
+// (stub sdot removed — full version defined later)
+function detectBrand(model){ const m=(model||'').toLowerCase(); if(m.includes('antminer')||m.includes('bitmain')) return 'Bitmain'; if(m.includes('whatsminer')||m.includes('microbt')) return 'MicroBT'; if(m.includes('avalon')) return 'Canaan'; if(m.includes('goldshell')) return 'Goldshell'; if(m.includes('elphapex')||m.includes('dg1')||m.includes('dg-1')) return 'ElphaPEX'; return ''; }
+
+// ── Navigation ────────────────────────────────────────────
+// (stub nav removed — full version defined later)
+
+// (stub showPage removed — full version defined later)
+
+// ── Login tab ─────────────────────────────────────────────
+// (stub setLTab removed — full version defined later)
+
+// ── Render functions ──────────────────────────────────────
+function renderAll(){
+  try{ renderDash(); }catch(e){ console.error('renderDash:',e); }
+  try{ renderPowerPanel(); }catch(e){ console.error('renderPowerPanel:',e); }
+  try{ renderWorkers(); }catch(e){ console.error('renderWorkers:',e); }
+  try{ renderAgents(); }catch(e){}
+  try{ renderCustomers(); }catch(e){}
+  try{ updateNavCount(); }catch(e){}
 }
+// ── Column sorting state ────────────────────────────────────
+let workerSortField = null;
+let workerSortDir    = 1; // 1 = ascending, -1 = descending
 
-// Resolve MAC addresses from env on startup
-async function resolveEnvMACs() {
-  const macList = (process.env.TH16_MACS || '').split(',').map(m=>m.trim()).filter(Boolean);
-  if (macList.length === 0) return;
-  console.log(`[TH16] Resolving ${macList.length} MAC address(es) from env...`);
-  const found = await th16.discoverByMAC(macList);
-  found.forEach(s => { if(s.ip) console.log(`[TH16] Resolved: ${s.mac} → ${s.ip}`); });
-}
-
-// Called on every live reading — push to backend immediately
-function onSensorReading(ip, reading) {
-  const farmId   = FARM_ID;
-  const farmName = process.env.FARM_NAME || FARM_ID;
-  console.log(`[TH16] ${ip} → ${reading.temp}°C ${reading.humidity}% (${reading.source||'http'})`);
-  // Push via WebSocket to backend
-  send({ type: 'sensor_reading', farm_id: farmId, ip, ...reading });
-  // Also POST to /api/sensors/push for immediate dashboard update
-  postJson(restUrl('/api/sensors/push'), {
-    farm_id:   farmId,
-    farm_name: farmName,
-    ip,
-    temp:      reading.temp,
-    humidity:  reading.humidity,
-    model:     reading.model || null,
-    sensors:   th16.getReadings(),
-    timestamp: new Date().toISOString(),
-  }).catch(() => {});
-}
-
-// Start mDNS listener (passive — catches broadcasts instantly)
-// Start polling configured sensors
-th16.startLivePolling(parseTHEnv(), 30000, onSensorReading);
-// Resolve MAC addresses (if configured) after 10 seconds
-setTimeout(resolveEnvMACs, 10000);
-
-// ── Lanli RS485 (optional — only if LANLI_RS485_PORT set) ──
-const LANLI_ENABLED = !!process.env.LANLI_RS485_PORT;
-let   lanli         = null;
-if (LANLI_ENABLED) {
-  try {
-    lanli = require('./lanli-rs485');
-    console.log('[LANLI] RS485 module loaded — port:', process.env.LANLI_RS485_PORT);
-  } catch(e) {
-    console.warn('[LANLI] RS485 module load failed:', e.message);
-    console.warn('[LANLI] Run: npm install modbus-serial');
-  }
-}
-
-// ── HMI Screenshot (optional — only if LANLI_HMI_ENABLED=true) ──
-const HMI_ENABLED  = process.env.LANLI_HMI_ENABLED === 'true';
-const HMI_INTERVAL = parseInt(process.env.LANLI_HMI_INTERVAL || '10') * 1000;
-
-const SERVER    = process.env.MMX_SERVER   || 'wss://ekalavya-backend-production.up.railway.app/agent';
-const AGENT_KEY = process.env.AGENT_KEY    || 'ekalavya123';
-const FARM_NAME = process.env.FARM_NAME    || 'My Farm';
-const FARM_ID   = process.env.FARM_ID      || 'farm-' + os.hostname().toLowerCase().replace(/[^a-z0-9]/g,'-');
-const SUBNET_RAW = process.env.LOCAL_SUBNET || '192.168.1.0/24';
-// Support comma-separated subnets: "192.168.70.1-255,192.168.44.1-255"
-const SUBNETS   = SUBNET_RAW.split(',').map(function(s){ return s.trim(); }).filter(Boolean);
-const SUBNET    = SUBNETS[0];  // first one for display/registration
-const POLL_MS   = parseInt(process.env.POLL_MS || '30000');
-const CGPORT    = parseInt(process.env.CGMINER_PORT || '4028');
-
-// ── One agent per farm, enforced locally ────────────────────
-// Two agents sharing a FARM_ID fight: each registration kicks the other
-// off the backend, the kicked one reconnects, and they trade places
-// indefinitely. The commonest cause is simply two copies running on the
-// same PC — someone starts agent.js by hand while update-check.js is
-// already supervising one. A lock file makes that impossible to do by
-// accident, and says so clearly rather than failing mysteriously.
-const LOCK_STALE_MS = 3 * 60 * 1000; // see touchLock() below
-let touchLockInterval = null;
-(function claimSingleInstance() {
-  const fsLock   = require('fs');
-  const pathLock = require('path');
-  const lockFile = pathLock.join(__dirname, '.agent.lock');
-  try {
-    if (fsLock.existsSync(lockFile)) {
-      const prev = parseInt(fsLock.readFileSync(lockFile, 'utf8').trim(), 10);
-      // How long ago the lock file was last written/touched. A genuinely
-      // alive agent updates this every 8s (see touchLockInterval below),
-      // so anything much older than that means whatever wrote it is gone
-      // — even if process.kill(prev, 0) below still reports "alive",
-      // which happens whenever the OS has since reassigned that same PID
-      // number to a completely unrelated process. That reassignment is
-      // exactly what was hitting this farm's PC: the real fix for "a
-      // stale lock left behind by a crashed agent" (changelog, v1.1.26)
-      // has to be based on the lock's age, not just on whether some
-      // process happens to occupy that PID number today — checking the
-      // PID alone was never enough, and kept refusing to start.
-      let ageMs = Infinity;
-      try { ageMs = Date.now() - fsLock.statSync(lockFile).mtimeMs; } catch(e) {}
-      const stale = ageMs > LOCK_STALE_MS;
-
-      if (prev && prev !== process.pid && !stale) {
-        let alive = false;
-        // Signal 0 checks for the process without touching it.
-        try { process.kill(prev, 0); alive = true; } catch(e) { alive = false; }
-        if (alive) {
-          console.error('');
-          console.error('  ════════════════════════════════════════════════════════');
-          console.error(`  An agent is ALREADY RUNNING on this PC (process ${prev}).`);
-          console.error('');
-          console.error('  Two agents with the same FARM_ID knock each other');
-          console.error('  offline in a loop, so this one will not start.');
-          console.error('');
-          console.error('  Close the other agent window first, or just let the');
-          console.error('  existing one keep running — it is already connected.');
-          console.error('  ════════════════════════════════════════════════════════');
-          console.error('');
-          process.exit(0);   // 0 = deliberate, so the supervisor doesn't count it as a crash
-        }
-      } else if (prev && prev !== process.pid && stale) {
-        console.log(`[LOCK] Found a stale lock from process ${prev} (last touched ${Math.round(ageMs/1000)}s ago) — reclaiming it.`);
-      }
-    }
-    fsLock.writeFileSync(lockFile, String(process.pid), 'utf8');
-    const release = () => { try { fsLock.unlinkSync(lockFile); } catch(e) {} if (touchLockInterval) clearInterval(touchLockInterval); };
-    // Keep the lock file's mtime current for as long as this process is
-    // actually alive, so a future startup can tell "still running" apart
-    // from "crashed a while ago" purely from the file, regardless of PID
-    // reuse. Cleared again in release() above.
-    touchLockInterval = setInterval(() => {
-      try { fsLock.utimesSync(lockFile, new Date(), new Date()); } catch(e) {}
-    }, 8000);
-    process.on('exit', release);
-    process.on('SIGINT',  () => { release(); process.exit(0); });
-    process.on('SIGTERM', () => { release(); process.exit(0); });
-  } catch(e) {
-    // A read-only folder or odd permissions must never stop the agent
-    // from doing its job — the backend still catches duplicates.
-    console.log('[LOCK] Could not use a lock file (' + e.message + ') — continuing');
-  }
-})();
-
-let ws = null, reconnectMs = 3000, pollTimer = null;
-
-// ── Independent watchdog — a safety net completely separate from the
-// per-connection ping/pong logic below. That mechanism depends on the
-// WebSocket library correctly firing a 'close' event when a connection
-// dies — which can silently fail to happen at all if the connection is
-// cut by an intermediate network layer (a proxy, a load balancer)
-// without a clean close signal ever reaching this process. If that
-// happens, the agent can be left permanently stuck, believing it's
-// still connected, with no 'close' event ever arriving to trigger a
-// reconnect — exactly matching a farm going offline for 30+ minutes
-// until someone manually restarts it. This watchdog doesn't rely on
-// the ws object's own event system at all: it just tracks "was there
-// ANY successful activity recently," and if not, forces a full,
-// clean process restart — precisely what a manual restart already
-// does and already reliably fixes.
-// lastServerMsgAt tracks APPLICATION-level replies from the backend
-// (heartbeat_ack, welcome, commands) — deliberately NOT protocol-level
-// pongs. A pong proves something on the network answered; it does not
-// prove our backend still knows this agent exists. Railway's edge sits
-// in front of the app and can keep a socket alive and answer pings by
-// itself, so an agent could sit "connected" for hours, pongs flowing,
-// while the backend behind that edge had no record of it — online in
-// this log, offline in the software, until someone restarted it by hand.
-// The backend replies heartbeat_ack to every heartbeat ONLY while the
-// agent is registered, so a gap in acks is the real signal.
-let lastServerMsgAt      = Date.now();
-let lastConnectAttemptAt = 0;
-let reconnectScheduled   = false;
-let wsGeneration         = 0;
-
-// Last-resort watchdog. Restarting the process does NOT fix an
-// unreachable backend, so this no longer fires just because the server
-// is down — the reconnect loop handles outages on its own, and killing
-// the process during one only risks tripping the supervisor's
-// crash-loop backoff and leaving the farm dark for several minutes.
-// It now fires only for states the reconnect loop cannot get out of.
-setInterval(() => {
-  const connected = ws && ws.readyState === 1; // 1 = OPEN
-  const silentFor = Date.now() - lastServerMsgAt;
-
-  // Wedged: not connected, nothing scheduled to reconnect, and the last
-  // attempt is long past — no timer will ever fire, so nothing will
-  // recover this without a restart.
-  if (!connected && !reconnectScheduled && Date.now() - lastConnectAttemptAt > 60000) {
-    console.log('[WATCHDOG] Not connected and no reconnect pending — state is wedged, restarting process');
-    process.exit(1); // the supervisor (update-check.js) restarts agent.js fresh
-  }
-
-  // Total silence for 5 minutes in any state. Long enough that a normal
-  // deploy or a brief outage never triggers it.
-  if (silentFor > 5 * 60 * 1000) {
-    console.log(`[WATCHDOG] No reply from the server in ${Math.round(silentFor/60000)} min — restarting process as a last resort`);
-    process.exit(1);
-  }
-}, 15000);
-
-// ── HTTP helper ────────────────────────────────────────────
-// ── Parse WWW-Authenticate header for Digest auth ──────────
-function parseDigestHeader(header) {
-  const params = {};
-  const regex = /(\w+)=("[^"]*"|[^,]*)/g;
-  let m;
-  while ((m = regex.exec(header)) !== null) {
-    params[m[1]] = m[2].replace(/^"|"$/g, '');
-  }
-  return params;
-}
-
-// ── Build Digest Authorization header ──────────────────────
-// ncOverride matters when a nonce is REUSED across requests (see the
-// digest challenge cache used by the Web UI tunnel). A server that
-// tracks nonce counts rejects a repeated nc, so each reuse must pass
-// the next value in sequence.
-function buildDigestAuth(user, pass, method, path, digestParams, ncOverride) {
-  const realm  = digestParams.realm || '';
-  const nonce  = digestParams.nonce || '';
-  const qop    = digestParams.qop || '';
-  const opaque = digestParams.opaque;
-  const nc     = ncOverride || '00000001';
-  const cnonce = crypto.randomBytes(8).toString('hex');
-
-  const ha1 = crypto.createHash('md5').update(user + ':' + realm + ':' + pass).digest('hex');
-  const ha2 = crypto.createHash('md5').update(method + ':' + path).digest('hex');
-
-  let response;
-  if (qop) {
-    response = crypto.createHash('md5').update(ha1 + ':' + nonce + ':' + nc + ':' + cnonce + ':' + qop + ':' + ha2).digest('hex');
-  } else {
-    response = crypto.createHash('md5').update(ha1 + ':' + nonce + ':' + ha2).digest('hex');
-  }
-
-  let header = 'Digest username="' + user + '", realm="' + realm + '", nonce="' + nonce + '", uri="' + path + '", response="' + response + '"';
-  if (qop) header += ', qop=' + qop + ', nc=' + nc + ', cnonce="' + cnonce + '"';
-  if (opaque) header += ', opaque="' + opaque + '"';
-  return header;
-}
-
-// ── HTTP GET with auto Basic → Digest fallback ─────────────
-function httpGet(ip, path, auth, debug) {
-  const [user, pass] = (auth || '').split(':');
-  return new Promise(resolve => {
-    function attempt(authHeader, isRetry) {
-      const headers = authHeader ? { 'Authorization': authHeader } : {};
-      const req = http.request({ hostname: ip, port: 80, path, method: 'GET', headers, timeout: 4000 }, res => {
-        // 401 on first try — check if server wants Digest auth
-        if (res.statusCode === 401 && !isRetry && res.headers['www-authenticate']) {
-          const wa = res.headers['www-authenticate'];
-          if (debug) console.log('[HTTP] ' + ip + path + ' → 401, retrying with Digest (' + wa.split(' ')[0] + ')');
-          res.resume(); // drain response
-          if (wa.toLowerCase().startsWith('digest') && user && pass) {
-            const params = parseDigestHeader(wa);
-            const digestHeader = buildDigestAuth(user, pass, 'GET', path, params);
-            attempt(digestHeader, true);
-          } else {
-            resolve(null);
-          }
-          return;
-        }
-        let d = '';
-        res.on('data', c => d += c);
-        res.on('end', () => {
-          if (debug) console.log('[HTTP] ' + ip + path + ' → status ' + res.statusCode + ' | body: ' + d.slice(0,200));
-          // The status code was previously ignored entirely, so a 404
-          // or 401 page came back as a perfectly truthy string. Callers
-          // that try several endpoints in turn ("if (result) return
-          // result") then stopped at the FIRST one and handed back the
-          // miner's error page as though it were the data — which is
-          // why downloading an Antminer log produced an error page
-          // instead of a log, and never fell through to the endpoints
-          // that would have worked.
-          if (res.statusCode < 200 || res.statusCode >= 300) {
-            if (debug) console.log('[HTTP] ' + ip + path + ' → treating HTTP ' + res.statusCode + ' as no data');
-            return resolve(null);
-          }
-          try { resolve(JSON.parse(d)); } catch(e) { resolve(d || null); }
-        });
-      });
-      req.on('error',   e => { if (debug) console.log('[HTTP] ' + ip + path + ' → ERROR: ' + e.message); resolve(null); });
-      req.on('timeout', () => { if (debug) console.log('[HTTP] ' + ip + path + ' → TIMEOUT'); req.destroy(); resolve(null); });
-      req.end();
-    }
-    const basicAuth = auth ? 'Basic ' + Buffer.from(auth).toString('base64') : null;
-    attempt(basicAuth, false);
+let _sortHandlersAttached = false;
+function attachSortHandlers(){
+  if (_sortHandlersAttached) return; // only need to bind once — headers are static
+  document.querySelectorAll('.sortable-th').forEach(function(th){
+    th.addEventListener('click', function(){ sortWorkersBy(this.dataset.sort); });
   });
+  _sortHandlersAttached = true;
 }
 
-// ── HTTP POST with Digest-auth fallback — used for miner control
-// actions (set_miner_conf.cgi, reboot.cgi, etc). Mirrors httpGet's
-// auto Basic→Digest retry, since these same miners require it. ──────
-// Resolves with { status, body } — status:0 means the connection
-// itself failed (never reached the miner). Any other status is
-// whatever the miner's web server actually returned, so callers can
-// tell "200 OK" apart from "404 no such endpoint" or "500 error" —
-// this used to just resolve the body either way, which made it
-// impossible to tell a genuine success from a silent failure.
+function toggleTailscaleMode(checked){
+  localStorage.setItem('use_tailscale_webui', checked ? 'true' : 'false');
+  toast(checked ? '✓ Tailscale direct mode enabled on this device' : 'Tunnel mode restored', 'var(--green)');
+}
+
+function editSerialAndMac(wid){
+  const w = workers.find(function(x){ return x.id === wid; });
+  if (!w) return;
+
+  const newSerial = prompt('Serial Number for ' + (w.name || w.ip) + ':', w.serial || '');
+  if (newSerial === null) return; // cancelled
+  const trimmedSerial = newSerial.trim();
+  w.serial = trimmedSerial || null;
+  w.serial_manual = !!trimmedSerial; // marks it as locked — auto-detection will never overwrite this again
+
+  const newMac = prompt('MAC Address for ' + (w.name || w.ip) + ':', w.mac || '');
+  if (newMac !== null) {
+    const trimmedMac = newMac.trim();
+    w.mac = trimmedMac || null;
+    w.mac_manual = !!trimmedMac;
+  }
+
+  saveFleet();
+  saveFleetToBackend();
+  _workersHash = '';
+  renderWorkers();
+  toast('✓ Saved for ' + (w.name || w.ip), 'var(--green)');
+}
+
+function sortWorkersBy(field){
+  if (workerSortField === field) workerSortDir *= -1;
+  else { workerSortField = field; workerSortDir = 1; }
+  _workersHash = ''; // force rebuild
+  renderWorkers();
+}
+
+function getSortValue(w, field){
+  switch(field){
+    case 'name':     return (w.name || '').toLowerCase();
+    case 'serial':   return (w.serial || w.mac || '').toLowerCase();
+    case 'brand':    return ((w.brand||'') + ' ' + (w.model||'')).toLowerCase();
+    case 'ip':       return w.ip ? w.ip.split('.').map(function(n){return n.padStart(3,'0');}).join('.') : '';
+    case 'farm':     return (w.farm || '').toLowerCase();
+    case 'cid':      { const c = customers.find(function(x){return x.id===w.cid;}); return c ? c.name.toLowerCase() : ''; }
+    case 'hashrate': return w.hashrate || 0;
+    case 'temp':     return w.temp || 0;
+    case 'fan':      return w.fan || 0;
+    case 'pool':     return (w.pool || '').toLowerCase();
+    case 'status':   return effectiveStatus(w);
+    default:         return '';
+  }
+}
+
+function updateSortArrows(){
+  document.querySelectorAll('.sort-arrow').forEach(function(el){ el.textContent = ''; });
+  if (workerSortField) {
+    const arrow = document.getElementById('arrow-' + workerSortField);
+    if (arrow) arrow.textContent = workerSortDir === 1 ? '▲' : '▼';
+  }
+}
+
+function renderWorkers() {
+  const tb = document.getElementById('workersTbody');
+  if (!tb) return;
+  // Always rebuild — no hash guard (was preventing updates)
+  const A = function(fid){ return agents.find(function(a){ return a.id === fid; }); };
+  const C = function(id){ return customers.find(function(x){ return x.id === id; }); };
+
+  // Apply active filter + search first, then sort
+  refreshAgentFilterOptions();
+
+  let displayWorkers = workers.filter(function(w){ return matchesWorkerFilter(w, workerFilter); });
+  if (workerAgentFilter !== 'all') {
+    displayWorkers = displayWorkers.filter(function(w){ return w.farm_id === workerAgentFilter; });
+  }
+  displayWorkers = filterWorkersBySearch(displayWorkers);
+  if (workerSortField) {
+    displayWorkers.sort(function(a, b){
+      const va = getSortValue(a, workerSortField);
+      const vb = getSortValue(b, workerSortField);
+      if (va < vb) return -1 * workerSortDir;
+      if (va > vb) return  1 * workerSortDir;
+      return 0;
+    });
+  }
+  updateSortArrows();
+
+  if (workers.length === 0) {
+    tb.innerHTML = '<tr><td colspan="12" style="text-align:center;padding:40px;color:var(--mute)">'
+      + '<div style="font-size:28px;margin-bottom:10px">&#x26CF;</div>'
+      + 'No miners in fleet yet.<br><span style="font-size:11px">Use <strong>Network Scanner</strong> to discover and add miners.</span>'
+      + '</td></tr>';
+    return;
+  }
+
+  // Filters can legitimately match nothing. Without this the table just
+  // goes blank, which looks like the machines were lost rather than
+  // hidden by a filter the user forgot was on.
+  if (displayWorkers.length === 0) {
+    tb.innerHTML = '<tr><td colspan="12" style="text-align:center;padding:36px;color:var(--mute)">'
+      + 'No machines match the current filters.'
+      + '<br><span style="font-size:11px">' + workers.length + ' machine(s) in the fleet — '
+      + '<a href="#" onclick="clearWorkerFilters();return false" style="color:var(--cyan)">clear filters</a></span>'
+      + '</td></tr>';
+    return;
+  }
+
+  tb.innerHTML = displayWorkers.map(function(w) {
+    const ag  = A(w.farm_id);
+    const cust= C(w.cid);
+    const tc   = w.temp >= 90 ? 'color:var(--red)' : w.temp >= 80 ? 'color:var(--warn)' : '';
+    const eSt  = effectiveStatus(w);
+    const agentDown = w.farm_id && !isAgentOnline(w.farm_id) && !w.disabled;
+    const st   = w.disabled ? 'REPAIR' : agentDown ? 'AGENT OFFLINE' : eSt.toUpperCase();
+    const sb   = w.disabled ? 'bor' : eSt === 'online' ? 'bgn' : 'brn';
+    // Disabled machines are greyed out via the .wdis class rather than
+    // an inline style, so the row banding in CSS can be overridden
+    // cleanly instead of the two fighting each other.
+    const rowClass = w.disabled ? ' class="wdis"' : '';
+    return '<tr' + rowClass + '>'
+      + '<td><input type="checkbox" class="worker-check" data-wid="' + w.id + '" style="accent-color:var(--cyan)"></td>'
+      + '<td><div style="font-family:Share Tech Mono,monospace;font-weight:700;font-size:12px;color:' + (w.disabled ? 'var(--mute)' : 'var(--cyan)') + '">' + (w.name || '—') + '</div>'
+      + '<span class="sdot ' + sdot(w) + '" style="margin-right:4px"></span><span style="font-size:9px;color:var(--mute)">' + (w.algo || '') + '</span>'
+      + '</td>'
+      + '<td title="MAC: ' + (w.mac || 'unknown') + ' — click to edit" class="sn-edit-cell" data-wid="' + w.id + '" style="font-family:Share Tech Mono,monospace;font-size:10px;cursor:pointer">'
+      +   (w.serial ? w.serial : '<span style="color:var(--mute)">&#x270E; add</span>')
+      +   (w.mac ? '<div style="font-size:9px;color:var(--mute)">' + w.mac + '</div>' : '<div style="font-size:9px;color:var(--mute)">&#x270E; add MAC</div>')
+      + '</td>'
+      + '<td style="font-size:11px;max-width:90px;width:90px;white-space:normal;word-break:break-word;overflow-wrap:break-word">' + cleanBrandModel(w.brand) + '<br><span style="color:var(--mute);font-size:10px">' + cleanBrandModel(w.model) + '</span></td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (w.ip || '—') + '</td>'
+      + '<td style="font-size:11px">' + (w.farm || (ag ? ag.name : '—')) + '</td>'
+      + '<td style="font-size:11px">' + (cust ? cust.name : '<span style="color:var(--mute)">—</span>') + '</td>'
+      + '<td style="color:var(--green);font-family:Share Tech Mono,monospace;font-size:11px">' + (eSt === 'online' ? hrDisplay(w) : '<span style="color:var(--mute)">—</span>') + '</td>'
+      + '<td style="' + tc + ';font-family:Share Tech Mono,monospace;font-size:11px">' + (eSt === 'online' && w.temp > 0 ? w.temp + '\u00b0C' : '—') + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (eSt === 'online' && w.fan > 0 ? w.fan : '—') + '</td>'
+      + '<td style="font-size:10px;color:var(--mute)">' + (w.pool || '—') + '</td>'
+      + '<td><span class="badge ' + sb + '">' + st + '</span></td>'
+      + '<td><button class="abtn open-ctrl-btn" data-wid="' + w.id + '">Manage</button></td>'
+      + '</tr>';
+  }).join('');
+
+  tb.querySelectorAll('.open-ctrl-btn').forEach(function(b){
+    b.addEventListener('click', function(){ openCtrl(this.dataset.wid); });
+  });
+  tb.querySelectorAll('.sn-edit-cell').forEach(function(td){
+    td.addEventListener('click', function(){ editSerialAndMac(this.dataset.wid); });
+  });
+  tb.querySelectorAll('.worker-check').forEach(function(c){
+    c.addEventListener('change', updateMergeSelBtn);
+  });
+
+  // Update badge counts (accounts for agent connectivity).
+  // Scoped to the selected site so the counts describe what's on
+  // screen — a fleet-wide "212 online" above one site's 40 machines
+  // is just confusing. Status filter and search are deliberately NOT
+  // applied here: these badges ARE the status breakdown.
+  const scope = workerAgentFilter === 'all'
+    ? workers
+    : workers.filter(function(w){ return w.farm_id === workerAgentFilter; });
+  const on  = scope.filter(function(w){ return effectiveStatus(w) === 'online'; }).length;
+  const off = scope.filter(function(w){ return effectiveStatus(w) !== 'online' && !w.disabled; }).length;
+  const dis = scope.filter(function(w){ return w.disabled; }).length;
+  const eOn = document.getElementById('wOnlineBadge');  if (eOn) eOn.textContent = on;
+  const eOf = document.getElementById('wOfflineBadge'); if (eOf) eOf.textContent = off;
+  const eDs = document.getElementById('wDisBadge');     if (eDs) { eDs.textContent = dis; eDs.style.display = dis ? '' : 'none'; }
+}
+
+function fmtUptime(seconds){
+  if (!seconds && seconds !== 0) return '—';
+  const h = Math.floor(seconds/3600), m = Math.floor((seconds%3600)/60);
+  return h > 0 ? (h+'h '+m+'m') : (m+'m');
+}
+function fmtAgo(iso){
+  if (!iso) return '—';
+  const s = Math.floor((Date.now() - new Date(iso).getTime())/1000);
+  if (s < 60) return s+'s ago';
+  if (s < 3600) return Math.floor(s/60)+'m ago';
+  return Math.floor(s/3600)+'h ago';
+}
+
+function renderAgents() {
+  const el = document.getElementById('agentGrid');
+  if (!el) return;
+  el.innerHTML = agents.length === 0
+    ? '<div style="text-align:center;padding:40px;color:var(--mute)"><div style="font-size:32px;margin-bottom:12px">📡</div><div>No agents connected.<br>Run the agent on your farm PC to connect.</div></div>'
+    : agents.map(function(a){
+      const crashWarn = a.crash_count_5m > 0;
+      return '<div class="card"><div class="card-head"><span class="sdot ' + (a.online ? 'on' : 'off') + '"></span>'
+      + '<div><div style="font-family:Exo 2,sans-serif;font-weight:700">' + a.name + '</div><div style="font-size:10px;color:var(--mute)">' + (a.subnet || '') + (a.agent_version?' &middot; v'+a.agent_version:'') + '</div></div>'
+      + '<span class="badge ' + (a.online ? 'bgn' : 'brn') + '" style="margin-left:auto">' + (a.online ? 'ONLINE' : 'OFFLINE') + '</span></div>'
+      + '<div class="card-body"><div class="card-row"><span class="ck">Farm ID</span><span class="cv" style="font-family:Share Tech Mono,monospace">' + a.id + '</span></div>'
+      + '<div class="card-row"><span class="ck">Host</span><span class="cv">' + (a.hostname || '—') + '</span></div>'
+      + '<div class="card-row"><span class="ck">Miners</span><span class="cv g">' + workers.filter(function(w){return w.farm_id === a.id;}).length + '</span></div>'
+      + (a.updater_uptime !== undefined ? '<div class="card-row"><span class="ck">Supervisor Uptime</span><span class="cv">' + fmtUptime(a.updater_uptime) + '</span></div>' : '')
+      + (a.last_checkin_at ? '<div class="card-row"><span class="ck">Last Check-in</span><span class="cv">' + fmtAgo(a.last_checkin_at) + '</span></div>' : '')
+      + (a.last_update_at ? '<div class="card-row"><span class="ck">Last Updated</span><span class="cv">' + fmtAgo(a.last_update_at) + '</span></div>' : '')
+      + (crashWarn ? '<div class="card-row"><span class="ck" style="color:var(--warn)">⚠ Crashes (5m)</span><span class="cv" style="color:var(--warn)">' + a.crash_count_5m + '</span></div>' : '')
+      + '</div>'
+      + '<div class="card-foot"><button class="btn btn-sm scan-btn" data-aid="' + a.id + '">&#x25B6; Scan</button>'
+      + '<button class="btn btn-sm cfg-btn" data-aid="' + a.id + '" data-name="' + a.name.replace(/"/g,'') + '" data-subnet="' + (a.subnet||'').replace(/"/g,'') + '">&#x2699; IP Ranges</button>'
+      + (a.online ? '' : '<button class="btn btn-sm btn-r rm-btn" data-aid="' + a.id + '">&#x2715; Remove</button>')
+      + '</div></div>';
+    }).join('');
+  el.querySelectorAll('.scan-btn').forEach(function(b){ b.addEventListener('click',function(){ triggerScan(this.dataset.aid); }); });
+  el.querySelectorAll('.cfg-btn').forEach(function(b){ b.addEventListener('click',function(){ openAgentConfig(this.dataset.aid,this.dataset.name,this.dataset.subnet); }); });
+  el.querySelectorAll('.rm-btn').forEach(function(b){ b.addEventListener('click',function(){ removeAgent(this.dataset.aid); }); });
+}
+
+// Remove a stale/offline agent from the list
+function removeAgent(farmId){
+  var a = agents.find(function(x){ return x.id === farmId; });
+  if(!a) return;
+  if(a.online){ alert('This agent is online. Stop it on the farm PC first.'); return; }
+  if(!confirm('Remove offline agent "' + a.name + '" (' + farmId + ')?\n\nMiners assigned to it will stay in your fleet.')) return;
+  var token = localStorage.getItem('ekl_token');
+  fetch(API_BASE + '/api/agents/' + encodeURIComponent(farmId), {
+    method: 'DELETE',
+    headers: {'Authorization': 'Bearer ' + (token||'')}
+  })
+  .then(function(){ 
+    agents = agents.filter(function(x){ return x.id !== farmId; });
+    _fleetHash = '';
+    renderAgents(); populateDropdowns(); renderFleetByFarm();
+    toast('✓ Agent removed', 'var(--green)');
+  })
+  .catch(function(e){ toast('Error: ' + e.message, 'var(--red)'); });
+}
+
+function renderCustomers() {
+  const el = document.getElementById('custGrid');
+  if (!el) return;
+  const CC = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e'];
+  const tot = customers.reduce((a, c) => a + c.miners.length, 0);
+  const el2 = document.getElementById('ctTotal'); if (el2) el2.textContent = customers.length;
+  const el3 = document.getElementById('ctMiners'); if (el3) el3.textContent = tot;
+  const el4 = document.getElementById('ctPortal'); if (el4) el4.textContent = customers.filter(function(c){ return c.portal; }).length;
+  el.innerHTML = customers.length === 0
+    ? '<div style="text-align:center;padding:40px;color:var(--mute)">No customers yet. Add a customer to assign miners.</div>'
+    : customers.map((c, i) => {
+      const col = CC[i % CC.length];
+      const ini = c.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+      const myW = workers.filter(w => c.miners.includes(w.id));
+      const onl = myW.filter(w => w.status === 'online').length;
+      return '<div class="card"><div class="card-head"><div class="av" style="background:' + col + ';width:38px;height:38px;font-size:15px">' + ini + '</div>'
+        + '<div><div style="font-family:Exo 2,sans-serif;font-weight:700;font-size:13px">' + c.name + '</div><div style="font-size:10px;color:var(--mute)">' + (c.country || '') + (c.notes ? ' &middot; ' + c.notes : '') + '</div></div>'
+        + '<span class="badge ' + (c.portal ? 'bc' : 'bwn') + '" style="margin-left:auto">' + (c.portal ? 'PORTAL' : 'NO PORTAL') + '</span></div>'
+        + '<div class="card-body"><div class="card-row"><span class="ck">Miners</span><span class="cv g">' + c.miners.length + '</span></div>'
+        + '<div class="card-row"><span class="ck">Online</span><span class="cv g">' + onl + ' / ' + c.miners.length + '</span></div></div>'
+        + '<div class="card-foot"><button class="btn btn-sm qa-btn" data-cid="' + c.id + '">&#x26CF; Assign Miners</button><button class="btn btn-sm edit-cust-btn" data-cid="' + c.id + '" style="margin-left:6px">&#x270E; Edit</button></div></div>';
+    }).join('');
+
+  // Wire up each card's "Assign Miners" button (was rendered but never
+  // actually listened for — clicking it silently did nothing before)
+  el.querySelectorAll('.qa-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){ quickAssign(this.dataset.cid); });
+  });
+  el.querySelectorAll('.edit-cust-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){ openEditCustomer(this.dataset.cid); });
+  });
+
+  // Populate the "Select Customer" dropdown in the Assign panel with
+  // every real customer — it previously only ever had the placeholder
+  // "Choose customer..." option and nothing else, so there was never
+  // anything selectable there at all.
+  const sel = document.getElementById('assignSel');
+  if (sel) {
+    const prevValue = sel.value;
+    sel.innerHTML = '<option value="">Choose customer...</option>'
+      + customers.map(function(c){ return '<option value="' + c.id + '">' + c.name + '</option>'; }).join('');
+    if (customers.some(function(c){ return c.id === prevValue; })) sel.value = prevValue;
+  }
+}
+
+// Build the current live alert list — used by both the badge and the Alerts page
+function computeAlerts() {
+  const liveAlerts = [];
+  workers.forEach(function(w) {
+    if (w.temp >= 90) liveAlerts.push({ico:'🔴', msg: w.name + ': Critical temp ' + w.temp + '°C', time: 'Live'});
+    if (w.status === 'offline' && !w.disabled) liveAlerts.push({ico:'🔴', msg: w.name + ' (' + w.ip + ') offline', time: 'Live'});
+    if (w.disabled) liveAlerts.push({ico:'🟠', msg: w.name + ' disabled: ' + (w.disabled_reason || 'Repair'), time: w.disabled_at || '—'});
+  });
+  agents.forEach(function(a) { if (!a.online) liveAlerts.push({ico:'🟡', msg: 'Agent offline: ' + a.name, time: 'Live'}); });
+  return liveAlerts.concat(alertsData);
+}
+
+// Update both badges (sidebar + bottom nav) — safe to call from anywhere, anytime
+function updateAlertBadges() {
+  const all = computeAlerts();
+  const badge = document.getElementById('alertBadge');
+  if (badge) { badge.textContent = all.length; badge.style.display = all.length ? '' : 'none'; }
+  const badgeBn = document.getElementById('alertBadgeBn');
+  if (badgeBn) { badgeBn.textContent = all.length; badgeBn.style.display = all.length ? '' : 'none'; }
+  return all;
+}
+
+function renderAlerts() {
+  const all = updateAlertBadges();
+  const el = document.getElementById('allAlerts');
+  if (!el) return; // Alerts page not open — badges are already updated above
+  el.innerHTML = all.length === 0
+    ? '<div style="text-align:center;padding:30px;color:var(--mute)">No alerts. All systems normal.</div>'
+    : all.map(function(a) {
+        return '<div style="padding:10px 16px;border-bottom:1px solid rgba(26,42,58,.4);display:flex;gap:8px"><span style="font-size:14px">' + a.ico + '</span><div><div style="font-size:12px;color:var(--txt)">' + a.msg + '</div><div style="font-size:10px;color:var(--mute)">' + a.time + '</div></div></div>';
+      }).join('');
+}
+
+// Copy a pool address to the clipboard. Uses the modern API where
+// available and falls back for older/non-secure contexts, since a
+// silent failure here means someone pastes nothing into a miner.
+function copyPoolUrl(btn, url) {
+  function done(ok) {
+    const original = btn.textContent;
+    btn.textContent = ok ? 'Copied' : 'Failed';
+    setTimeout(function(){ btn.textContent = original; }, 1400);
+    if (ok) toast('Copied: ' + url, 'var(--green)');
+    else    toast('Could not copy \u2014 long-press the address to select it instead', 'var(--warn)');
+  }
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(url).then(function(){ done(true); }, function(){ done(false); });
+    return;
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = url;
+    ta.style.position = 'fixed'; ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    done(ok);
+  } catch(e) { done(false); }
+}
+
+function renderPools() {
+  const el = document.getElementById('poolsGrid');
+  if (!el) return;
+
+  // Real, verified stratum connection details. Pool operators change
+  // server addresses occasionally — if a miner fails to connect,
+  // check the pool's own help center for the current address before
+  // assuming something else is wrong. Where a pool genuinely doesn't
+  // offer 3 separate addresses (or doesn't publish one publicly at
+  // all), that's noted honestly rather than filled in with a guess.
+  const pools = [
+    {
+      name: 'F2Pool', color: '#00d4ff',
+      coins: [
+        { coin: 'BTC', urls: ['stratum+tcp://btc.f2pool.com:1314', 'stratum+tcp://btc.f2pool.com:25', 'stratum+tcp://btc.f2pool.com:3333'] },
+        { coin: 'LTC', urls: ['stratum+tcp://ltc.f2pool.com:8888', 'stratum+tcp://ltc.f2pool.com:5200', 'stratum+tcp://ltc.f2pool.com:3335'] },
+      ],
+      note: 'Regional servers also available (Asia/EU/NA) — see f2pool.com for the closest one.'
+    },
+    {
+      name: 'AntPool', color: '#e67e22',
+      coins: [
+        { coin: 'BTC', urls: ['stratum+tcp://stratum.antpool.com:3333', 'stratum+tcp://stratum.antpool.com:443', 'stratum+tcp://stratum.antpool.com:25'] },
+        { coin: 'LTC', urls: ['stratum+tcp://stratum-ltc.antpool.com:8888', 'stratum+tcp://stratum-ltc.antpool.com:443', 'stratum+tcp://stratum-ltc.antpool.com:25'] },
+      ],
+      note: 'Enter the same worker name across all three — as long as one address is reachable, mining continues uninterrupted.'
+    },
+    {
+      name: 'ViaBTC', color: '#00c896',
+      coins: [
+        { coin: 'BTC', urls: ['stratum+tcp://btc.viabtc.io:3333', 'stratum+tcp://btc.viabtc.cc:3333', 'stratum+tcp://btc.viabtc.top:3333'] },
+        { coin: 'LTC', urls: ['stratum+tcp://ltc.viabtc.io:3333', 'stratum+tcp://ltc.viabtc.io:443'], partial: true },
+      ],
+      note: ''
+    },
+    {
+      name: 'Luxor', color: '#a855f7',
+      coins: [
+        { coin: 'BTC', urls: ['stratum+tcp://btc.global.luxor.tech:700'], single: true },
+        { coin: 'LTC/DOGE (merged)', urls: ['stratum+tcp://ltc.global.luxor.tech:700'], single: true },
+      ],
+      note: 'Luxor uses one global address per coin by design — it automatically routes to the nearest region internally, so there\'s no separate Pool 2/3 to enter.'
+    },
+    {
+      name: 'Binance Pool', color: '#f0b90b',
+      coins: [
+        { coin: 'BTC', urls: ['stratum+tcp://sha256.poolbinance.com:8888', 'stratum+tcp://sha256.poolbinance.com:3333', 'stratum+tcp://sha256.poolbinance.com:443'] },
+      ],
+      note: 'BTC only — Binance Pool does not currently offer a public LTC pool.'
+    },
+    {
+      name: 'Foundry USA', color: '#3b82f6',
+      coins: [
+        { coin: 'BTC', urls: ['Provided only after KYC-approved account setup'], unavailable: true },
+      ],
+      note: 'Foundry USA is institutional-grade and requires an approved account (KYC/AML) before it discloses any stratum address — nothing is published publicly. Contact Foundry directly to onboard.'
+    },
+    {
+      name: 'BitFuFu', color: '#ff6b35',
+      coins: [
+        { coin: 'BTC', urls: ['Shown inside your account dashboard after logging in'], unavailable: true },
+      ],
+      note: 'BitFuFu does not publish a fixed public stratum address — log in at bitfufu.com to find yours. BTC only.'
+    },
+  ];
+
+  el.innerHTML = '<div style="grid-column:1/-1;background:rgba(255,45,85,.06);border:1px solid rgba(255,45,85,.25);border-radius:6px;padding:10px 14px;font-size:11px;color:var(--red);margin-bottom:4px">'
+    + '⚠ <strong>Poolin</strong> is not listed — it filed for Chapter 11 bankruptcy and fully shut down mining operations in July 2026. Any stored connection to it will not work.'
+    + '</div>'
+    + pools.map(function(p){
+    return '<div class="card">'
+      + '<div class="card-head"><div class="av" style="background:' + p.color + ';width:38px;height:38px;font-size:13px">' + p.name.slice(0,2).toUpperCase() + '</div>'
+      + '<div><div style="font-family:Exo 2,sans-serif;font-weight:700;font-size:14px">' + p.name + '</div></div></div>'
+      + '<div class="card-body">'
+      + p.coins.map(function(c){
+          if (c.unavailable) {
+            return '<div style="margin-bottom:10px">'
+              + '<div style="font-size:10px;color:var(--mute);text-transform:uppercase;letter-spacing:1px;margin-bottom:2px">' + c.coin + '</div>'
+              + '<div style="font-size:11px;color:var(--warn);font-style:italic">' + c.urls[0] + '</div></div>';
+          }
+          return '<div style="margin-bottom:10px">'
+            + '<div style="font-size:10px;color:var(--mute);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">' + c.coin + '</div>'
+            + c.urls.map(function(u, i){
+                // Tap-to-copy: these get typed into a miner's config by
+                // hand otherwise, where one wrong character means the
+                // machine silently mines to nothing.
+                return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">'
+                  + '<div style="flex:1;font-family:Share Tech Mono,monospace;font-size:11px;color:var(--cyan);word-break:break-all">'
+                  +   '<span style="color:var(--mute)">Pool ' + (i+1) + ':</span> ' + u + '</div>'
+                  + '<button class="abtn" style="flex:none" onclick="copyPoolUrl(this,\'' + u.replace(/'/g, "\\'") + '\')">Copy</button>'
+                  + '</div>';
+              }).join('')
+            + (c.partial ? '<div style="font-size:10px;color:var(--mute);margin-top:2px">Only 2 verified addresses for this coin — no separate 3rd server confirmed.</div>' : '')
+            + '</div>';
+        }).join('')
+      + (p.note ? '<div style="font-size:10px;color:var(--mute);margin-top:6px;padding-top:8px;border-top:1px solid var(--b1)">' + p.note + '</div>' : '')
+      + '</div></div>';
+  }).join('');
+}
+
+// ── Site power draw ──────────────────────────────────────────
+// Nameplate wattage per model, read from asicminervalue.com
+// (checked September 2026). These are the manufacturer's rated
+// figures at stock settings — they are the FALLBACK, used only for
+// machines whose firmware doesn't report its own power draw.
 //
-// Some miner CGI scripts (simple trigger-actions like reboot.cgi)
-// only accept GET, not POST, and reply "405 Method Not Allowed" if
-// sent the wrong way. Rather than needing to know this in advance
-// for every firmware, we just retry automatically as GET whenever
-// that specific rejection happens.
-function httpPost(ip, port, path, body, timeout, auth) {
-  auth = auth || 'root:root';
-  const [user, pass] = auth.split(':');
-  return new Promise(resolve => {
-    function attempt(authHeader, isRetry, httpMethod) {
-      const method = httpMethod || 'POST';
-      const headers = {};
-      if (method === 'POST') {
-        headers['Content-Type'] = 'application/json';
-        headers['Content-Length'] = Buffer.byteLength(body || '');
-      }
-      if (authHeader) headers['Authorization'] = authHeader;
-      const req = http.request({ hostname: ip, port: port || 80, path, method, headers, timeout: timeout || 5000 }, res => {
-        if (res.statusCode === 401 && !isRetry && res.headers['www-authenticate']) {
-          const wa = res.headers['www-authenticate'];
-          res.resume();
-          if (wa.toLowerCase().startsWith('digest') && user && pass) {
-            const params = parseDigestHeader(wa);
-            const digestHeader = buildDigestAuth(user, pass, method, path, params);
-            attempt(digestHeader, true, method);
-          } else {
-            resolve({ status: 401, body: null });
-          }
-          return;
-        }
-        if (res.statusCode === 405 && method === 'POST') {
-          // This script doesn't accept POST — try again as a plain GET
-          res.resume();
-          attempt(authHeader, isRetry, 'GET');
-          return;
-        }
-        let d = '';
-        res.on('data', c => d += c);
-        res.on('end', () => {
-          let parsed;
-          try { parsed = JSON.parse(d); } catch(e) { parsed = d || null; }
-          resolve({ status: res.statusCode, body: parsed });
-        });
-      });
-      req.on('error',   () => resolve({ status: 0, body: null }));
-      req.on('timeout', () => { req.destroy(); resolve({ status: 0, body: null }); });
-      if (method === 'POST') req.write(body || '');
-      req.end();
-    }
-    const basicAuth = 'Basic ' + Buffer.from(auth).toString('base64');
-    attempt(basicAuth, false);
-  });
-}
-
-// A miner's own CGI script returning HTTP 200 with an empty/generic
-// body is still meaningfully different from "connection refused" or
-// "404 no such endpoint" — this is genuine confirmation, not a guess.
-function httpOk(result) {
-  return result && result.status >= 200 && result.status < 300;
-}
-
-function postJson(url, body) {
-  return new Promise(resolve => {
-    try {
-      const u    = new URL(url);
-      const data = JSON.stringify(body);
-      const isHttps = u.protocol === 'https:';
-      const req  = (isHttps ? https : http).request({
-        hostname: u.hostname, port: u.port||(isHttps?443:80),
-        path: u.pathname, method: 'POST',
-        headers: { 'Content-Type':'application/json', 'Content-Length':Buffer.byteLength(data) },
-        timeout: 6000,
-      }, res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>resolve(d)); });
-      req.on('error', () => resolve(null));
-      req.on('timeout', () => { req.destroy(); resolve(null); });
-      req.write(data); req.end();
-    } catch(e) { resolve(null); }
-  });
-}
-
-function restUrl(path) {
-  return SERVER.replace('wss://','https://').replace('ws://','http://').replace(/\/agent$/,'') + path;
-}
-
-// ── TCP helpers ────────────────────────────────────────────
-function checkPort(ip, port, timeout) {
-  return new Promise(resolve => {
-    const s = new net.Socket();
-    s.setTimeout(timeout || 1500);
-    s.on('connect', () => { s.destroy(); resolve(true);  });
-    s.on('error',   () => { s.destroy(); resolve(false); });
-    s.on('timeout', () => { s.destroy(); resolve(false); });
-    try { s.connect(port, ip); } catch(e) { resolve(false); }
-  });
-}
-
-function cgCmd(ip, cmd) {
-  return new Promise(resolve => {
-    const s = new net.Socket();
-    let d   = '';
-    s.setTimeout(4000);
-    s.on('connect', () => s.write(JSON.stringify({ command: cmd })));
-    s.on('data',  c => d += c.toString());
-    s.on('close', () => { try { resolve(JSON.parse(d.replace(/\0/g,''))); } catch(e) { resolve(null); } });
-    s.on('error',   () => resolve(null));
-    s.on('timeout', () => { s.destroy(); resolve(null); });
-    try { s.connect(CGPORT, ip); } catch(e) { resolve(null); }
-  });
-}
-
-// ── ASIC verification ───────────────────────────────────────
-// Only devices responding properly to CGMiner OR known miner HTTP APIs
-async function isAsic(ip) {
-  // 1. CGMiner API (port 4028) — ONLY ASICs use this
-  const ver = await cgCmd(ip, 'version');
-  if (ver?.VERSION?.[0] || ver?.STATUS?.[0]) return { via: 'cgminer' };
-
-  // 2. Antminer HTTP API
-  const antSum = await httpGet(ip, '/cgi-bin/summary.cgi', 'root:root');
-  if (antSum?.SUMMARY || antSum?.summary) return { via: 'antminer-http' };
-
-  // 3. Antminer type endpoint
-  const antType = await httpGet(ip, '/cgi-bin/type.cgi', 'root:root');
-  if (antType?.type || (typeof antType === 'string' && antType.includes('Antminer'))) return { via: 'antminer-http' };
-
-  // 4. Avalon HTTP (root:root)
-  const avaStat = await httpGet(ip, '/api/v1/info', 'root:root');
-  if (avaStat?.system_hw_version || avaStat?.version) return { via: 'avalon-http' };
-
-  // 5. Whatsminer HTTP
-  const wm = await httpGet(ip, '/cgi-bin/luci/admin/status/overview', 'root:root');
-  if (typeof wm === 'string' && (wm.includes('Whatsminer') || wm.includes('MicroBT'))) return { via: 'whatsminer-http' };
-
-  // 6. ElphaPEX HTTP — this firmware doesn't run the cgminer TCP service
-  // at all (confirmed: it never answers port 4028), only this HTTP
-  // endpoint, so it would otherwise never pass ANY of the checks above
-  // and get treated as "not an ASIC" — exactly the bug that made it
-  // silently drop out of every recurring poll.
-  const epPools = await httpGet(ip, '/cgi-bin/pools.cgi');
-  if (epPools?.POOLS || epPools?.INFO) return { via: 'elphapex-http' };
-
-  return null; // Not an ASIC
-}
-
-// ── Algorithm detection ────────────────────────────────────
-function getAlgo(model) {
-  const m = (model||'').toLowerCase();
-  // Scrypt — any L-series Antminer: L3, L3+, L5, L7, L9, L9 Hydro, L11, L15, L19 etc
-  if (/\bl\d/i.test(m) || m.includes('scrypt') || m.includes('litecoin') || m.includes(' ltc')) return 'Scrypt';
-  if (m.includes('ka3') || m.includes('kaspa') || m.includes('ika'))             return 'KHeavyHash';
-  if (m.includes('d9')  || m.includes('d19')  || m.includes('dash') || m.includes('x11')) return 'X11';
-  if (m.includes('hs')  || m.includes('blake') || m.includes('handshake'))        return 'Blake2B';
-  if (m.includes('e9')  || m.includes('ethash'))                                   return 'Ethash';
-  return 'SHA-256';
-}
-
-// ── Hashrate conversion ────────────────────────────────────
-function convertHashrate(mhs, algo) {
-  if (!mhs || mhs <= 0) return { value: 0, unit: 'TH/s', display: '—' };
-  const ghAlgos = ['Scrypt','X11','Equihash','Ethash','Blake2B','KHeavyHash'];
-  if (ghAlgos.includes(algo)) {
-    const gh = mhs / 1000;
-    return { value: parseFloat(gh.toFixed(2)), unit: 'GH/s', display: gh.toFixed(2)+' GH/s' };
-  }
-  const th = mhs / 1000000;
-  return { value: parseFloat(th.toFixed(2)), unit: 'TH/s', display: th.toFixed(2)+' TH/s' };
-}
-
-// ── Brand detection ────────────────────────────────────────
-function getBrand(model) {
-  const m = (model||'').toLowerCase();
-  if (m.includes('antminer') || m.includes('bitmain'))              return 'Bitmain';
-  if (m.includes('whatsminer') || m.includes('microbt'))            return 'MicroBT';
-  if (m.includes('avalon') || m.includes('avalonminer') || m.includes('canaan')) return 'Canaan';
-  if (m.includes('goldshell'))   return 'Goldshell';
-  if (m.includes('innosilicon')) return 'Innosilicon';
-  if (m.includes('jasminer'))    return 'Jasminer';
-  if (m.includes('iceriver'))    return 'IceRiver';
-  if (m.includes('elphapex') || m.includes('dg1') || m.includes('dg-1')) return 'ElphaPEX';
-  return 'Unknown';
-}
-
-// ── Model from CGMiner stats ───────────────────────────────
-function extractModel(stats, summary) {
-  if (!stats?.STATS) return null;
-  for (const s of stats.STATS) {
-    if (s.Type    && s.Type.length    > 2) return s.Type;
-    if (s.type    && s.type.length    > 2) return s.type;
-    if (s.Description && s.Description.length > 2) return s.Description;
-    // Avalon: look for MM ID pattern
-    const mmKey = Object.keys(s).find(k => k.startsWith('MM ID'));
-    if (mmKey) {
-      // Avalon model is in the stats
-      const avModel = Object.keys(s).find(k => k==='Product' || k==='product');
-      if (s[avModel]) return s[avModel];
-      return 'AvalonMiner';
-    }
-  }
-  return summary?.SUMMARY?.[0]?.Type || null;
-}
-
-// ── Fetch MAC address + Serial number ─────────────────────
-async function getHardwareIds(ip) {
-  let mac = null, serial = null;
-  let cachedLog = undefined; // fetched at most once per machine, reused everywhere below
-
-  async function getLog() {
-    if (cachedLog === undefined) {
-      try { cachedLog = await fetchBootLog(ip); }
-      catch(e) { cachedLog = null; }
-    }
-    return cachedLog;
-  }
-
-  // Antminer / most Bitmain-based firmware — get_system_info.cgi has the MAC
-  const sysInfo = await httpGet(ip, '/cgi-bin/get_system_info.cgi', 'root:root');
-  if (sysInfo && typeof sysInfo === 'object') {
-    mac    = sysInfo.macaddr || sysInfo.mac || sysInfo.MAC || null;
-    serial = sysInfo.minersn || sysInfo.serialno || sysInfo.sn || sysInfo.SerialNo
-           || sysInfo.serial_number || sysInfo.miner_sn || null;
-  }
-
-  // Serial number is often on get_miner_conf.cgi instead
-  if (!serial) {
-    const conf = await httpGet(ip, '/cgi-bin/get_miner_conf.cgi', 'root:root');
-    if (conf && typeof conf === 'object') {
-      serial = conf.minersn || conf.serialno || conf.sn || null;
-    }
-  }
-
-  // Try get_network_info.cgi — some Bitmain firmware exposes serial here
-  if (!serial) {
-    const netInfo = await httpGet(ip, '/cgi-bin/get_network_info.cgi', 'root:root');
-    if (netInfo && typeof netInfo === 'object') {
-      serial = netInfo.minersn || netInfo.serialno || netInfo.sn || null;
-    }
-  }
-
-  // Whatsminer — the LuCI status page is HTML, not JSON, so we can't
-  // read wmInfo.mac like a normal object. MAC/serial must be pulled out
-  // of the page text with a pattern match instead.
-  if (!mac || !serial) {
-    const wmInfo = await httpGet(ip, '/cgi-bin/luci/admin/status/overview', 'root:root');
-    if (typeof wmInfo === 'string') {
-      if (!mac) {
-        const macMatch = wmInfo.match(/([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}/);
-        if (macMatch) mac = macMatch[0];
-      }
-      if (!serial) {
-        const snMatch = wmInfo.match(/\bS\/?N\s*[:=]\s*([A-Za-z0-9]{6,})/i)
-                       || wmInfo.match(/serial\s*[:=]\s*([A-Za-z0-9]{6,})/i);
-        if (snMatch) serial = snMatch[1];
-      }
-    } else if (wmInfo && typeof wmInfo === 'object') {
-      mac    = mac    || wmInfo.mac      || wmInfo.macaddr    || null;
-      serial = serial || wmInfo.sn       || wmInfo.serial_no  || null;
-    }
-  }
-
-  // Avalon — separate info endpoint
-  if (!mac || !serial) {
-    const avaInfo = await httpGet(ip, '/api/v1/info', 'root:root');
-    if (avaInfo) {
-      mac    = mac    || avaInfo.mac        || null;
-      serial = serial || avaInfo.serial_no  || avaInfo.sn || null;
-    }
-  }
-
-  // Fallback: try /cgi-bin/status.cgi (some firmware variants)
-  if (!mac || !serial) {
-    const status = await httpGet(ip, '/cgi-bin/status.cgi', 'root:root');
-    if (status) {
-      mac    = mac    || status.mac    || null;
-      serial = serial || status.serial || status.sn || null;
-    }
-  }
-
-  // Last resort — fetch the boot/system log ONCE and pull whatever we
-  // can from it. Formats confirmed so far:
-  //   L-series:   "droa miner sn: DGAHFFUBEJAAE02R5"
-  //   S21 Pro:    "type: Antminer S21 Pro sn :DGAHFKUBDJFAE08XA mac:"
-  //               "Miner sn: DGAHFKUBDJFAE08XA"
-  //   WhatsMiner: "MAC: CE:0B:16:00:24:C0, Firmware version: ..."
-  if (!mac || !serial) {
-    const logText = await getLog();
-    if (typeof logText === 'string') {
-      if (!serial) {
-        const snMatch = logText.match(/droa miner sn:\s*([A-Za-z0-9]+)/i)
-                      || logText.match(/miner sn\s*:\s*([A-Za-z0-9]+)/i)
-                      || logText.match(/\bsn\s*:\s*([A-Za-z0-9]{8,})/i);
-        if (snMatch) { serial = snMatch[1]; console.log(`[SN] ${ip} → found via boot log: ${serial}`); }
-      }
-      if (!mac) {
-        const macMatch = logText.match(/MAC\s*:\s*([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})/i);
-        if (macMatch) { mac = macMatch[1]; console.log(`[MAC] ${ip} → found via boot log: ${mac}`); }
-      }
-    }
-  }
-
-  const cleanMac = mac ? mac.toUpperCase().replace(/[^0-9A-F]/g, '').replace(/(.{2})(?=.)/g, '$1:') : null;
-  console.log('[HWID] ' + ip + ' → MAC: ' + (cleanMac || 'not found') + ' | Serial: ' + (serial || 'not found'));
-  return { mac: cleanMac, serial: serial || null, logText: cachedLog };
-}
-
-// ── Full miner info ────────────────────────────────────────
-async function getMinerInfo(ip) {
-  // Parallel API calls via CGMiner TCP + hardware IDs via HTTP
-  const [summary, stats, devs, pools, hwIds, httpPools] = await Promise.all([
-    cgCmd(ip, 'summary'),
-    cgCmd(ip, 'stats'),
-    cgCmd(ip, 'devs'),
-    cgCmd(ip, 'pools'),
-    getHardwareIds(ip),
-    // ElphaPEX confirmed directly from its own web dashboard: the same
-    // pool/worker/model data cgminer's TCP API is SUPPOSED to expose on
-    // port 4028 is also served here over plain HTTP, as
-    // {"POOLS":[{"user":...,"url":...,"status":...}],"INFO":{"type":
-    // "DG1+","dev_sn":...}} — note the lowercase field names, unlike
-    // stock cgminer's capitalized ones. Fetched unconditionally (cheap,
-    // and brand isn't known yet at this point) and only relied on below
-    // when the TCP response doesn't already have what's needed.
-    httpGet(ip, '/cgi-bin/pools.cgi'),
-  ]);
-
-  let model = extractModel(stats, summary);
-
-  // A valid model name is short plaintext — reject HTML error pages,
-  // connection error strings, or anything that isn't a real model string
-  function isValidModel(m) {
-    if (!m || typeof m !== 'string') return false;
-    const s = m.trim();
-    if (s.length < 3 || s.length > 60) return false;
-    if (/<[a-z]|not found|error|refused|forbidden|unauthorized|timeout|http\//i.test(s)) return false;
-    return true;
-  }
-
-  // ElphaPEX's pools.cgi (see httpPools above) carries a clean, structured
-  // "INFO" block with the model right on it — e.g. {"type":"DG1+",
-  // "dev_sn":"...","hw_version":"DG1+_HW_V1.0"}. Far more reliable than
-  // scraping the boot log for it, so it's tried before that fallback.
-  if (!isValidModel(model) && httpPools?.INFO?.type) {
-    const infoCandidate = 'ElphaPEX ' + httpPools.INFO.type;
-    if (isValidModel(infoCandidate)) model = infoCandidate;
-  }
-
-  // Fallback: try Antminer HTTP for model
-  if (!isValidModel(model)) {
-    const typeData = await httpGet(ip, '/cgi-bin/type.cgi', 'root:root');
-    let candidate = null;
-    if (typeof typeData === 'string') candidate = typeData.trim();
-    else if (typeData?.type) candidate = typeData.type;
-    if (isValidModel(candidate)) model = candidate;
-
-    // Avalon HTTP fallback
-    if (!isValidModel(model)) {
-      const avaInfo = await httpGet(ip, '/api/v1/info', 'root:root');
-      const avaCandidate = avaInfo?.system_hw_version ? 'AvalonMiner ' + avaInfo.system_hw_version : null;
-      if (isValidModel(avaCandidate)) model = avaCandidate;
-    }
-
-    // Model from boot log — reuses the SAME log fetch that getHardwareIds()
-    // already did (via hwIds.logText) when it has it; otherwise fetches
-    // it directly rather than skipping this fallback. getHardwareIds()
-    // only pulls the log when mac/serial are BOTH still missing, so a
-    // machine whose mac/serial were found some other way never got a
-    // log fetch at all, silently disabling this fallback for it. Handles
-    // WhatsMiner + ElphaPEX formats:
-    //   WhatsMiner: "miner_type=M50VH50"
-    //   ElphaPEX:   "Sep 12 19:36:48 DG1+ user.info health: ..."
-    if (!isValidModel(model)) {
-      let logText = (typeof hwIds?.logText === 'string') ? hwIds.logText : null;
-      if (logText === null) {
-        try { logText = await fetchBootLog(ip); } catch(e) { logText = null; }
-      }
-      if (typeof logText === 'string') {
-        const wmMatch = logText.match(/miner_type\s*=\s*([A-Za-z0-9+]+)/i);
-        if (wmMatch) {
-          const wmCandidate = 'WhatsMiner ' + wmMatch[1];
-          if (isValidModel(wmCandidate)) model = wmCandidate;
-        }
-        if (!isValidModel(model)) {
-          const epMatch = logText.match(/^\w+\s+\d+\s+[\d:]+\s+(DG\d\+?|ElphaPEX\S*)\s+\S+\.\S+\s/im);
-          if (epMatch) {
-            const epCandidate = 'ElphaPEX ' + epMatch[1];
-            if (isValidModel(epCandidate)) model = epCandidate;
-          }
-        }
-      }
-    }
-  }
-
-  if (!isValidModel(model)) model = 'Unknown';
-
-  const algo  = getAlgo(model);
-  const brand = getBrand(model);
-
-  // Serial fallback — same reasoning as the model fallback above: pools.cgi's
-  // INFO block has it directly (dev_sn) when the generic hwIds lookups (which
-  // never checked this endpoint) come up empty.
-  if (!hwIds.serial && httpPools?.INFO?.dev_sn) hwIds.serial = httpPools.INFO.dev_sn;
-
-  // Hashrate from summary
-  const s      = summary?.SUMMARY?.[0] || {};
-  let   rawMhs = parseFloat(s['MHS 5s'] || s['MHS av'] || (s['GHS 5s']||0)*1000 || (s['THS 5s']||0)*1e6 || 0);
-
-  // ElphaPEX fallback — its cgminer 'summary' doesn't expose hashrate in
-  // any of the field names read above, so the ONLY place it's available
-  // is a line in the boot log. getHardwareIds() only fetches that log
-  // as a LAST RESORT when mac/serial are still missing after everything
-  // else — on a machine where the generic mac/serial lookups happen to
-  // succeed (fairly common), the log is never fetched at all, and this
-  // fallback silently had nothing to read, leaving hashrate at 0 and
-  // the machine looking offline even though it was hashing fine. Fetch
-  // the log directly here when that happened, instead of only ever
-  // reusing whatever getHardwareIds() already had cached.
-  if (!rawMhs || rawMhs <= 0) {
-    let logForHr = (typeof hwIds?.logText === 'string') ? hwIds.logText : null;
-    if (logForHr === null) {
-      try { logForHr = await fetchBootLog(ip); } catch(e) { logForHr = null; }
-    }
-    if (typeof logForHr === 'string') {
-      const hrMatch = logForHr.match(/hashrate by nonce is:\s*([\d.]+)\s*Mhash\/s/i);
-      if (hrMatch) rawMhs = parseFloat(hrMatch[1]);
-    }
-  }
-
-  const hr = convertHashrate(rawMhs, algo);
-
-  // Temperature — boards first, then summary
-  const boardTemps = (devs?.DEVS || [])
-    .flatMap(d => [d.Temperature, d['Temp'], d['temp']])
-    .map(t => parseFloat(t||0)).filter(t => t > 30 && t < 120);
-  
-  const statsTemps = (stats?.STATS || []).flatMap(st => {
-    const temps = [];
-    ['temp1','temp2','temp3','temp4','temp5','temp6','temp7','temp8',
-     'temp_chip1','temp_chip2','temp_chip3','temp_pcb1','temp_pcb2','temp_pcb3',
-     'temp2_1','temp2_2','temp2_3'].forEach(k => {
-      const t = parseFloat(st[k]||0);
-      if (t > 30 && t < 120) temps.push(t);
-    });
-    return temps;
-  });
-
-  const allTemps = [...boardTemps, ...statsTemps];
-  const temp = allTemps.length ? Math.round(Math.max(...allTemps)) : Math.round(parseFloat(s.Temperature||s.temp||0));
-
-  // Fan speed
-  const st0 = stats?.STATS?.[0] || {};
-  const fanValues = ['fan1','fan2','fan3','fan4','Fan Speed In','Fan Speed Out','fan_num']
-    .map(k => parseInt(st0[k]||devs?.DEVS?.[0]?.[k]||0)).filter(v=>v>0);
-  const fan = fanValues.length ? Math.max(...fanValues) : 0;
-
-  // Pool info — check all configured pools, prefer the active one.
-  // Some firmware (confirmed on ElphaPEX, via its own pools.cgi) uses
-  // entirely lowercase field names — user/url/status/priority — instead
-  // of stock cgminer's User/URL/Status/Priority/Stratum. Every read below
-  // checks both. Also falls back from the TCP `pools` response to the
-  // HTTP `httpPools` one when the TCP side came back empty — on units
-  // where port 4028 doesn't answer 'pools' usefully at all, the HTTP
-  // endpoint (proven working against this exact firmware) still does.
-  const poolField = (p, ...names) => { for (const n of names) { if (p && p[n] !== undefined && p[n] !== '') return p[n]; } return undefined; };
-  const poolsSrc  = (pools?.POOLS?.length ? pools : null) || (httpPools?.POOLS?.length ? httpPools : null) || pools || httpPools || {};
-  const allPools  = poolsSrc?.POOLS || [];
-  const activePool = allPools.find(p => poolField(p,'Stratum','stratum') === true || poolField(p,'Stratum Active','stratum active') === true)
-                   || allPools.find(p => poolField(p,'Status','status') === 'Alive')
-                   || allPools[0] || {};
-  const power = parseInt(st0.power || st0.Power || s.Power || 0);
-  const uptime = formatUptime(parseInt(s.Elapsed||0));
-
-  // Full worker ID as configured on the miner — includes wallet/worker suffix.
-  const userField = p => poolField(p, 'User','user','Username','username','User Name');
-  const fullWorkerId = userField(activePool) || allPools.map(userField).find(u => u && u !== '') || '—';
-
-  // TEMP DIAGNOSTIC — the v1.1.29 pool/model fix isn't showing up on the
-  // Workers page despite looking correct against the raw pools.cgi JSON.
-  // Pinned to this one known-problem IP (not brand, which was the trap
-  // last time) so it fires unconditionally and shows exactly which stage
-  // of the pipeline actually has the data and which doesn't. Remove once
-  // this is root-caused.
-  if (ip === '19.3.19.46') {
-    console.log(`[EP-DEBUG2] ${ip} httpPools raw:`, JSON.stringify(httpPools));
-    console.log(`[EP-DEBUG2] ${ip} pools(tcp) raw:`, JSON.stringify(pools));
-    console.log(`[EP-DEBUG2] ${ip} poolsSrc.POOLS.length=${allPools.length} activePool=`, JSON.stringify(activePool));
-    console.log(`[EP-DEBUG2] ${ip} fullWorkerId="${fullWorkerId}" model="${model}" brand="${brand}"`);
-  }
-
-
-  // HW errors and shares
-  const accepted  = parseInt(s.Accepted||0);
-  const rejected  = parseInt(s.Rejected||0);
-  const hwErrors  = parseInt(s['Hardware Errors']||0);
-  const boards    = (devs?.DEVS||[]).length;
-
-  // A machine that responds on the network but reports zero hashrate
-  // isn't actually mining — treat it the same as offline rather than
-  // showing it as a healthy connected machine.
-  const isActuallyMining = hr.value > 0;
-
-  return {
-    ip, model, brand, algo,
-    hashrate:    hr.value,
-    hr_unit:     hr.unit,
-    hr_display:  isActuallyMining ? hr.display : '—',
-    temp, fan, power, uptime,
-    pool:        poolField(activePool,'URL','url')     || '—',
-    worker:      fullWorkerId,
-    worker_id:   fullWorkerId,   // full string exactly as configured on the miner
-    pool_status: poolField(activePool,'Status','status')  || '—',
-    pools:       allPools.map(p => ({
-      url:      poolField(p,'URL','url'),
-      user:     userField(p),
-      status:   poolField(p,'Status','status'),
-      priority: poolField(p,'Priority','priority'),
-    })),
-    mac:         hwIds.mac    || null,   // machine's network MAC address
-    serial:      hwIds.serial || null,   // manufacturer serial number
-    accepted, rejected, hw_errors: hwErrors,
-    boards,
-    status: isActuallyMining ? 'online' : 'offline',
-    source: 'cgminer',
-  };
-}
-
-function formatUptime(secs) {
-  if (!secs) return '—';
-  const d=Math.floor(secs/86400), h=Math.floor((secs%86400)/3600), m=Math.floor((secs%3600)/60);
-  return d>0?`${d}d ${h}h`:h>0?`${h}h ${m}m`:`${m}m`;
-}
-
-// ── Subnet to IPs ──────────────────────────────────────────
-function subnetToIPs(input) {
-  input = (input || '').trim();
-  try {
-    // Format: 192.168.70.0/24 (CIDR)
-    if (input.includes('/')) {
-      const [base, bits] = input.split('/');
-      const mask  = ~((1 << (32 - parseInt(bits))) - 1);
-      const p     = base.split('.').map(Number);
-      const base32= (p[0]<<24)|(p[1]<<16)|(p[2]<<8)|p[3];
-      const net32 = base32 & mask;
-      const size  = Math.min(Math.pow(2, 32 - parseInt(bits)) - 2, 254);
-      return Array.from({length: size}, (_, i) => {
-        const n = net32 + i + 1;
-        return [(n>>24)&255,(n>>16)&255,(n>>8)&255,n&255].join('.');
-      });
-    }
-    // Format: 192.168.70.1-255 or 192.168.70.1-192.168.70.255
-    if (input.includes('-')) {
-      const parts = input.split('-');
-      const startParts = parts[0].trim().split('.');
-      const endPart    = parts[1].trim();
-      // If end is just a number (last octet)
-      const endOctet   = endPart.includes('.') ? parseInt(endPart.split('.').pop()) : parseInt(endPart);
-      const startOctet = parseInt(startParts[3]);
-      const prefix     = startParts.slice(0,3).join('.');
-      const ips = [];
-      for (let i = startOctet; i <= endOctet; i++) ips.push(`${prefix}.${i}`);
-      return ips;
-    }
-    // Format: 192.168.70 (assume .1-254)
-    if (input.split('.').length === 3) {
-      return Array.from({length: 254}, (_, i) => `${input}.${i + 1}`);
-    }
-    // Single IP
-    return [input];
-  } catch(e) {
-    console.error('[SCAN] subnetToIPs error:', e.message, 'input:', input);
-    return [];
-  }
-}
-
-// ── Fetch miner log ────────────────────────────────────────
-// Does this look like real content, or like the miner's error page?
-// A firmware that doesn't have an endpoint answers with an HTML page
-// rather than a clean failure, and that page is a perfectly ordinary
-// non-empty string — so "did we get something back" is not a usable
-// test on its own.
-function looksLikeRealContent(v) {
-  if (!v) return false;
-  if (typeof v === 'object') return Object.keys(v).length > 0;
-  const s = String(v).trim();
-  if (s.length < 20) return false;
-  // An HTML document here means a login page, a 404, or an error page.
-  if (/^\s*<(!doctype|html|head|body)/i.test(s)) return false;
-  if (/401 unauthorized|404 not found|403 forbidden|bad request/i.test(s)) return false;
-  return true;
-}
-
-// Collect from EVERY endpoint that answers rather than stopping at the
-// first, because which one carries the useful detail varies by firmware
-// — and a stop-at-first-truthy rule used to return whichever error page
-// happened to come back first.
-async function fetchMinerLog(ip) {
-  const parts = [];
-
-  // Real syslog text first — this is what someone asking for "the log"
-  // actually wants. It used to be tried LAST, behind two endpoints that
-  // return JSON status instead.
-  const syslog = await httpGet(ip, '/cgi-bin/log.cgi', 'root:root');
-  if (looksLikeRealContent(syslog)) {
-    parts.push('===== SYSTEM LOG (log.cgi) =====\n'
-      + (typeof syslog === 'string' ? syslog : JSON.stringify(syslog, null, 2)));
-  }
-
-  const sysInfo = await httpGet(ip, '/cgi-bin/get_system_info.cgi', 'root:root');
-  if (looksLikeRealContent(sysInfo)) {
-    parts.push('===== SYSTEM INFO (get_system_info.cgi) =====\n'
-      + (typeof sysInfo === 'string' ? sysInfo : JSON.stringify(sysInfo, null, 2)));
-  }
-
-  // CGMiner's own API, which answers on port 4028 even when the web
-  // interface is unhappy — often the only thing that responds on a
-  // miner that's in trouble, which is exactly when a log is wanted.
-  const check = await cgCmd(ip, 'stats');
-  if (looksLikeRealContent(check)) {
-    parts.push('===== CGMINER STATS (port 4028) =====\n' + JSON.stringify(check, null, 2));
-  }
-
-  if (!parts.length) return null;
-  return 'Miner ' + ip + ' — collected ' + new Date().toISOString() + '\n\n' + parts.join('\n\n');
-}
-
-// ── Fetch the REAL boot/system log text ────────────────────
-// fetchMinerLog() above prioritizes get_system_info.cgi's JSON, which
-// is fine for the View/Download Logs UI feature but does NOT contain
-// the serial/model/MAC patterns we need to parse (those only appear
-// in the actual syslog text from log.cgi). This is a separate function
-// specifically for that raw log text — go straight to log.cgi, skip
-// the JSON-returning endpoints entirely.
-async function fetchBootLog(ip) {
-  const log = await httpGet(ip, '/cgi-bin/log.cgi', 'root:root');
-  if (typeof log === 'string' && log.length > 50) return log;
-
-  const check = await cgCmd(ip, 'check');
-  if (typeof check === 'string' && check.length > 50) return check;
-
-  return null;
-}
-
-// ── Scan network ───────────────────────────────────────────
-async function scanMultipleSubnets(sessionId, subnets, ports, timeout) {
-  for (let i = 0; i < subnets.length; i++) {
-    const subnet = subnets[i].trim();
-    if (!subnet) continue;
-    console.log(`[SCAN] Subnet ${i+1}/${subnets.length}: ${subnet}`);
-    // Tell backend which subnet we're scanning now
-    await postJson(restUrl('/api/scanner/result'), {
-      session_id: sessionId, current_subnet: subnet,
-      scanned: 0, total: 0, progress: 0, done: false, found: [],
-    }).catch(()=>{});
-    const isLast = (i === subnets.length - 1);
-    await scanNetwork(subnet, ports, timeout, sessionId, isLast);
-    // Small pause between subnets
-    if (i < subnets.length - 1) await new Promise(r => setTimeout(r, 500));
-  }
-}
-
-async function scanNetwork(subnet, ports, timeout, sessionId, isLast=true) {
-  subnet  = subnet  || SUBNET;
-  ports   = ports   || [4028, 80];
-  timeout = timeout || 2000;
-  const ips   = subnetToIPs(subnet);
-  const total = ips.length;
-  const BATCH = 20;
-  let scanned = 0, found = 0;
-
-  console.log(`\n[SCAN] ▶ ${subnet} — ${total} IPs (ASIC-only filter active)`);
-  await postJson(restUrl('/api/scanner/result'), {
-    session_id: sessionId, scanned:0, total, progress:0, done:false, found:[]
-  });
-
-  for (let i = 0; i < ips.length; i += BATCH) {
-    const batch = ips.slice(i, i + BATCH);
-    await Promise.all(batch.map(async ip => {
-      // Quick TCP check first
-      const port4028open = await checkPort(ip, 4028, timeout);
-      const port80open   = !port4028open && await checkPort(ip, 80, timeout);
-      
-      if (port4028open || port80open) {
-        // Verify it is actually an ASIC (not PC/router/phone)
-        const asicCheck = await isAsic(ip);
-        if (asicCheck) {
-          found++;
-          const info = await getMinerInfo(ip);
-          console.log(`[SCAN] ✓ ASIC: ${ip} — ${info.brand} ${info.model} | ${info.hr_display} | ${info.temp}°C`);
-          send({ type: 'scan_found', session_id: sessionId, miner: info });
-          await postJson(restUrl('/api/scanner/result'), { session_id: sessionId, found: [info] });
-        } else {
-          console.log(`[SCAN] ✗ Skip: ${ip} — not an ASIC`);
-        }
-      }
-      scanned++;
-    }));
-
-    const progress = Math.round((scanned/total)*100);
-    send({ type:'scan_progress', session_id:sessionId, total, scanned, found, progress, done:false });
-    await postJson(restUrl('/api/scanner/result'), { session_id:sessionId, scanned, total, progress, done:false, found:[] });
-  }
-
-  console.log(`[SCAN] ■ Done — ${found} ASICs found in ${subnet}`);
-  send({ type:'scan_progress', session_id:sessionId, total, scanned:total, found, progress:100, done:isLast });
-  await postJson(restUrl('/api/scanner/result'), { session_id:sessionId, scanned:total, total, progress:100, done:isLast, found:[] });
-}
-
-// ── Poll miners ────────────────────────────────────────────
-let pollInProgress = false;
-
-// Once a port-80-only unit (no cgminer TCP service) has been verified as
-// a genuine ASIC by isAsic(), remember it here so the recurring poll can
-// skip straight to getMinerInfo() next cycle instead of re-running the
-// full up-to-6-request isAsic() cascade against it every ~30s forever.
-// This matters a lot for units whose embedded web server can only serve
-// ONE connection at a time (confirmed true of at least one ElphaPEX on
-// this fleet) — piling 6 extra probe requests in FRONT of the one that
-// actually matters, every single cycle, was starving that real request
-// of its turn on the server often enough that the machine kept showing
-// up in a manual "Scan Network" (a single, isolated burst of requests)
-// but never in the recurring poll (continuous load, always contending
-// with whatever else — a browser tab, another cycle's own requests — is
-// also trying to reach that same one-at-a-time server).
-// Re-verified periodically rather than cached forever, so a device that
-// later gets a DIFFERENT machine's IP via DHCP (e.g. a router taking
-// over a decommissioned miner's old address) doesn't stay wrongly
-// trusted — this is exactly the router false-positive this fleet hit
-// before, just guarded against recurring instead of prevented outright.
-const knownAsicIps = new Map();   // ip -> last-verified timestamp
-const ASIC_RECHECK_MS = 10 * 60 * 1000;   // re-run isAsic() at most this often
-// ── ARP-based MAC lookup ────────────────────────────────────────
-// Many miners don't expose their MAC through their web API at all
-// (agent logs show plenty of "MAC: not found"). But the agent sits on
-// the same LAN, so the operating system's own ARP table already knows
-// the MAC of every device it has actually talked to. This gives a
-// stable hardware ID for machines whose firmware won't tell us one —
-// which matters enormously on DHCP, where the IP address changes and
-// is therefore useless as a permanent identity.
-function runArp() {
-  return new Promise(resolve => {
-    const timer = setTimeout(() => resolve(''), 4000);
-    execFile('arp', ['-a'], { timeout: 4000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
-      clearTimeout(timer);
-      resolve(err ? '' : stdout);
-    });
-  });
-}
-
-function findMacInArpOutput(output, ip) {
-  for (const line of output.split('\n')) {
-    // Match the IP as a whole token — a bare includes() would match
-    // 19.3.19.1 inside 19.3.19.15 and return the wrong device's MAC.
-    if (!new RegExp('(^|[^0-9.])' + ip.replace(/\./g, '\\.') + '([^0-9.]|$)').test(line)) continue;
-    const macMatch = line.match(/([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}/);
-    if (macMatch) return macMatch[0].toUpperCase().replace(/-/g, ':');
-  }
-  return null;
-}
-
-// Fill in missing MACs from the ARP table, with a critical safety guard.
-// If miners sit on a subnet the agent reaches THROUGH A ROUTER, the ARP
-// table returns the ROUTER's MAC for every one of them — identical for
-// all. Using that as identity would collapse an entire subnet into a
-// single machine record. So any MAC that turns up for more than one IP
-// is treated as shared network infrastructure and discarded outright.
-async function enrichMacsFromArp(miners) {
-  const needMac = miners.filter(m => !m.mac);
-  if (needMac.length === 0) return;
-
-  const arp = await runArp();
-  if (!arp) { console.log('[ARP] Table unavailable — skipping MAC enrichment this cycle'); return; }
-
-  const candidates = new Map(); // ip -> mac
-  const macCount   = new Map(); // mac -> how many IPs claim it
-  for (const m of needMac) {
-    const mac = findMacInArpOutput(arp, m.ip);
-    if (!mac) continue;
-    candidates.set(m.ip, mac);
-    macCount.set(mac, (macCount.get(mac) || 0) + 1);
-  }
-
-  // Also refuse any MAC already reported directly by a different miner
-  const claimed = new Set(miners.filter(m => m.mac).map(m => m.mac.toUpperCase()));
-
-  let applied = 0, rejected = 0;
-  for (const m of needMac) {
-    const mac = candidates.get(m.ip);
-    if (!mac) continue;
-    if (macCount.get(mac) > 1 || claimed.has(mac)) { rejected++; continue; }
-    m.mac = mac;
-    m.mac_source = 'arp';
-    applied++;
-  }
-  if (applied || rejected) {
-    console.log(`[ARP] MACs recovered: ${applied}${rejected ? ` (${rejected} rejected as shared/router MACs)` : ''}`);
-  }
-}
-
-async function pollMiners() {
-  // Prevent overlapping cycles — scanning multiple subnets can take
-  // longer than the poll interval on a large farm, and running two
-  // polls at once would double up network load for no benefit.
-  if (pollInProgress) { console.log('[POLL] Previous cycle still running — skipping this tick'); return; }
-  pollInProgress = true;
-  try {
-    await doPollMiners();
-  } finally {
-    pollInProgress = false;
-  }
-}
-
-async function doPollMiners() {
-  // Poll EVERY configured subnet, not just the first one — a farm
-  // with multiple subnets (e.g. "192.168.70.0/24,192.168.44.0/24")
-  // must have every machine on every subnet checked each cycle,
-  // otherwise machines on the 2nd+ subnet get wrongly marked offline
-  // even though they're actually online.
-  const live  = [];
-  const BATCH = 25;
-
-  for (const subnet of SUBNETS) {
-    const ips = subnetToIPs(subnet);
-    for (let i = 0; i < ips.length; i += BATCH) {
-      const batch = ips.slice(i, i + BATCH);
-      const results = await Promise.all(batch.map(async ip => {
-        // This was the real reason the ElphaPEX at 19.3.19.46 never got
-        // any of the pools.cgi fixes above a chance to run: every recurring
-        // poll cycle gated entry on the cgminer TCP port (4028) alone, so
-        // a unit whose firmware doesn't run that service at all was
-        // silently skipped here, BEFORE getMinerInfo() — and therefore
-        // every one of its HTTP fallbacks — ever got called. It only ever
-        // showed up via a manual "Scan Network", whose isAsic() check
-        // already accepts HTTP-only units too.
-        //
-        // Widening this to "port 4028 OR port 80" on its own (an earlier
-        // version of this fix) caused a regression: literally ANY device
-        // that answers on port 80 — a router, a camera, a printer — got
-        // treated as a miner. isAsic() is the actual verification step
-        // (checks for real cgminer/Antminer/Avalon/Whatsminer/ElphaPEX
-        // signatures, not just "something is listening"); it's only run
-        // for the HTTP-only case, since a port-4028 hit is already a
-        // reliable enough signal on its own and doesn't need the extra
-        // round trip on every one of a farm's machines every cycle.
-        if (await checkPort(ip, CGPORT, 1500)) return getMinerInfo(ip).catch(() => null);
-        if (!(await checkPort(ip, 80, 1500))) { knownAsicIps.delete(ip); return null; }
-        // Skip the isAsic() cascade for a unit already verified recently —
-        // see the comment on knownAsicIps above for why this matters for
-        // one-connection-at-a-time embedded servers like the ElphaPEX's.
-        const knownAt = knownAsicIps.get(ip);
-        const stillTrusted = knownAt && (Date.now() - knownAt) < ASIC_RECHECK_MS;
-        if (!stillTrusted) {
-          if (!(await isAsic(ip))) { knownAsicIps.delete(ip); return null; }
-          knownAsicIps.set(ip, Date.now());
-        }
-        return getMinerInfo(ip).catch(() => null);
-      }));
-      live.push(...results.filter(Boolean));
-    }
-  }
-
-  if (live.length > 0) {
-    // Recover MACs for machines whose firmware didn't report one, so
-    // the backend has a stable hardware ID to recognise them by after
-    // a DHCP address change. Failure here is non-fatal — worst case
-    // those machines simply keep their previous identity behaviour.
-    try { await enrichMacsFromArp(live); } catch(e) { console.log('[ARP] enrichment error (non-fatal):', e.message); }
-
-    console.log(`[POLL] ${live.length} miners online across ${SUBNETS.length} subnet(s)`);
-    send({ type:'poll_result', miners:live, miner_count:live.length });
-  }
-}
-
-// ── Send ───────────────────────────────────────────────────
-function send(payload) {
-  if (ws?.readyState === WebSocket.OPEN) {
-    try { ws.send(JSON.stringify(payload)); } catch(e) {}
-  }
-}
-
-// ── Connect ────────────────────────────────────────────────
-// ── Poll Lanli RS485 cabinets ──────────────────────────────
-// ── Web UI tunnel — proxy a browser request to a miner's local
-// web dashboard, and send the raw response back to the backend
-// over the same WebSocket connection. ──────────────────────
-// ── CGMiner API responses can be "valid JSON" while still meaning
-// "command rejected" — e.g. {"STATUS":[{"STATUS":"E","Msg":"Invalid
-// command"}]}. Checking "did we get JSON back" isn't the same as
-// checking "did the miner actually confirm success" — this caused
-// action buttons to report success while doing nothing on the miner.
-function cgSuccess(r) {
-  const s = r?.STATUS?.[0]?.STATUS;
-  return s === 'S' || s === 'I'; // Success or Informational
-}
-function cgErrorMsg(r) {
-  return r?.STATUS?.[0]?.Msg || null;
-}
-
-// ── Miner control actions — restart, reboot, sleep, wake, led, etc ──
-// These run HERE on the agent (which has real LAN access to the miner)
-// rather than on the cloud backend, which has no path to a private
-// farm-network IP at all. Same reasoning as the Web UI tunnel.
-async function handleActionRequest(msg) {
-  const { request_id, ip, action, params } = msg;
-  console.log(`[ACTION] Received: ${action} → ${ip} (request_id: ${request_id})`);
-
-  async function reply(ok, extra) {
-    console.log(`[ACTION] Replying: ${action} → ${ip} | ok=${ok}` + (extra?.error ? ` | error: ${extra.error}` : ''));
-    send({ type: 'action_response', request_id, ok, ...(extra || {}) });
-  }
-
-  try {
-    switch (action) {
-      case 'restart': {
-        const r = await cgCmd(ip, 'restart');
-        console.log(`[ACTION-DEBUG] ${ip} restart cgminer response:`, JSON.stringify(r).slice(0, 300));
-        if (!cgSuccess(r)) {
-          // 'restart' via the CGMiner TCP API isn't supported by every
-          // firmware build — fall back to the miner's own hardware
-          // "restart mining software" HTTP endpoint instead.
-          const httpResult = await httpPost(ip, 80, '/cgi-bin/reboot.cgi', JSON.stringify({ mode: 'restart' }), 5000);
-          console.log(`[ACTION-DEBUG] ${ip} restart HTTP fallback: status=${httpResult.status} body=${JSON.stringify(httpResult.body).slice(0,300)}`);
-          if (httpOk(httpResult)) await reply(true, { message: 'Mining software restart sent (via HTTP fallback)' });
-          else await reply(false, { error: 'Miner rejected the command (cgminer: ' + (cgErrorMsg(r) || 'no reply') + ', HTTP status: ' + httpResult.status + ')' });
-        } else {
-          await reply(true, { message: 'Mining software restart sent' });
-        }
-        break;
-      }
-      case 'reboot': {
-        let r = await cgCmd(ip, 'restart');
-        console.log(`[ACTION-DEBUG] ${ip} reboot cgminer response:`, JSON.stringify(r).slice(0, 300));
-        if (!cgSuccess(r)) {
-          const httpResult = await httpPost(ip, 80, '/cgi-bin/reboot.cgi', '', 5000);
-          console.log(`[ACTION-DEBUG] ${ip} reboot HTTP fallback: status=${httpResult.status} body=${JSON.stringify(httpResult.body).slice(0,300)}`);
-          if (httpOk(httpResult)) await reply(true, { message: 'Hard reboot sent (via HTTP fallback)' });
-          else await reply(false, { error: 'Miner rejected the command (cgminer: ' + (cgErrorMsg(r) || 'no reply') + ', HTTP status: ' + httpResult.status + ')' });
-        } else {
-          await reply(true, { message: 'Hard reboot sent' });
-        }
-        break;
-      }
-      case 'sleep': {
-        let r = await cgCmd(ip, 'zero');
-        console.log(`[ACTION-DEBUG] ${ip} sleep cgminer response:`, JSON.stringify(r).slice(0, 300));
-        if (!cgSuccess(r)) {
-          const httpResult = await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', JSON.stringify({ sleep: 1 }), 5000);
-          console.log(`[ACTION-DEBUG] ${ip} sleep HTTP fallback: status=${httpResult.status} body=${JSON.stringify(httpResult.body).slice(0,300)}`);
-          if (httpOk(httpResult)) await reply(true, { message: 'Sleep mode requested (via HTTP fallback)' });
-          else await reply(false, { error: 'Miner rejected the command (cgminer: ' + (cgErrorMsg(r) || 'no reply') + ', HTTP status: ' + httpResult.status + ')' });
-        } else {
-          await reply(true, { message: 'Sleep mode requested' });
-        }
-        break;
-      }
-      case 'wake': {
-        let r = await cgCmd(ip, 'resume');
-        console.log(`[ACTION-DEBUG] ${ip} wake cgminer response:`, JSON.stringify(r).slice(0, 300));
-        if (!cgSuccess(r)) {
-          const httpResult = await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', JSON.stringify({ sleep: 0 }), 5000);
-          console.log(`[ACTION-DEBUG] ${ip} wake HTTP fallback: status=${httpResult.status} body=${JSON.stringify(httpResult.body).slice(0,300)}`);
-          if (httpOk(httpResult)) await reply(true, { message: 'Wake-up requested (via HTTP fallback)' });
-          else await reply(false, { error: 'Miner rejected the command (cgminer: ' + (cgErrorMsg(r) || 'no reply') + ', HTTP status: ' + httpResult.status + ')' });
-        } else {
-          await reply(true, { message: 'Wake-up requested' });
-        }
-        break;
-      }
-      case 'led': {
-        const r = await httpPost(ip, 80, '/cgi-bin/blink.cgi', JSON.stringify({ blink: params?.on ? 1 : 0 }), 5000);
-        if (httpOk(r)) await reply(true, { message: 'LED command sent' });
-        else await reply(false, { error: 'Miner did not accept the LED command (HTTP status: ' + r.status + ')' });
-        break;
-      }
-      case 'chiptest': {
-        // No universal ASIC self-test command exists across firmware —
-        // 'check' is the closest CGMiner diagnostic available generically.
-        const r = await cgCmd(ip, 'check');
-        await reply(cgSuccess(r), { message: 'Diagnostic check requested', result: r });
-        break;
-      }
-      case 'setworkerid': {
-        const body = JSON.stringify({ pools: [{ url: params.pool_url, user: params.new_user, pass: 'x' }] });
-        const r = await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', body, 5000);
-        if (httpOk(r)) await reply(true, { message: 'Worker ID updated' });
-        else await reply(false, { error: 'Miner rejected the change (HTTP status: ' + r.status + ')' });
-        break;
-      }
-      case 'setpool': {
-        const pools = [{ url: params.pool_url, user: params.pool_user, pass: params.pool_pass || 'x' }];
-        if (params.pool_url2) pools.push({ url: params.pool_url2, user: params.pool_user2 || params.pool_user, pass: 'x' });
-        if (params.pool_url3) pools.push({ url: params.pool_url3, user: params.pool_user3 || params.pool_user, pass: 'x' });
-        const r = await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', JSON.stringify({ pools }), 5000);
-        if (httpOk(r)) await reply(true, { message: 'Pool configuration updated' });
-        else await reply(false, { error: 'Miner rejected the change (HTTP status: ' + r.status + ')' });
-        break;
-      }
-      case 'overclock': {
-        const body = JSON.stringify({ 'bitmain-work-mode': params.mode, freq: params.freq_pct, 'fan-speed': params.fan_pct });
-        const r = await httpPost(ip, 80, '/cgi-bin/set_miner_conf.cgi', body, 5000);
-        if (httpOk(r)) await reply(true, { message: 'Power settings applied' });
-        else await reply(false, { error: 'Miner rejected the change (HTTP status: ' + r.status + ')' });
-        break;
-      }
-      case 'factoryreset': {
-        // Confirmed directly from this exact firmware's own dashboard code:
-        // the real endpoint is reset_conf.cgi, not factory_reset.cgi — our
-        // httpPost() will auto-retry as GET if it also rejects POST like
-        // reboot.cgi does, same pattern already confirmed working.
-        const r = await httpPost(ip, 80, '/cgi-bin/reset_conf.cgi', JSON.stringify({ reset: 1 }), 5000);
-        if (httpOk(r)) await reply(true, { message: 'Factory reset initiated' });
-        else await reply(false, { error: 'Miner rejected the command (HTTP status: ' + r.status + ')' });
-        break;
-      }
-      case 'firmware': {
-        const r = await httpPost(ip, 80, '/cgi-bin/upgrade.cgi', JSON.stringify({ url: params.firmware_url }), 8000);
-        if (httpOk(r)) await reply(true, { message: 'Firmware upgrade started — do NOT power off, takes 3-5 minutes' });
-        else await reply(false, { error: 'Miner rejected the upgrade (HTTP status: ' + r.status + ')' });
-        break;
-      }
-      case 'fetchlogs':
-      case 'downloadlogs': {
-        const logText = await fetchBootLog(ip);
-        if (logText) await reply(true, { logs: logText });
-        else await reply(false, { error: 'Could not retrieve logs from this miner' });
-        break;
-      }
-      default:
-        await reply(false, { error: `Unknown action: ${action}` });
-    }
-  } catch(e) {
-    await reply(false, { error: e.message });
-  }
-}
-
-// ── Per-IP request queue for the Web UI tunnel ──────────────────
-// Many embedded miner web servers (this class of firmware included)
-// can only handle ONE connection at a time. The miner's own dashboard
-// commonly refreshes itself by firing several data requests (pools,
-// stats, warnings, system info) all at the same instant — if we send
-// all of those to the miner simultaneously, its tiny web server
-// rejects most of them outright, which looked like a genuine
-// connection failure (502) even though the miner was perfectly
-// reachable. Queuing requests per-IP so only one is ever in flight
-// to a given miner at a time avoids this entirely.
-// Requests to one miner run a few at a time, not strictly one after
-// another. Serialising them completely was safe but made a large page
-// pathologically slow: with dozens of files queued, the ones at the
-// back waited so long that the backend had already given up on them
-// before they even started, so the tail of every big page failed.
+// Where a miner does report it, that measured figure is used instead,
+// because it reflects what the machine is actually pulling right now:
+// underclocked or overclocked units, degraded PSUs and hot-weather
+// derating all move real draw well away from the spec sheet. Which of
+// the two a number came from is shown in the panel rather than being
+// quietly averaged together, since one is a measurement and the other
+// is an assumption.
 //
-// The http.Agent below caps ACTUAL sockets per miner, so this limit
-// governs how many requests are in flight, while the socket pool is
-// what protects the miner's small web server from being flooded.
-const WEBUI_CONCURRENCY = 3;
-const webuiActive  = new Map(); // ip -> number of requests in flight
-const webuiWaiting = new Map(); // ip -> array of queued starters
+// Keys are model names with everything but letters and digits removed,
+// so they survive the many ways firmware writes a model string
+// ("Antminer L9", "ANTMINER-L9", "Bitmain Antminer L9 (17Gh)").
+const POWER_SPECS = {
+  // ── Bitmain, Scrypt (LTC/DOGE) ──
+  'antminerl9':          3570,   // 17 Gh/s
+  'antminerl7':          3425,   // 9.16 Gh/s
+  'antminerl11hyd2u':    5775,   // 35 Gh/s
+  'antminerl11hyd6u':    5676,   // 33 Gh/s
+  // ── Bitmain, SHA-256 ──
+  'antminers21pro':      3510,   // 245 Th/s
+  'antminers21xpplushyd': 5500,  // 500 Th/s ("S21 XP+ Hyd")
+  'antminers21exphyd3u': 11180,  // 860 Th/s
+  'antminers21':         3550,   // 200 Th/s
+  'antminers23hyd3u':    11020,  // 1.16 Ph/s
+  'antminers23exphyd2u': 8650,   // 865 Th/s
+  'antminers23xphyd':    5340,   // 600 Th/s
+  'antminers23hyd':      5510,   // 580 Th/s
+  'antminers19jproplus': 3355,   // 122 Th/s ("S19j Pro+")
+  'antminers19jpro':     3068,   // 104 Th/s
+  'antminers19pro':      3250,   // 110 Th/s
+  'antminers19xp':       3010,   // 140 Th/s
+  // ── Bitmain, other algorithms ──
+  'antminerka3':         3154,   // 166 Th/s KHeavyHash
+  'antminerz15pro':      2780,
+  'antminerz15k':        2483,
+  'antminerz15':         1510,
+  'antminerz11':         1418,
+  'antminerx9':          2472,
+  // ── ElphaPEX, Scrypt ──
+  'elphapexdg1plus':     3920,   // 14 Gh/s
+  'elphapexdghome1':      620,   // 2 Gh/s
+  'elphapexdg1':         3420,   // 11 Gh/s
+  'dg1plus':             3920,   // firmware often omits the brand
+  'dghome1':              620,
+  'dg1':                 3420,
+  // ── MicroBT ──
+  'whatsminerm79s':     20000,
+  'whatsminerm50s':      3276,
+  'whatsminerm50':       3276,
+  // ── Bitdeer SealMiner ──
+  'sealminera4ultrahydro': 8372,
+  'sealminera4prohydro':   7412,
+  'sealminera3prohydro':   8250,
+  'sealminerdl1hydro':     7823,
+  'sealminerdl1air':       3725,
+  'a9zmaster':           1550,
+};
 
-function queueForIp(ip, task) {
-  return new Promise(resolve => {
-    const start = () => {
-      webuiActive.set(ip, (webuiActive.get(ip) || 0) + 1);
-      Promise.resolve()
-        .then(task)
-        .catch(() => {})            // one failure never blocks the queue
-        .then(() => {
-          webuiActive.set(ip, Math.max(0, (webuiActive.get(ip) || 1) - 1));
-          const waiting = webuiWaiting.get(ip);
-          if (waiting && waiting.length) waiting.shift()();
-          resolve();
-        });
-    };
+// Longest key first, so "Antminer S21 Pro" can't be matched by the
+// shorter "antminers21" entry that its name also contains.
+const POWER_SPEC_KEYS = Object.keys(POWER_SPECS).sort(function(a,b){ return b.length - a.length; });
 
-    if ((webuiActive.get(ip) || 0) < WEBUI_CONCURRENCY) return start();
-    if (!webuiWaiting.has(ip)) webuiWaiting.set(ip, []);
-    webuiWaiting.get(ip).push(start);
-  });
+// "+" is part of the model name, not punctuation — an S21 XP+ Hyd and
+// an S21 XP Hyd are different machines with different draws, and a DG1+
+// pulls 500W more than a DG1. Stripping it as a symbol made the plus
+// variants silently match the cheaper base model, so it becomes a word
+// before the rest of the punctuation is removed.
+function normalizeModelKey(s) {
+  return String(s || '').toLowerCase().replace(/\+/g, 'plus').replace(/[^a-z0-9]/g, '');
 }
 
-function handleWebuiProxyRequest(msg) {
-  // Start the clock when the request ARRIVES, so time spent queued
-  // counts against it. A request whose caller has already timed out is
-  // dropped rather than served — the browser stopped waiting, and the
-  // miner's limited capacity is better spent on requests still wanted.
-  const expiresAt = Date.now() + (Number(msg.ttl_ms) || 30000);
-  queueForIp(msg.ip, () => {
-    if (Date.now() >= expiresAt) {
-      console.log('[WEBUI] Skipping ' + (msg.path || '/') + ' — caller already gave up while it was queued');
-      return Promise.resolve();
-    }
-    return handleWebuiProxyRequestNow(msg);
-  });
+function specWattsFor(w) {
+  const hay = normalizeModelKey((w.brand || '') + ' ' + (w.model || ''));
+  if (!hay) return 0;
+  for (let i = 0; i < POWER_SPEC_KEYS.length; i++) {
+    if (hay.indexOf(POWER_SPEC_KEYS[i]) !== -1) return POWER_SPECS[POWER_SPEC_KEYS[i]];
+  }
+  return 0;
 }
 
-// ── Digest challenge cache ──────────────────────────────────
-// Antminer firmware answers with Digest auth. Every request used to
-// start with a Basic attempt that the miner ALWAYS rejects with a 401,
-// then repeat the request with Digest — two round trips for every
-// single file on the page. Since requests to one miner are queued one
-// at a time, that doubling is felt directly as the page loading at
-// half speed, and on a dashboard pulling dozens of files it's the
-// difference between a page that loads and one that looks stuck.
+// ── Hand-entered wattage, held per model and shared fleet-wide ────
+// Loaded from the backend so the figure typed on one device applies on
+// every other one, and to machines at every site.
+let modelPowerOverrides = [];   // [{ model_key, watts, label, set_by }]
+
+// The model string a machine reports is what everything here keys off.
+function modelKeyOf(w) {
+  return normalizeModelKey((w.brand || '') + ' ' + (w.model || ''));
+}
+
+// Finding the entry that applies to a machine is not a plain lookup,
+// because the same machine is described differently by different
+// firmware: one agent reports "Antminer L9", another "Antminer L9
+// (17Gh)". Keyed strictly, a figure entered from one site would leave
+// the other site's identical machines uncounted — which defeats the
+// point of storing it per model.
 //
-// The challenge (realm/nonce/qop) is reusable, so it's remembered per
-// miner after the first 401 and every later request goes straight to
-// Digest. A reused nonce must carry an incrementing count or a strict
-// server rejects it, hence the counter.
-const digestCache = new Map();
+// So an entry matches when either name contains the other: an entry
+// saved as "Antminer DR7" covers a machine another agent reports as
+// "Bitmain Antminer DR7 (5Th)", and one saved with the brand attached
+// still covers a machine whose firmware omits it. Matching only on a
+// shared prefix was not enough — the brand sits at the FRONT of the
+// name, so the two strings differ exactly where a prefix test looks.
+//
+// Exact matches are preferred, then the longest partial, so a specific
+// "DG1+" entry always beats a general "DG1" one rather than the two
+// fighting over the same machines.
+const MIN_OVERRIDE_KEY_LEN = 3;   // "l9" would match far too much
 
-function ncHex(n) { return String(n).padStart(8, '0'); }
+function overrideWattsFor(w) {
+  const key = modelKeyOf(w);
+  if (!key || !modelPowerOverrides.length) return null;
 
-// One keep-alive connection per miner. These embedded web servers are
-// slow to accept new TCP connections, and a fresh handshake for every
-// file on the page is a large part of the wait. maxSockets:1 also
-// enforces at the socket level the one-request-at-a-time rule the
-// queue above maintains, so this can't accidentally flood the miner.
-const minerHttpAgents = new Map();
-function agentFor(ip) {
-  let a = minerHttpAgents.get(ip);
-  if (!a) {
-    // Two sockets, not one: enough to overlap a slow response with the
-    // next request without flooding a web server that only has a
-    // handful of connection slots. Node queues anything beyond this
-    // onto the existing sockets rather than opening more.
-    a = new http.Agent({ keepAlive: true, keepAliveMsecs: 10000, maxSockets: 2, maxFreeSockets: 2 });
-    minerHttpAgents.set(ip, a);
+  let best = null, bestLen = -1;
+  for (let i = 0; i < modelPowerOverrides.length; i++) {
+    const o = modelPowerOverrides[i];
+    const k = o.model_key;
+    if (!k || k.length < MIN_OVERRIDE_KEY_LEN) continue;
+    if (k === key) return o;                                  // exact — done
+    const related = key.indexOf(k) !== -1 || k.indexOf(key) !== -1;
+    if (related && k.length > bestLen) { best = o; bestLen = k.length; }
   }
-  return a;
+  return best;
 }
 
-function handleWebuiProxyRequestNow(msg) {
-  return new Promise(resolveQueue => {
-  const { request_id, ip, method, path: reqPath, headers, body } = msg;
-  const REQUEST_USER = 'root', REQUEST_PASS = 'root'; // every Antminer unit uses this
+// How many machines in the fleet a given entry is currently covering —
+// shown in the UI so a too-broad entry is visible rather than silently
+// inflating a site total.
+function machinesCoveredBy(modelKey) {
+  return workers.filter(function(w){
+    const o = overrideWattsFor(w);
+    return o && o.model_key === modelKey;
+  }).length;
+}
 
-  // Extensions that are ALWAYS binary, whatever Content-Type the miner's
-  // own web server claims. This exists because Braiins OS+'s embedded
-  // server mislabels its font files (a generic text-ish type instead of
-  // a real font/* one) — trusting that label made the isText check below
-  // run buf.toString('utf8') on raw font bytes, which is a LOSSY,
-  // irreversible conversion for arbitrary binary data (invalid byte
-  // sequences get silently replaced, corrupting the file before it even
-  // leaves this PC). No fix on the backend can undo that after the fact,
-  // since the original bytes are already gone by the time it arrives —
-  // this has to be caught here, at the only place that still has them.
-  const ALWAYS_BINARY_EXT = /\.(woff2?|ttf|otf|eot|png|jpe?g|gif|ico|webp|bmp|mp4|webm|pdf|zip|gz)(\?|$)/i;
+function loadModelPower(cb) {
+  const token = localStorage.getItem('ekl_token');
+  if (!token || !API_BASE || API_BASE.includes('localhost')) { if (cb) cb(); return; }
+  fetch(API_BASE + '/api/power/models', { headers: { 'Authorization': 'Bearer ' + token } })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if (d && d.ok && Array.isArray(d.models)) modelPowerOverrides = d.models;
+      if (cb) cb();
+    })
+    .catch(function(){ if (cb) cb(); });
+}
 
-  function sendResponse(res, buf) {
-    const contentType = res.headers['content-type'] || '';
-    // Text content goes over the wire as plain UTF-8; anything else
-    // (images, fonts, etc.) is base64-encoded so it survives JSON.
-    // The extension check runs FIRST and wins over a misleading
-    // Content-Type — see ALWAYS_BINARY_EXT above.
-    const isText = !ALWAYS_BINARY_EXT.test(reqPath || '') && /text|json|javascript|xml|css/i.test(contentType);
-    send({
-      type: 'webui_proxy_response',
-      request_id,
-      status: res.statusCode,
-      headers: { 'content-type': contentType || 'text/html', 'location': res.headers['location'] || null },
-      body: isText ? buf.toString('utf8') : buf.toString('base64'),
-      encoding: isText ? 'utf8' : 'base64',
+// Save one model's wattage. The backend stores it centrally, so this
+// is what makes the figure reach the other sites and devices.
+// `force` = trust this OVER the miner's own live reading, for a model
+// whose firmware reports a number but the number is wrong.
+function saveModelPower(modelLabel, watts, force) {
+  const token = localStorage.getItem('ekl_token');
+  const w = Number(watts);
+  if (!isFinite(w) || w <= 0) { toast('Enter the wattage as a number', 'var(--warn)'); return; }
+  toast('Saving ' + modelLabel + '...', 'var(--cyan)');
+  fetch(API_BASE + '/api/power/models', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (token||'') },
+    body: JSON.stringify({ model: modelLabel, watts: w, force: !!force }),
+  })
+    .then(function(r){ return r.json().then(function(d){ return { ok: r.ok, d: d }; }); })
+    .then(function(res){
+      if (!res.ok) { toast(res.d.error || 'Could not save', 'var(--red)'); return; }
+      modelPowerOverrides = res.d.models || [];
+      const n = machinesCoveredBy(normalizeModelKey(modelLabel));
+      toast(modelLabel + ' set to ' + Math.round(w) + 'W' + (force ? ' (overriding reported readings)' : '') + ' — applied to ' + n + ' machine(s) fleet-wide', 'var(--green)');
+      renderPowerPanel();
+      try { renderDash(); } catch(e) {}
+    })
+    .catch(function(e){ toast('Could not save: ' + e.message, 'var(--red)'); });
+}
+
+function removeModelPower(modelKey) {
+  if (!confirm('Remove the hand-entered power for this model?\nIts machines go back to the built-in spec figure, or become uncounted if there isn\'t one.')) return;
+  const token = localStorage.getItem('ekl_token');
+  fetch(API_BASE + '/api/power/models/' + encodeURIComponent(modelKey), {
+    method: 'DELETE',
+    headers: { 'Authorization': 'Bearer ' + (token||'') },
+  })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if (d && d.ok) { modelPowerOverrides = d.models || []; toast('Removed', 'var(--warn)'); renderPowerPanel(); }
+      else toast('Could not remove', 'var(--red)');
+    })
+    .catch(function(){ toast('Could not remove', 'var(--red)'); });
+}
+
+// Called from the inline "Set"/"Update"/"Apply" buttons in the power panel
+function submitModelPower(btn) {
+  const wrap  = btn.closest('[data-model]');
+  if (!wrap) return;
+  const input = wrap.querySelector('input[type=number]');
+  const check = wrap.querySelector('input[type=checkbox]');
+  saveModelPower(wrap.getAttribute('data-model'), input ? input.value : '', check ? check.checked : false);
+}
+
+// The "+ Correct a model" mini form — for a model that already reports
+// a number (so it never shows up in the "not counted" list) but the
+// number is wrong. Distinct from the quick-add rows above it, which are
+// only for models with no reading at all.
+function showAddModelCorrection() {
+  const el = document.getElementById('addModelCorrectionForm');
+  if (el) el.style.display = 'flex';
+  const btn = document.getElementById('addModelCorrectionBtn');
+  if (btn) btn.style.display = 'none';
+  const inp = document.getElementById('newCorrModel');
+  if (inp) inp.focus();
+}
+function submitNewModelCorrection() {
+  const model = document.getElementById('newCorrModel');
+  const watts = document.getElementById('newCorrWatts');
+  const force = document.getElementById('newCorrForce');
+  if (!model || !model.value.trim()) { toast('Enter the model name as it appears in the fleet', 'var(--warn)'); return; }
+  saveModelPower(model.value.trim(), watts ? watts.value : '', force ? force.checked : true);
+  model.value = ''; if (watts) watts.value = '';
+  const el = document.getElementById('addModelCorrectionForm');
+  if (el) el.style.display = 'none';
+  const btn = document.getElementById('addModelCorrectionBtn');
+  if (btn) btn.style.display = '';
+}
+
+// Firmware occasionally reports a power field that isn't watts at all
+// — a raw register value, a sentinel like 65535, or 0 when the PSU
+// isn't being read. Anything outside the range a single ASIC could
+// plausibly draw is treated as no reading rather than trusted, so one
+// bad sensor can't add a megawatt to a site total.
+const PLAUSIBLE_WATTS_MIN = 100;
+const PLAUSIBLE_WATTS_MAX = 25000;
+
+// Watts for ONE machine, with where the figure came from.
+// A machine that isn't running draws nothing worth counting.
+function minerWatts(w) {
+  const st = effectiveStatus(w);
+  if (st !== 'online' && st !== 'warn') return { watts: 0, source: 'off' };
+
+  const manual = overrideWattsFor(w);
+
+  // A "forced" entry means someone checked this model against reality
+  // (a clamp meter, the PDU) and found the firmware's own number
+  // wrong — not missing, WRONG. That is a different problem from a
+  // model that never reports at all, and the ordinary "measured beats
+  // everything" rule can't fix it, because the bad reading still looks
+  // like a plausible wattage and passes the sanity check below. So a
+  // forced entry is checked first and, when it applies, wins outright.
+  if (manual && manual.force && manual.watts > 0) {
+    return { watts: manual.watts, source: 'manual', key: manual.model_key, forced: true };
+  }
+
+  const measured = Number(w.power) || 0;
+  if (measured >= PLAUSIBLE_WATTS_MIN && measured <= PLAUSIBLE_WATTS_MAX) {
+    return { watts: measured, source: 'measured' };
+  }
+  // A figure someone entered for this model beats the built-in spec
+  // table: they measured these actual machines with a clamp meter or
+  // read the PDU, which is worth more than a manufacturer's rating —
+  // and it's the only way a model the table doesn't know gets counted.
+  if (manual && manual.watts > 0) return { watts: manual.watts, source: 'manual', key: manual.model_key };
+  const spec = specWattsFor(w);
+  if (spec > 0) return { watts: spec, source: 'spec' };
+  return { watts: 0, source: 'unknown' };
+}
+
+// Whole-fleet roll-up, and the same figures per site.
+// `unknown` is carried through deliberately: a machine whose model
+// isn't in the table and which doesn't report its own draw contributes
+// nothing to the total, and a site total that silently omits machines
+// is worse than one that says how many it omitted.
+function computeSitePower() {
+  const byFarm = {};
+  const total  = { watts: 0, running: 0, measured: 0, manual: 0, spec: 0, unknown: 0, unknownModels: {} };
+
+  workers.forEach(function(w) {
+    const fid  = w.farm_id || 'unassigned';
+    if (!byFarm[fid]) {
+      // NOTE: this used to call a helper named A(fid) to fall back to
+      // the connected agent's name when a worker record had no .farm
+      // string of its own. That A() only ever existed as a LOCAL const
+      // inside renderWorkers() — a different function entirely — so
+      // calling it here threw "ReferenceError: A is not defined" the
+      // instant any worker with a falsy .farm was encountered. Because
+      // JS's || short-circuits, that only fired for SOME fleets (any
+      // worker missing .farm), which is exactly why this looked like it
+      // came and went rather than being reliably broken. The whole
+      // computeSitePower() call — and therefore the entire "Power
+      // Consumption by Site" panel — silently failed every time it hit
+      // one of these workers, which also matches machines whose NAME
+      // wasn't showing on the Workers page: same underlying gap, a
+      // worker record missing metadata the agent hasn't backfilled yet.
+      const agent = agents.find(function(a){ return a.id === fid; });
+      byFarm[fid] = { id: fid, name: w.farm || (agent ? agent.name : fid),
+                      watts: 0, running: 0, measured: 0, manual: 0, spec: 0, unknown: 0, unknownModels: {} };
+    }
+    const f = byFarm[fid];
+    if (w.farm && !f.name) f.name = w.farm;
+
+    const r = minerWatts(w);
+    if (r.source === 'off') return;
+
+    f.running++;     total.running++;
+    f.watts += r.watts; total.watts += r.watts;
+    if (r.source === 'measured') { f.measured++; total.measured++; }
+    else if (r.source === 'manual') { f.manual++; total.manual++; }
+    else if (r.source === 'spec') { f.spec++; total.spec++; }
+    else {
+      f.unknown++; total.unknown++;
+      const label = (cleanBrandModel(w.brand) + ' ' + cleanBrandModel(w.model)).trim() || 'Unknown';
+      f.unknownModels[label] = (f.unknownModels[label] || 0) + 1;
+      total.unknownModels[label] = (total.unknownModels[label] || 0) + 1;
+    }
+  });
+
+  return { total: total, farms: Object.values(byFarm).sort(function(a,b){ return b.watts - a.watts; }) };
+}
+
+// ── Every distinct model actually running in the fleet ─────────────
+// The per-model power tools only ever surfaced a model AFTER it showed
+// up as "not counted" or after someone already knew its exact name well
+// enough to type it in. Neither helps the person who just wants to see
+// what's out there and fix a number — they don't necessarily know that
+// the miner reports itself as "Antminer S21 Hyd" rather than "S21
+// Hydro". So this reads the models straight out of the fleet itself:
+// every group here is a model that is DEFINITELY at one of the sites,
+// under the exact name its own firmware reports.
+function modelBreakdown() {
+  const groups = {};
+  workers.forEach(function(w) {
+    const key = modelKeyOf(w);
+    if (!key) return;
+    if (!groups[key]) groups[key] = { key: key, label: '', count: 0, running: 0, farms: {}, sample: null };
+    const g = groups[key];
+    g.count++;
+    const st = effectiveStatus(w);
+    if (st === 'online' || st === 'warn') g.running++;
+    const lbl = (cleanBrandModel(w.brand) + ' ' + cleanBrandModel(w.model)).trim();
+    if (lbl.length > g.label.length) g.label = lbl;               // fullest name seen wins
+    if (w.farm) g.farms[w.farm] = true;
+    // Prefer a running machine as the sample used to look up its
+    // current power — that's the reading someone would actually see
+    // if they opened this machine right now.
+    if (!g.sample || (st === 'online' && effectiveStatus(g.sample) !== 'online')) g.sample = w;
+  });
+  return Object.keys(groups).map(function(k){ return groups[k]; });
+}
+
+// What a machine of this model would draw right now, for display —
+// same precedence minerWatts() uses, just evaluated against the
+// sample machine as though it were online, so an editor can see (and
+// fix) a model's figure even while every unit of it happens to be
+// powered down for maintenance.
+function modelEffectivePower(g) {
+  if (!g.sample) return { watts: 0, source: 'unknown' };
+  const probe = Object.assign({}, g.sample, { status: 'online', disabled: false });
+  return minerWatts(probe);
+}
+
+function fmtKW(watts) {
+  if (!watts) return '0 kW';
+  if (watts >= 1e6) return (watts / 1e6).toFixed(2) + ' MW';
+  return (watts / 1000).toFixed(watts >= 100000 ? 0 : 1) + ' kW';
+}
+
+// The rate is typed once and kept on the device — it's a local tariff,
+// not fleet data, and it differs per site operator.
+function getElecRate() {
+  const el = document.getElementById('pwrRate');
+  const v  = el ? parseFloat(el.value) : parseFloat(localStorage.getItem('ekl_elec_rate'));
+  return (isFinite(v) && v >= 0) ? v : null;
+}
+function onElecRateChange() {
+  const el = document.getElementById('pwrRate');
+  if (el) localStorage.setItem('ekl_elec_rate', el.value);
+  renderPowerPanel();
+}
+
+function renderPowerPanel() {
+  const p = computeSitePower();
+
+  // Headline card on the stats row
+  const sv = document.getElementById('dPower');
+  if (sv) sv.textContent = fmtKW(p.total.watts).replace(/ (kW|MW)$/, '');
+  const su = document.getElementById('dPowerUnit');
+  if (su) su.textContent = (p.total.watts >= 1e6 ? 'MW' : 'kW') + ' drawn now';
+
+  const body = document.getElementById('powerBySite');
+  if (!body) return;
+
+  const rate = getElecRate();
+  const dayKwh = function(watts){ return (watts / 1000) * 24; };
+
+  if (p.total.running === 0) {
+    body.innerHTML = '<div style="padding:18px;text-align:center;color:var(--mute);font-size:12px">'
+      + 'No machines are running, so nothing is drawing power right now.</div>';
+    return;
+  }
+
+  let rows = p.farms.filter(function(f){ return f.running > 0; }).map(function(f) {
+    const cost = rate !== null ? ('$' + (dayKwh(f.watts) * rate).toFixed(2)) : '<span style="color:var(--mute)">—</span>';
+    const gap  = f.unknown > 0
+      ? '<div style="font-size:9px;color:var(--warn)">' + f.unknown + ' machine(s) not counted</div>' : '';
+    return '<tr>'
+      + '<td style="font-family:Exo 2,sans-serif;font-weight:600">' + escHtml(f.name) + gap + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + f.running + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:12px;color:var(--cyan);font-weight:700">' + fmtKW(f.watts) + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + dayKwh(f.watts).toFixed(0) + ' kWh</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + cost + '</td>'
+      + '</tr>';
+  }).join('');
+
+  const totalCost = rate !== null ? ('$' + (dayKwh(p.total.watts) * rate).toFixed(2)) : '<span style="color:var(--mute)">—</span>';
+  rows += '<tr style="border-top:2px solid var(--b2)">'
+    + '<td style="font-family:Exo 2,sans-serif;font-weight:700;color:var(--txt)">ALL SITES</td>'
+    + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;font-weight:700">' + p.total.running + '</td>'
+    + '<td style="font-family:Share Tech Mono,monospace;font-size:13px;color:var(--green);font-weight:700">' + fmtKW(p.total.watts) + '</td>'
+    + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;font-weight:700">' + dayKwh(p.total.watts).toFixed(0) + ' kWh</td>'
+    + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;font-weight:700">' + totalCost + '</td>'
+    + '</tr>';
+
+  // How the total was arrived at. Stated plainly so the number can be
+  // trusted or challenged, rather than presented as a single figure of
+  // unknown provenance.
+  let prov = '<span style="color:var(--green)">' + p.total.measured + ' measured</span>';
+  if (p.total.manual > 0)  prov += ' &middot; <span style="color:var(--purple,var(--cyan))">' + p.total.manual + ' entered by hand</span>';
+  if (p.total.spec > 0)    prov += ' &middot; <span style="color:var(--cyan)">' + p.total.spec + ' from model spec</span>';
+  if (p.total.unknown > 0) prov += ' &middot; <span style="color:var(--warn)">' + p.total.unknown + ' unknown, not counted</span>';
+
+  // Every model actually seen in the fleet, with what it's currently
+  // costed at and an edit control right there — so fixing a number
+  // never depends on first knowing the exact model name to type. This
+  // is the answer to "which models are even at my sites": every row
+  // here came from a real machine, not from a name someone remembered.
+  let modelTable = '';
+  if (!isCustomer) {
+    const groups = modelBreakdown().sort(function(a, b) {
+      const ea = modelEffectivePower(a), eb = modelEffectivePower(b);
+      const unkA = ea.source === 'unknown' ? 0 : 1, unkB = eb.source === 'unknown' ? 0 : 1;
+      if (unkA !== unkB) return unkA - unkB;           // uncounted models float to the top
+      return b.count - a.count;
     });
-    resolveQueue();
+
+    const rowsHtml = groups.map(function(g) {
+      const eff = modelEffectivePower(g);
+      const override = modelPowerOverrides.find(function(o){ return o.model_key === g.key; });
+      const farmNames = Object.keys(g.farms).sort().join(', ') || '—';
+
+      let badge;
+      if (eff.forced)                badge = '<span style="padding:1px 6px;border-radius:3px;background:rgba(255,176,32,.15);border:1px solid rgba(255,176,32,.35);color:var(--warn);font-size:9px;white-space:nowrap">OVERRIDE</span>';
+      else if (eff.source==='measured') badge = '<span style="padding:1px 6px;border-radius:3px;background:rgba(0,220,130,.12);border:1px solid rgba(0,220,130,.3);color:var(--green);font-size:9px;white-space:nowrap">MEASURED</span>';
+      else if (eff.source==='manual')   badge = '<span style="padding:1px 6px;border-radius:3px;background:rgba(120,160,255,.12);border:1px solid rgba(120,160,255,.3);color:#8fb0ff;font-size:9px;white-space:nowrap">MANUAL</span>';
+      else if (eff.source==='spec')     badge = '<span style="padding:1px 6px;border-radius:3px;background:rgba(0,200,255,.1);border:1px solid rgba(0,200,255,.3);color:var(--cyan);font-size:9px;white-space:nowrap">SPEC</span>';
+      else                               badge = '<span style="padding:1px 6px;border-radius:3px;background:rgba(255,176,32,.15);border:1px solid rgba(255,176,32,.35);color:var(--warn);font-size:9px;white-space:nowrap">NOT COUNTED</span>';
+
+      const prefillWatts = override ? Number(override.watts) : (eff.watts > 0 ? eff.watts : '');
+      const rowBg = eff.source === 'unknown' ? 'background:rgba(255,176,32,.05)' : '';
+
+      return '<tr data-model="' + escHtml(g.label) + '" style="' + rowBg + '">'
+        + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;padding:6px 8px">' + escHtml(g.label || g.key)
+        +   '<div style="font-size:9px;color:var(--mute)">' + escHtml(farmNames) + '</div></td>'
+        + '<td style="font-size:11px;padding:6px 8px">' + g.count + (g.running < g.count ? ' <span style="color:var(--mute)">(' + g.running + ' running)</span>' : '') + '</td>'
+        + '<td style="padding:6px 8px">' + badge + '</td>'
+        + '<td style="padding:6px 8px">'
+        +   '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+        +     '<input type="number" min="50" max="25000" step="10" value="' + prefillWatts + '" placeholder="watts"'
+        +       ' onkeydown="if(event.key===\'Enter\'){submitModelPower(this.closest(\'tr\').querySelector(\'.mp-update\'));}"'
+        +       ' style="width:76px;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:4px 6px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none">'
+        +     '<label style="display:flex;align-items:center;gap:3px;font-size:9px;color:var(--mute);white-space:nowrap;cursor:pointer" title="Trust this figure even when the miner reports its own (wrong) reading">'
+        +       '<input type="checkbox" ' + (override && override.force ? 'checked' : '') + ' style="accent-color:var(--warn)">override</label>'
+        +     '<button class="abtn mp-update" onclick="submitModelPower(this)">Save</button>'
+        +     (override ? '<button class="abtn" onclick="removeModelPower(\'' + escHtml(g.key) + '\')" style="border-color:var(--red);color:var(--red)">&times;</button>' : '')
+        +   '</div>'
+        + '</td>'
+        + '</tr>';
+    }).join('');
+
+    // Overrides that were typed in but no longer match any machine
+    // currently in the fleet — a typo, or a model that's since been
+    // retired. Surfaced rather than silently ignored, since an entry
+    // like this looks like it's doing something and isn't.
+    const matchedKeys = {};
+    groups.forEach(function(g){ if (modelPowerOverrides.find(function(o){return o.model_key===g.key;})) matchedKeys[g.key] = true; });
+    const orphans = modelPowerOverrides.filter(function(o){ return !matchedKeys[o.model_key]; });
+    const orphanHtml = orphans.length ? ('<div style="margin-top:10px;padding:8px 10px;background:rgba(255,176,32,.06);border:1px solid rgba(255,176,32,.2);border-radius:6px">'
+      + '<div style="font-size:10px;color:var(--warn);margin-bottom:6px">Saved but matching no machine right now &mdash; check for a typo, or remove it:</div>'
+      + orphans.map(function(o){
+          return '<div style="display:flex;align-items:center;gap:8px;font-size:11px;font-family:Share Tech Mono,monospace;margin-top:4px">'
+            + '<span style="flex:1">' + escHtml(o.label || o.model_key) + ' &mdash; ' + Number(o.watts) + 'W' + (o.force?' (override)':'') + '</span>'
+            + '<button class="abtn" onclick="removeModelPower(\'' + escHtml(o.model_key) + '\')" style="border-color:var(--red);color:var(--red)">&times; Remove</button>'
+            + '</div>';
+        }).join('')
+      + '</div>') : '';
+
+    modelTable = '<div style="margin-top:10px">'
+      + '<table class="tbl" style="width:100%"><thead><tr>'
+      +   '<th style="text-align:left">Model</th><th style="text-align:left">Machines</th>'
+      +   '<th style="text-align:left">Source</th><th style="text-align:left">Watts / Edit</th>'
+      + '</tr></thead><tbody>' + rowsHtml + '</tbody></table>'
+      + orphanHtml
+      + '<div style="margin-top:10px">'
+      +   '<button class="abtn" id="addModelCorrectionBtn" onclick="showAddModelCorrection()">+ Add a model not listed above</button>'
+      +   '<div id="addModelCorrectionForm" style="display:none;margin-top:8px;align-items:center;gap:8px;flex-wrap:wrap">'
+      +     '<input id="newCorrModel" type="text" placeholder="Model name (e.g. Antminer S21 Hyd)"'
+      +       ' style="flex:1;min-width:160px;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:5px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none">'
+      +     '<input id="newCorrWatts" type="number" min="50" max="25000" step="10" placeholder="watts"'
+      +       ' style="width:84px;background:var(--bg);border:1px solid var(--b1);border-radius:5px;padding:5px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none">'
+      +     '<label style="display:flex;align-items:center;gap:4px;font-size:9px;color:var(--mute);white-space:nowrap;cursor:pointer">'
+      +       '<input id="newCorrForce" type="checkbox" checked style="accent-color:var(--warn)"> override live reading</label>'
+      +     '<button class="abtn" onclick="submitNewModelCorrection()" style="border-color:var(--green);color:var(--green)">Save</button>'
+      +   '</div>'
+      + '</div>'
+      + '</div>';
   }
 
-  function sendError(status, text) {
-    send({ type: 'webui_proxy_response', request_id, status,
-      headers: { 'content-type': 'text/plain' }, body: text, encoding: 'utf8' });
-    resolveQueue();
+  // Details (the full model list) are used rarely once the fleet's
+  // models are filled in, so they're tucked behind a toggle rather than
+  // always taking up space. The summary line stays visible either way —
+  // it's the one-glance check that the total can be trusted — and
+  // remembers open/closed per device.
+  const hasDetails = !!modelTable;
+  const open = localStorage.getItem('ekl_power_details_open') === '1';
+
+  body.innerHTML =
+      '<table class="tbl" style="width:100%"><thead><tr>'
+    + '<th style="text-align:left">Site</th><th style="text-align:left">Running</th>'
+    + '<th style="text-align:left">Power Draw</th><th style="text-align:left">Per Day</th>'
+    + '<th style="text-align:left">Cost / Day</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table>'
+    + '<div style="margin-top:8px;font-size:10px;color:var(--mute);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    +   '<span>Based on: ' + prov + '</span>'
+    +   (hasDetails
+          ? '<a href="#" onclick="togglePowerDetails();return false" style="color:var(--cyan);white-space:nowrap">'
+            + (open ? '&#x25B2; Hide details' : '&#x25BC; Show details') + '</a>'
+          : '')
+    + '</div>'
+    + (hasDetails
+        ? '<div id="powerDetails" style="display:' + (open ? '' : 'none') + '">' + modelTable + '</div>'
+        : '');
+}
+
+function togglePowerDetails() {
+  const open = localStorage.getItem('ekl_power_details_open') === '1';
+  localStorage.setItem('ekl_power_details_open', open ? '0' : '1');
+  renderPowerPanel();
+}
+
+// ── Profitability Calculator ─────────────────────────────────
+// Model/algo/hashrate/power specs below were read directly from
+// asicminervalue.com (the top 20 models it server-renders by
+// default, sorted by profitability). The site paginates the rest
+// behind a "Show more" button that needs a live browser to drive —
+// this session doesn't have one connected, so this is 20 of the 50
+// requested, not fabricated to fill the gap. Ask to extend it once
+// the rest of the list is pasted in or a browser session is available.
+//
+// Daily profit is NOT copied from the site (their numbers go stale
+// the moment you load the page) — it's computed live here from the
+// same CoinGecko price + mempool.space difficulty feed the rest of
+// the app uses, so this table, the ticker and a customer's earnings
+// all agree with each other.
+const MINER_CATALOG = [
+  { model: 'Antminer Z15 Pro',         algo: 'Equihash', hr: 840,  hrUnit: 'kh/s', power: 2780 },
+  { model: 'Antminer Z15K',            algo: 'Equihash', hr: 525,  hrUnit: 'kh/s', power: 2483 },
+  { model: 'Antminer X9',              algo: 'RandomX',  hr: 1,    hrUnit: 'Mh/s', power: 2472 },
+  { model: 'Antminer Z15',             algo: 'Equihash', hr: 420,  hrUnit: 'kh/s', power: 1510 },
+  { model: 'Antminer S23 Hyd 3U',      algo: 'SHA-256',  hr: 1.16, hrUnit: 'Ph/s', power: 11020 },
+  { model: 'SealMiner A4 Ultra Hydro', algo: 'SHA-256',  hr: 886,  hrUnit: 'Th/s', power: 8372 },
+  { model: 'Antminer S23e Hyd 2U',     algo: 'SHA-256',  hr: 865,  hrUnit: 'Th/s', power: 8650 },
+  { model: 'SealMiner DL1 Hydro',      algo: 'Scrypt',   hr: 52.5, hrUnit: 'Gh/s', power: 7823 },
+  { model: 'Antminer S23 XP Hyd',      algo: 'SHA-256',  hr: 600,  hrUnit: 'Th/s', power: 5340 },
+  { model: 'Antminer S23 Hyd',         algo: 'SHA-256',  hr: 580,  hrUnit: 'Th/s', power: 5510 },
+  { model: 'SealMiner A4 Pro Hydro',   algo: 'SHA-256',  hr: 680,  hrUnit: 'Th/s', power: 7412 },
+  { model: 'A9++ ZMaster',             algo: 'Equihash', hr: 140,  hrUnit: 'kh/s', power: 1550 },
+  { model: 'Antminer Z11',             algo: 'Equihash', hr: 135,  hrUnit: 'kh/s', power: 1418 },
+  { model: 'Antminer S21e XP Hyd 3U',  algo: 'SHA-256',  hr: 860,  hrUnit: 'Th/s', power: 11180 },
+  { model: 'Antminer S21 XP+ Hyd',     algo: 'SHA-256',  hr: 500,  hrUnit: 'Th/s', power: 5500 },
+  { model: 'Antminer L11 Hyd 2U',      algo: 'Scrypt',   hr: 35,   hrUnit: 'Gh/s', power: 5775 },
+  { model: 'SealMiner A3 Pro Hydro',   algo: 'SHA-256',  hr: 660,  hrUnit: 'Th/s', power: 8250 },
+  { model: 'A9+ ZMaster',              algo: 'Equihash', hr: 120,  hrUnit: 'kh/s', power: 1550 },
+  { model: 'SealMiner DL1 Air',        algo: 'Scrypt',   hr: 25,   hrUnit: 'Gh/s', power: 3725 },
+  { model: 'Antminer L11 Hyd 6U',      algo: 'Scrypt',   hr: 33,   hrUnit: 'Gh/s', power: 5676 },
+];
+
+function catalogHashesPerSec(m) {
+  const mult = { 'kh/s': 1e3, 'Mh/s': 1e6, 'Gh/s': 1e9, 'Th/s': 1e12, 'Ph/s': 1e15 }[m.hrUnit] || 1;
+  return m.hr * mult;
+}
+
+// Human-readable hashrate at its OWN unit — never converted to TH/s,
+// since "0.00084 TH/s" for a 840 kh/s Equihash miner is meaningless
+// (different algorithms aren't comparable by raw hash count anyway).
+function catalogHrDisplay(m) {
+  return m.hr + ' ' + m.hrUnit;
+}
+
+let profitSortField = 'profit';
+let profitSortDir = -1; // most profitable first, matching the source site
+
+function sortProfitBy(field) {
+  if (profitSortField === field) profitSortDir *= -1;
+  else { profitSortField = field; profitSortDir = field === 'model' ? 1 : -1; }
+  renderProfit();
+}
+
+function renderProfit() {
+  const tb = document.getElementById('profitTbody');
+  if (!tb) return;
+
+  const elecInput = document.getElementById('elec');
+  const elecRate  = elecInput ? parseFloat(elecInput.value) : NaN;
+  const validElec = isFinite(elecRate) && elecRate >= 0;
+
+  const rows = MINER_CATALOG.map(function(m){
+    const isSha = m.algo === 'SHA-256';
+    // Only SHA-256 gets a live figure: that's the only network we
+    // hold both a price AND a difficulty for (CoinGecko + mempool.space).
+    // Scrypt/Equihash/RandomX would need their own coin's difficulty,
+    // which this app doesn't fetch — showing a number for those would
+    // mean guessing it, so they show "—" instead.
+    const dailyRevenue = isSha ? estimateGrossUsd(catalogHashesPerSec(m), 1) : null;
+    const dailyPowerCost = validElec ? (m.power / 1000) * 24 * elecRate : null;
+    const dailyProfit = (dailyRevenue !== null && dailyPowerCost !== null) ? (dailyRevenue - dailyPowerCost) : null;
+    const efficiency = isSha ? (m.power / (catalogHashesPerSec(m) / 1e12)) : null; // J/TH
+    return { m, dailyRevenue, dailyPowerCost, dailyProfit, efficiency };
+  });
+
+  rows.sort(function(a, b){
+    let va, vb;
+    switch (profitSortField) {
+      case 'model':  va = a.m.model.toLowerCase(); vb = b.m.model.toLowerCase(); break;
+      case 'algo':   va = a.m.algo;  vb = b.m.algo; break;
+      case 'power':  va = a.m.power; vb = b.m.power; break;
+      case 'eff':    va = a.efficiency  === null ? Infinity : a.efficiency;  vb = b.efficiency  === null ? Infinity : b.efficiency; break;
+      case 'revenue':va = a.dailyRevenue=== null ? -Infinity: a.dailyRevenue;vb = b.dailyRevenue=== null ? -Infinity: b.dailyRevenue; break;
+      default:       va = a.dailyProfit === null ? -Infinity : a.dailyProfit; vb = b.dailyProfit === null ? -Infinity : b.dailyProfit;
+    }
+    if (va < vb) return -1 * profitSortDir;
+    if (va > vb) return  1 * profitSortDir;
+    return 0;
+  });
+
+  tb.innerHTML = rows.map(function(r){
+    const m = r.m;
+    return '<tr>'
+      + '<td style="font-size:11px;font-weight:700;color:var(--cyan)">' + escHtml(m.model) + '</td>'
+      + '<td style="font-size:10px;color:var(--mute)">' + escHtml(m.algo) + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + catalogHrDisplay(m) + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + m.power.toLocaleString() + 'W</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (r.efficiency !== null ? r.efficiency.toFixed(1) + ' J/TH' : '—') + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;color:var(--green)">' + fmtUsd2(r.dailyRevenue) + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px;color:var(--warn)">' + (r.dailyPowerCost !== null ? '-' + fmtUsd2(r.dailyPowerCost) : '—') + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:12px;font-weight:700;' + (r.dailyProfit !== null && r.dailyProfit < 0 ? 'color:var(--red)' : 'color:var(--gold)') + '">' + fmtUsd2(r.dailyProfit) + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (r.dailyProfit !== null ? fmtUsd2(r.dailyProfit * 30) : '—') + '</td>'
+      + '</tr>';
+  }).join('');
+
+  const note = document.getElementById('profitNote');
+  if (note) {
+    note.textContent = market.ok
+      ? 'Live at $' + Math.round(market.btc_usd).toLocaleString() + '/BTC, difficulty ' + (market.difficulty / 1e12).toFixed(1) + 'T'
+        + (market.stale ? ' (data ' + market.age_minutes + ' min old)' : '') + '. Scrypt/Equihash/RandomX show "—" — this app only tracks Bitcoin network difficulty.'
+      : 'Live market data unavailable right now — profit figures cannot be calculated.';
+  }
+}
+
+
+// ── Live market data & mining revenue ───────────────────────
+// market.ok stays false until real data actually arrives. Nothing
+// here ever substitutes a placeholder price or difficulty: if the
+// live figures aren't available, the UI shows a dash instead of a
+// number, because these end up on a customer's earnings screen.
+let market = { ok: false };
+
+// F2Pool's PPS fee for SHA-256. Revenue quoted to a customer should
+// be what the pool actually pays out, not the theoretical gross.
+const POOL_FEE_PCT = 2.5;
+
+function fetchMarketData(cb) {
+  const base = (typeof API_BASE !== 'undefined') ? API_BASE : '';
+  if (!base || base.includes('localhost')) { if (cb) cb(); return; }
+  fetch(base + '/api/market')
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if (d && d.ok) market = d;
+      else market = { ok: false };
+      if (cb) cb();
+    })
+    .catch(function(){ market = { ok: false }; if (cb) cb(); });
+}
+
+// SHA-256 (Bitcoin) machines only. A Scrypt/LTC machine's hashrate
+// fed into a Bitcoin formula produces a meaningless figure, so those
+// are excluded from BTC earnings entirely rather than miscounted.
+function isShaMiner(w) {
+  const algo = (w.algo || '').toLowerCase();
+  if (algo) return algo.indexOf('sha') !== -1;
+  // No algo recorded — infer from unit. SHA-256 ASICs are quoted in
+  // TH/s or PH/s; Scrypt machines are quoted in MH/s or GH/s.
+  const unit = (w.hr_unit || '').toUpperCase();
+  return unit.indexOf('TH') === 0 || unit.indexOf('PH') === 0;
+}
+
+function hashrateToHashesPerSec(w) {
+  const v = Number(w.hashrate) || 0;
+  if (v <= 0) return 0;
+  const unit = (w.hr_unit || 'TH/s').toUpperCase();
+  const mult = unit.indexOf('PH') === 0 ? 1e15
+             : unit.indexOf('TH') === 0 ? 1e12
+             : unit.indexOf('GH') === 0 ? 1e9
+             : unit.indexOf('MH') === 0 ? 1e6
+             : 1e12; // default TH/s — the common case for SHA-256
+  return v * mult;
+}
+
+// Standard mining revenue maths, the same basis a pool calculator uses:
+//   expected BTC = hashrate ÷ (network hashrate) × blocks × reward
+// expressed via difficulty, since difficulty × 2^32 is the expected
+// number of hashes per block found.
+function estimateGrossUsd(hashesPerSec, days) {
+  if (!market.ok || !hashesPerSec || hashesPerSec <= 0) return null;
+  const d = Number(market.difficulty), reward = Number(market.block_reward), price = Number(market.btc_usd);
+  if (!isFinite(d) || d <= 0 || !isFinite(reward) || reward <= 0 || !isFinite(price) || price <= 0) return null;
+  const btcPerSec = (hashesPerSec * reward) / (d * 4294967296);
+  const btc = btcPerSec * 86400 * days;
+  return btc * price * (1 - POOL_FEE_PCT / 100);
+}
+
+function fmtUsd(v) {
+  if (v === null || !isFinite(v)) return '—';
+  return '$' + Math.round(v).toLocaleString();
+}
+
+// Daily figures are small enough that rounding to whole dollars would
+// turn a real $7.40/day into "$7" — or a small account into "$0".
+function fmtUsd2(v) {
+  if (v === null || !isFinite(v)) return '—';
+  if (Math.abs(v) >= 1000) return '$' + Math.round(v).toLocaleString();
+  return '$' + v.toFixed(2);
+}
+
+// ── Cumulative earnings ─────────────────────────────────────
+// Read-only. The running total is accrued by the BACKEND every 10
+// minutes from the machines that are actually hashing; the browser
+// never adds to it. That matters: if the total were computed on page
+// view, two people opening the portal would double it, and nothing
+// would accrue while nobody was looking.
+let earningsSummary = null;
+
+function fetchEarnings(cb) {
+  const base = (typeof API_BASE !== 'undefined') ? API_BASE : '';
+  if (!base || base.includes('localhost') || !currentUser || !currentUser.id) { if (cb) cb(); return; }
+  const token = localStorage.getItem('ekl_token') || '';
+  fetch(base + '/api/earnings/summary/' + encodeURIComponent(currentUser.id),
+        { headers: { 'Authorization': 'Bearer ' + token } })
+    .then(function(r){ return r && r.ok ? r.json() : null; })
+    .then(function(d){
+      earningsSummary = (d && d.ok) ? d : null;
+      renderTotalEarned();
+      if (cb) cb();
+    })
+    .catch(function(){ earningsSummary = null; renderTotalEarned(); if (cb) cb(); });
+}
+
+function renderTotalEarned() {
+  const el  = document.getElementById('pTotalEarned');
+  const sub = document.getElementById('pTotalEarnedSub');
+  if (!el) return;
+  if (!earningsSummary) {
+    el.textContent = '—';
+    if (sub) sub.textContent = 'not available';
+    return;
+  }
+  // Net of hosting — the number that means something to a customer.
+  const net = Number(earningsSummary.total_gross_usd) - Number(earningsSummary.total_hosting_usd);
+  el.textContent = isFinite(net) ? fmtUsd2(net) : '—';
+  if (sub) {
+    const days = Number(earningsSummary.days_recorded) || 0;
+    sub.textContent = earningsSummary.since
+      ? 'since ' + earningsSummary.since + ' (' + days + ' day' + (days === 1 ? '' : 's') + ')'
+      : 'since start';
+  }
+}
+
+function renderPortal() {
+  try { renderDash(); } catch(e) {}
+  if (!currentUser) return;
+
+  const mine   = workers.filter(function(w){ return w.cid === currentUser.id; });
+  const online = mine.filter(function(w){ return effectiveStatus(w) === 'online'; });
+  // Machines can report in GH/s or TH/s — normalize to TH/s for one
+  // combined total instead of nonsensically adding mixed units together
+  const totalHrTH = mine.reduce(function(sum, w){
+    const hr = w.hashrate || 0;
+    return sum + (w.hr_unit === 'GH/s' ? hr / 1000 : hr);
+  }, 0);
+  const custRecord = customers.find(function(c){ return c.id === currentUser.id; });
+
+  // Top summary cards — previously static placeholders that never
+  // actually reflected the real assigned machines below them
+  const avEl = document.getElementById('portalAv');
+  if (avEl) avEl.textContent = (currentUser.name || '?').split(' ').map(function(w){return w[0];}).join('').slice(0,2).toUpperCase();
+  const greetEl = document.getElementById('portalGreeting');
+  if (greetEl) greetEl.textContent = 'Welcome, ' + (currentUser.name || '').split(' ')[0] + '!';
+  const pTotal = document.getElementById('pTotal');   if (pTotal)  pTotal.textContent  = mine.length;
+  const pOnline = document.getElementById('pOnline'); if (pOnline) pOnline.textContent = online.length;
+  const pHR = document.getElementById('pHR');         if (pHR)     pHR.textContent     = totalHrTH.toFixed(1);
+
+  // ── Earnings ────────────────────────────────────────────
+  // Real revenue from live BTC price + live network difficulty.
+  // Only machines that are actually hashing RIGHT NOW earn anything,
+  // and only SHA-256 machines earn BTC — a Scrypt (LTC) machine's
+  // hashrate must never be fed into a Bitcoin revenue formula, or
+  // the figure comes out wildly wrong.
+  const shaHashesPerSec = online.reduce(function(sum, w){
+    if (!isShaMiner(w)) return sum;
+    return sum + hashrateToHashesPerSec(w);
+  }, 0);
+  const nonShaOnline = online.filter(function(w){ return !isShaMiner(w); }).length;
+
+  // PER DAY, not per month. This is the run-rate at the hashrate the
+  // machines are producing right now — what they'd earn over 24h if
+  // they kept running exactly as they are.
+  const grossDay = estimateGrossUsd(shaHashesPerSec, 1);
+  // Hosting is quoted monthly per machine, so the daily share is the
+  // monthly rate ÷ 30 — matching how the accrual service bills it.
+  const feeDay   = (custRecord && custRecord.rate) ? (custRecord.rate * mine.length) / 30 : null;
+
+  const pGross = document.getElementById('pGross');
+  const pFee   = document.getElementById('pFee');
+  const pNet   = document.getElementById('pNet');
+  // A dash — never a zero or a guess — whenever the live market data
+  // isn't available or the hosting rate hasn't been set. These are
+  // real money figures; a blank is honest, a wrong number is not.
+  if (pGross) pGross.textContent = grossDay === null ? '—' : fmtUsd2(grossDay);
+  if (pFee)   pFee.textContent   = feeDay   === null ? '—' : fmtUsd2(feeDay);
+  if (pNet)   pNet.textContent   = (grossDay === null || feeDay === null) ? '—' : fmtUsd2(grossDay - feeDay);
+
+  // Cumulative total — read from the backend, never computed here.
+  // See fetchEarnings() for why.
+  renderTotalEarned();
+
+  const note = document.getElementById('pEarnNote');
+  if (note) {
+    if (!market.ok) {
+      note.textContent = 'Live market data unavailable — earnings cannot be calculated right now.';
+    } else {
+      note.textContent = 'Daily run-rate at $' + Math.round(market.btc_usd).toLocaleString()
+        + '/BTC, difficulty ' + (market.difficulty / 1e12).toFixed(1) + 'T'
+        + (market.stale ? ' (data ' + market.age_minutes + ' min old)' : '')
+        + (nonShaOnline ? ' · excludes ' + nonShaOnline + ' non-SHA-256 machine(s)' : '')
+        + ' · Total Earned accrues every 10 min from machines actually running; estimate, not pool payout.';
+    }
   }
 
-  // Some Antminer firmware wants Basic auth, some wants Digest — same
-  // root/root credentials either way. Try Basic first (cheap, no extra
-  // round-trip); if the miner replies 401 asking for Digest instead,
-  // automatically retry with it. The person browsing never sees any of
-  // this or has to type a password themselves.
-  // phase 0 = first try (cached Digest if we have one, else Basic)
-  // phase 1 = retry with a freshly issued challenge
-  // phase 2 = last retry; a 401 after this is passed through to the browser
-  function attempt(authHeader, phase, freshConnection) {
-    const options = {
-      hostname: ip, port: 80, path: reqPath || '/', method: method || 'GET',
-      headers: { 'Authorization': authHeader },
-      timeout: 8000,
-      // A retry after a dropped connection deliberately does NOT reuse
-      // the pooled socket. These miners' web servers handle keep-alive
-      // inconsistently — a socket the pool believes is reusable can
-      // already be dead at the miner's end, and every request handed to
-      // it fails the same way. Retrying on a brand-new connection
-      // sidesteps a stale pooled socket entirely.
-      agent: freshConnection
-        ? new http.Agent({ keepAlive: false, maxSockets: 1 })
-        : agentFor(ip),
-    };
-    if (body) options.headers['Content-Length'] = Buffer.byteLength(body);
-    if (headers && headers['content-type']) options.headers['Content-Type'] = headers['content-type'];
+  const badge = document.getElementById('portalOnlineBadge');
+  if (badge) badge.textContent = online.length + ' Online';
 
-    const req = http.request(options, res => {
-      if (res.statusCode === 401 && phase < 2 && res.headers['www-authenticate']) {
-        const wa = res.headers['www-authenticate'];
-        res.resume(); // drain this response, we're retrying
-        if (wa.toLowerCase().startsWith('digest')) {
-          // Remember the challenge so the next file on this page skips
-          // straight to Digest instead of paying for a rejected Basic
-          // attempt first. A 401 here on a CACHED nonce just means it
-          // went stale, and this same path refreshes it.
-          const params = parseDigestHeader(wa);
-          digestCache.set(ip, { params, nc: 1 });
-          const digestHeader = buildDigestAuth(REQUEST_USER, REQUEST_PASS, method || 'GET', reqPath || '/', params, ncHex(1));
-          attempt(digestHeader, phase + 1);
-          return;
-        }
-      }
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => sendResponse(res, Buffer.concat(chunks)));
-    });
+  const tb = document.getElementById('portalTable');
+  if (!tb) return;
 
-    req.on('error', e => {
-      // A miner whose web server is momentarily busy refuses or resets
-      // the connection instead of queuing it. That is transient, but it
-      // used to surface immediately as a 502 — which is what the
-      // dashboard's own polling calls (stats.cgi, pools.cgi,
-      // warning.cgi) were hitting, leaving panels stuck on stale
-      // numbers or empty. One short retry clears it.
-      const transient = /ECONNRESET|ECONNREFUSED|EPIPE|ECONNABORTED|socket hang up|EHOSTUNREACH|ETIMEDOUT/i.test(e.message || '');
-      if (transient && connRetries < 2) {
-        connRetries++;
-        // Second attempt onwards goes over a fresh connection, and the
-        // pool for this miner is discarded so no other queued request
-        // inherits a socket that has already proven dead.
-        if (connRetries === 1) minerHttpAgents.delete(ip);
-        console.log(`[WEBUI] ${reqPath} → ${e.code || e.message} — retry ${connRetries}/2 on a fresh connection`);
-        setTimeout(() => attempt(authHeader, phase, true), 300 * connRetries);
-        return;
-      }
-      console.log(`[WEBUI] ✗ ${reqPath} → giving up: ${e.code || ''} ${e.message}`);
-      sendError(502, 'Cannot reach miner (' + (e.code || 'error') + '): ' + e.message);
-    });
-    req.on('timeout', () => { req.destroy(); sendError(504, 'Miner did not respond in time'); });
-    if (body) req.write(body);
-    req.end();
+  if (mine.length === 0) {
+    tb.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--mute)">No machines assigned to your account yet.<br><span style="font-size:11px">Contact your farm operator to have machines linked to you.</span></td></tr>';
+    return;
   }
-  let connRetries = 0;
 
-  const cached = digestCache.get(ip);
-  if (cached) {
-    cached.nc += 1;
-    attempt(buildDigestAuth(REQUEST_USER, REQUEST_PASS, method || 'GET', reqPath || '/', cached.params, ncHex(cached.nc)), 0);
-  } else {
-    attempt('Basic ' + Buffer.from(REQUEST_USER + ':' + REQUEST_PASS).toString('base64'), 0);
+  tb.innerHTML = mine.map(function(w){
+    const eff = effectiveStatus(w);
+    const sb  = w.disabled ? 'bor' : eff === 'online' ? 'bgn' : 'brn';
+    return '<tr>'
+      + '<td><span class="sdot ' + sdot(w) + '"></span></td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:12px;color:var(--cyan);font-weight:700">' + (w.name || w.ip) + '</td>'
+      + '<td style="font-size:11px">' + cleanBrandModel(w.brand) + ' ' + cleanBrandModel(w.model) + '</td>'
+      + '<td style="color:var(--green);font-family:Share Tech Mono,monospace;font-size:11px">' + (eff === 'online' ? (w.hr_display || '—') : '—') + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (eff === 'online' && w.temp > 0 ? w.temp + '°C' : '—') + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (eff === 'online' && w.fan > 0 ? w.fan : '—') + '</td>'
+      + '<td style="font-size:10px;color:var(--mute)">' + (w.pool || '—') + '</td>'
+      + '<td><span class="badge ' + sb + '">' + (w.disabled ? 'REPAIR' : eff.toUpperCase()) + '</span></td>'
+      + '<td><button class="abtn" onclick="openCtrl(\'' + w.id + '\')">Manage</button></td>'
+      + '</tr>';
+  }).join('');
+}
+
+// ── Populate scanner dropdowns ────────────────────────────
+function populateDropdowns() {
+  const sv = document.getElementById('scanVia');
+  if (!sv) return;
+  const cur = sv.value;
+  var html = '<option value="local">&#x1F4BB; Select a farm agent...</option>';
+  agents.forEach(function(a){
+    html += '<option value="' + a.id + '"' + (cur === a.id ? ' selected' : '') + '>'
+         +  (a.online ? '\u2713 ' : '\u2717 ') + a.name + ' (' + a.id + ')</option>';
+  });
+  sv.innerHTML = html;
+  // Restore selection if it still exists
+  if (cur && agents.find(function(a){ return a.id === cur; })) sv.value = cur;
+}
+
+// ── Scanner log ───────────────────────────────────────────
+function addLog(type, msg, overwrite) {
+  const el = document.getElementById('scanLog');
+  if (!el) return;
+  const c = type === 'err' ? 'var(--red)' : type === 'ok' ? 'var(--green)' : 'var(--cyan)';
+  const div = '<div id="scanlog-live" style="font-size:11px;color:' + c + ';margin-bottom:2px">' + msg + '</div>';
+  if (overwrite) { const live = el.querySelector('#scanlog-live'); if (live) { live.outerHTML = div; return; } }
+  el.innerHTML += div;
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── Filter workers by farm ────────────────────────────────
+function filterByFarm(farmId) {
+  return farmId === 'all' ? workers : workers.filter(w => w.farm_id === farmId);
+}
+
+// ── Miner control panel ───────────────────────────────────
+function openCtrl(wid) {
+  const w = workers.find(x => x.id === wid);
+  if (!w) return;
+  activeWid = wid;
+  const el = document.getElementById('ctrlPanel');
+  if (!el) return;
+  // Fill in miner details
+  const nm = document.getElementById('ctrlName'); if (nm) nm.textContent = w.name;
+  const ip = document.getElementById('ctrlIp');   if (ip) ip.textContent = w.ip;
+  const md = document.getElementById('ctrlModel');if (md) md.textContent = cleanBrandModel(w.brand) + ' ' + cleanBrandModel(w.model);
+  const wi = document.getElementById('ctrlWorkerId');
+  if (wi) {
+    var parts = [];
+    if (w.worker_id && w.worker_id !== '—') parts.push('Worker: ' + w.worker_id);
+    parts.push('S/N: ' + (w.serial || '<span style="color:var(--mute)">not set</span>'));
+    parts.push('MAC: ' + (w.mac || '<span style="color:var(--mute)">not set</span>'));
+    wi.innerHTML = parts.join('<br>')
+      + '<button class="abtn" style="margin-top:6px" onclick="editSerialAndMac(\'' + w.id + '\');refreshCtrl();">&#x270E; Edit S/N &amp; MAC</button>';
   }
+  el.style.display = 'flex';
+
+  // Customer accounts get history, web login and diagnostics only —
+  // no delete from fleet. Ownership of the machine itself is still
+  // enforced server-side on every request; this is just keeping their
+  // UI free of a button they can't use.
+  const dangerSec = document.getElementById('ctrlDangerSec');
+  if (dangerSec) dangerSec.style.display = isCustomer ? 'none' : '';
+
+  // Disable / Enable — one or the other, never both, so the panel
+  // always shows the action that applies to this machine right now.
+  const maintSec = document.getElementById('ctrlMaintSec');
+  if (maintSec) maintSec.style.display = isCustomer ? 'none' : '';
+  const disBtn  = document.getElementById('ctrlDisableBtn');
+  const enBtn   = document.getElementById('ctrlEnableBtn');
+  const disNote = document.getElementById('ctrlDisabledNote');
+  if (disBtn) disBtn.style.display = w.disabled ? 'none' : '';
+  if (enBtn)  enBtn.style.display  = w.disabled ? '' : 'none';
+  if (disNote) {
+    if (w.disabled) {
+      const since = w.disabled_at ? new Date(w.disabled_at).toLocaleString() : 'unknown date';
+      disNote.innerHTML = '<b>Out of service.</b> ' + escHtml(w.disabled_reason || 'No reason recorded')
+        + '<br><span style="color:var(--mute)">Since ' + escHtml(since) + '</span>';
+      disNote.style.display = '';
+    } else {
+      disNote.style.display = 'none';
+    }
+  }
+
+  // Default to 7 days — enough to see a real trend without waiting on
+  // a slow 30-day fetch every time the panel opens.
+  loadMinerHistory(wid, 168);
+}
+function closeCtrl() { const el = document.getElementById('ctrlPanel'); if (el) el.style.display = 'none'; activeWid = null; histState.wid = null; }
+function refreshCtrl() { if (activeWid) openCtrl(activeWid); }
+
+// ── Quick assign ──────────────────────────────────────────
+function quickAssign(cid) {
+  // Previously guarded behind checking for a "assignSheet" overlay
+  // element that doesn't exist anywhere in the page — that guard
+  // always failed silently, so this function never did anything at
+  // all when the button was clicked. The real Assign panel lives
+  // directly on the Customers page itself, no overlay needed.
+  const sel = document.getElementById('assignSel');
+  if (sel) sel.value = cid;
+  renderAssign();
+  const panel = document.getElementById('assignPanel');
+  if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function renderAssign() {
+  const cid = document.getElementById('assignSel')?.value;
+  const p   = document.getElementById('assignPanel');
+  if (!cid || !p) { if (p) p.style.display = 'none'; return; }
+  p.style.display = 'block';
+  const c = customers.find(x => x.id === cid);
+  pendingAssign = [...(c?.miners || [])];
+  redrawAssign(cid);
+}
+function redrawAssign(cid) {
+  const l = document.getElementById('assignList');
+  if (!l) return;
+  l.innerHTML = workers.map(function(w) {
+    var isA  = pendingAssign.includes(w.id);
+    var other = customers.find(function(c){ return c.id !== cid && c.miners.includes(w.id); });
+    return '<div class="assign-row' + (isA ? ' assigned' : '') + '" data-wid="' + w.id + '" data-cid="' + cid + '" data-locked="' + (other?'1':'0') + '">'
+      + '<input type="checkbox" style="accent-color:var(--cyan)" ' + (isA ? 'checked' : '') + (other ? ' disabled' : '') + '/>'
+      + '<span class="sdot ' + sdot(w) + '"></span>'
+      + '<div style="flex:1"><div style="font-size:12px;font-family:Exo 2,sans-serif;font-weight:600">' + w.name + '</div>'
+      + '<div style="font-size:10px;color:var(--mute)">' + w.ip + ' &middot; ' + hrDisplay(w) + '</div></div>'
+      + (other ? '<span class="badge bwn" style="font-size:9px">' + other.name.split(' ')[0] + '</span>' : '') + '</div>';
+  }).join('');
+  l.querySelectorAll('.assign-row').forEach(function(row){
+    if(row.dataset.locked==='1') return;
+    row.addEventListener('click', function(){ toggleAssign(this.dataset.wid, this.dataset.cid); });
+  });
+  var cnt = document.getElementById('assignCount'); if (cnt) cnt.textContent = pendingAssign.length + ' miners selected';
+}
+function toggleAssign(wid, cid) {
+  if (pendingAssign.includes(wid)) pendingAssign = pendingAssign.filter(x => x !== wid);
+  else pendingAssign.push(wid);
+  redrawAssign(cid);
+}
+function applyAssign() {
+  const cid = document.getElementById('assignSel')?.value;
+  const c   = customers.find(x => x.id === cid);
+  if (!c) return;
+
+  // A miner can only belong to one customer — remove it from any
+  // OTHER customer's list before assigning it here
+  customers.forEach(x => { if (x.id !== cid) x.miners = x.miners.filter(id => !pendingAssign.includes(id)); });
+
+  const previouslyAssigned = c.miners || [];
+  c.miners = [...pendingAssign];
+
+  // Keep each worker's OWN cid field in sync — this is what the
+  // Workers page's Customer column and the customer portal actually
+  // read. Without this, an assignment made here would only ever
+  // update the customer's own miners[] list and never show up
+  // anywhere else in the app.
+  pendingAssign.forEach(function(wid){
+    const w = workers.find(function(x){ return x.id === wid; });
+    if (w) w.cid = cid;
+  });
+  previouslyAssigned.forEach(function(wid){
+    if (pendingAssign.includes(wid)) return; // still assigned, leave it
+    const w = workers.find(function(x){ return x.id === wid; });
+    if (w && w.cid === cid) w.cid = ''; // unchecked this time — clear it
+  });
+
+  saveFleet();
+  saveFleetToBackend();
+  toast('✓ ' + c.name + ': ' + pendingAssign.length + ' miners assigned', 'var(--green)');
+  renderCustomers(); renderWorkers(); renderDash();
+}
+
+// ── Overlay / sheet helpers ───────────────────────────────
+function openOverlay(id) { const el = document.getElementById(id); if (el) el.classList.add('show'); }
+function closeOverlay()   { document.querySelectorAll('.overlay.show').forEach(el => el.classList.remove('show')); }
+function openSheet(id)    { const el = document.getElementById(id); if (el) el.classList.add('show'); }
+function closeSheet(id)   { const el = document.getElementById(id); if (el) el.classList.remove('show'); }
+
+// ── Toast notification ────────────────────────────────────
+// (stub toast removed — full version defined later)
+
+// ── Nav count badge ───────────────────────────────────────
+function updateNavCount() {
+  const b = document.getElementById('workerNavCount');
+  if (b) b.textContent = workers.length > 0 ? workers.length : '';
+}
+
+// ── checkApiSetup ─────────────────────────────────────────
+function checkApiSetup() {
+  if (API_BASE.includes('localhost')) {
+    const bar = document.createElement('div');
+    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#ff2d55;color:#fff;padding:10px 16px;z-index:9000;display:flex;align-items:center;gap:10px;font-size:12px;font-family:Exo 2,sans-serif';
+    const inp = document.createElement('input');
+    inp.id = 'quickUrl'; inp.placeholder = 'https://ekalavya-backend.up.railway.app';
+    inp.style.cssText = 'flex:1;padding:5px 10px;border-radius:4px;border:none;font-size:11px;';
+    const saveBtn = document.createElement('button');
+    saveBtn.textContent = 'Save';
+    saveBtn.style.cssText = 'padding:5px 12px;border-radius:4px;border:none;background:#060a0f;color:#fff;cursor:pointer;font-weight:700';
+    saveBtn.onclick = function(){ setApiBase(document.getElementById('quickUrl').value); };
+    bar.innerHTML = '\u26a0 <strong>Setup needed:</strong> Enter your Railway URL \u2192 ';
+    bar.appendChild(inp); bar.appendChild(saveBtn);
+    document.body.appendChild(bar);
+  }
+}
+
+function setApiBase(v) {
+  if (v && v.trim()) {
+    v = sanitizeUrl(v.trim());
+    localStorage.setItem('ekl_api_base', v);
+    window.location.reload();
+  }
+}
+
+// ── Fetch agents ──────────────────────────────────────────
+// (stub fetchAgents removed — full version defined later)
+
+// (stub updateAgentUI removed — full version defined later)
+
+// ── Trigger scan from agents page ────────────────────────
+function triggerScan(farmId) {
+  const agent = agents.find(a => a.id === farmId);
+  if (!agent) return;
+  nav('agents', null);
+  setRemoteAccessTab('scanner');
+  setTimeout(() => {
+    const sv = document.getElementById('scanVia');
+    if (sv) { sv.value = farmId; onAgentSelect(sv); }
+  }, 200);
+}
+
+// ── Agent config panel ────────────────────────────────────
+function getAgentSubnets(farmId) { try { return JSON.parse(localStorage.getItem('agent_subnets_' + farmId) || '[]'); } catch { return []; } }
+function setAgentSubnets(farmId, subnets) {
+  localStorage.setItem('agent_subnets_' + farmId, JSON.stringify(subnets));
+  const a = agents.find(x => x.id === farmId); if (a) a.subnet = subnets.join(',');
+  const token = localStorage.getItem('ekl_token');
+  if (token && API_BASE && !API_BASE.includes('localhost')) {
+    fetch(API_BASE + '/api/fleet/agent-config', { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body:JSON.stringify({farm_id:farmId, subnets, name:a?.name||farmId}) }).catch(() => {});
+  }
+}
+function openAgentConfig(farmId, farmName, currentSubnet) {
+  _cfgAgentId = farmId;
+  const t = document.getElementById('cfgAgentTitle'); if (t) t.textContent = '&#x2699; ' + farmName + ' — IP Ranges';
+  const saved = getAgentSubnets(farmId);
+  const display = saved.length > 0 ? saved : (currentSubnet ? currentSubnet.split(',') : []);
+  const el = document.getElementById('cfgSubnets'); if (el) el.value = display.join('\n');
+  const th16El = document.getElementById('cfgTH16'); if (th16El) th16El.value = localStorage.getItem('th16_sensors_' + farmId) || '';
+  const panel = document.getElementById('agentScanConfig'); if (panel) { panel.style.display = 'block'; panel.scrollIntoView({behavior:'smooth'}); }
+}
+function appendCfgSubnet(s) { const el = document.getElementById('cfgSubnets'); if (!el) return; const cur = el.value.trim(); if (!cur.includes(s)) el.value = cur ? (cur + '\n' + s) : s; }
+function saveAgentSubnets() {
+  if (!_cfgAgentId) return;
+  const raw = document.getElementById('cfgSubnets')?.value || '';
+  const subnets = raw.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
+  if (!subnets.length) { alert('Enter at least one IP range'); return; }
+  setAgentSubnets(_cfgAgentId, subnets);
+  const th16 = document.getElementById('cfgTH16')?.value.trim();
+  if (th16) localStorage.setItem('th16_sensors_' + _cfgAgentId, th16);
+  toast('✓ Config saved', 'var(--green)');
+}
+function scanFromConfig() {
+  if (!_cfgAgentId) return;
+  saveAgentSubnets();
+  const subnets = getAgentSubnets(_cfgAgentId);
+  const sr = document.getElementById('scanRange'); if (sr) sr.value = subnets.join('\n');
+  const sv = document.getElementById('scanVia'); if (sv) sv.value = _cfgAgentId;
+  nav('agents', null);
+  setRemoteAccessTab('scanner');
+  toast('Agent and ranges loaded — click Scan', 'var(--cyan)');
+}
+
+// ── onAgentSelect ─────────────────────────────────────────
+function onAgentSelect(sel) {
+  // Accept element, or fall back to reading the dropdown directly
+  if (!sel || typeof sel.value === 'undefined') sel = document.getElementById('scanVia');
+  if (!sel) return;
+  const farmId = sel.value;
+  const el = document.getElementById('scanRange');
+  if (!farmId || farmId === 'local') { if (el) el.value = ''; return; }
+  if (el) el.value = '';
+  const saved = getAgentSubnets(farmId);
+  const agent = agents.find(a => a.id === farmId);
+  if (saved.length > 0) el.value = saved.join('\n');
+  else if (agent?.subnet && agent.subnet !== '192.168.1.0/24') el.value = agent.subnet.split(',').join('\n');
+  updateScanAgentBanner(farmId, agent);
+}
+function updateScanAgentBanner(farmId, agent) {
+  let b = document.getElementById('scanAgentBanner');
+  if (!b) { b = document.createElement('div'); b.id = 'scanAgentBanner'; b.style.cssText = 'border-radius:6px;padding:8px 12px;font-size:11px;margin-bottom:10px;display:flex;align-items:center;gap:8px'; const ref = document.getElementById('scanRange'); if (ref?.parentElement) ref.parentElement.insertBefore(b, ref); }
+  if (!agent) { b.style.display = 'none'; return; }
+  b.style.display = 'flex';
+  b.style.background = agent.online ? 'rgba(0,255,157,.06)' : 'rgba(255,45,85,.06)';
+  b.style.border = '1px solid ' + (agent.online ? 'rgba(0,255,157,.3)' : 'rgba(255,45,85,.3)');
+  b.innerHTML = '<span class="sdot ' + (agent.online ? 'on' : 'off') + '"></span><span style="font-family:Exo 2,sans-serif;font-weight:700;color:var(--txt)">' + agent.name + '</span><span style="color:var(--mute)">' + (agent.online ? 'Online' : 'OFFLINE') + '</span><span style="font-family:Share Tech Mono,monospace;font-size:10px;color:var(--mute);margin-left:auto">' + (agent.subnet || '') + '</span>';
+}
+
+// ── Sensor reading storage ────────────────────────────────
+function loadSensors() { try { const r = localStorage.getItem(SENSOR_KEY); if (r) sensorReadings = JSON.parse(r); } catch {} }
+function saveSensors() { try { localStorage.setItem(SENSOR_KEY, JSON.stringify(sensorReadings)); } catch {} }
+function getSensorReading(farmId) { return sensorReadings[farmId] || null; }
+function setSensorReading(farmId, data) { sensorReadings[farmId] = {...data, updated: new Date().toISOString()}; saveSensors(); }
+
+function initSensors() { loadSensors(); }
+
+// ── Sensor MAC config (per farm) ─────────────────────────
+function getSensorMacs(farmId){
+  try { return JSON.parse(localStorage.getItem('sensor_macs_' + farmId) || '[]'); } catch { return []; }
+}
+function getSensorIpRange(farmId){
+  return localStorage.getItem('sensor_iprange_' + farmId) || '';
+}
+function setSensorIpRange(farmId, range){
+  if (range) localStorage.setItem('sensor_iprange_' + farmId, range);
+  else localStorage.removeItem('sensor_iprange_' + farmId);
+}
+function setSensorMacs(farmId, macs){
+  localStorage.setItem('sensor_macs_' + farmId, JSON.stringify(macs));
+  const token = localStorage.getItem('ekl_token');
+  if (token && API_BASE && !API_BASE.includes('localhost')) {
+    fetch(API_BASE + '/api/sensors/agent-config', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body: JSON.stringify({ farm_id: farmId, macs: macs })
+    }).catch(function(){});
+  }
+}
+
+function renderSensorEntryGrid() {
+  const el = document.getElementById('sensorMacGrid');
+  if (!el) return;
+  const farms = agents.length > 0 ? agents : [{id:'ghummadh',name:'Ghummadh'},{id:'alhayer',name:'Al Hayer'},{id:'hydro',name:'Hydro'}];
+
+  el.innerHTML = farms.map(function(f) {
+    const r = getSensorReading(f.id) || {};
+    const macs = getSensorMacs(f.id);
+    const online = agents.find(function(a){ return a.id === f.id; });
+    return '<div style="background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:12px">'
+      + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px">'
+      +   '<span class="sdot ' + (online && online.online ? 'on' : 'off') + '"></span>'
+      +   '<span style="font-family:Exo 2,sans-serif;font-weight:700;font-size:12px;color:var(--txt)">' + f.name + '</span>'
+      +   (r.updated ? '<span style="font-size:9px;color:var(--mute);font-weight:400;margin-left:auto">' + new Date(r.updated).toLocaleTimeString() + '</span>' : '')
+      + '</div>'
+
+      // Live readings display
+      + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;text-align:center">'
+      +   '<div><div style="font-family:Share Tech Mono,monospace;font-size:26px;color:var(--warn)">' + (r.temp != null ? r.temp : '—') + '</div>'
+      +   '<div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px">°C Temp</div></div>'
+      +   '<div><div style="font-family:Share Tech Mono,monospace;font-size:26px;color:var(--cyan)">' + (r.humidity != null ? r.humidity : '—') + '</div>'
+      +   '<div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px">% Humidity</div></div>'
+      + '</div>'
+
+      // IP Range input
+      + '<div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">IP Range <span style="text-transform:none;color:var(--cyan)">(optional — scans this range)</span></div>'
+      + '<input id="iprange_' + f.id + '" placeholder="192.168.13.1-255" value="' + (getSensorIpRange(f.id)||'') + '" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:6px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none;margin-bottom:8px">'
+
+      // MAC address input
+      + '<div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Sensor MAC Address' + (macs.length > 1 ? 'es' : '') + '</div>'
+      + '<textarea id="mac_' + f.id + '" rows="2" placeholder="a4:cf:12:ab:cd:ef" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:6px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none;resize:vertical;margin-bottom:8px">' + macs.join('\n') + '</textarea>'
+
+      + '<div style="display:flex;gap:6px">'
+      +   '<button class="btn btn-sm btn-g sensor-save-btn" data-fid="' + f.id + '" data-fname="' + f.name + '">&#x1F4BE; Save</button>'
+      +   '<button class="btn btn-sm sensor-scan-btn" data-fid="' + f.id + '" data-fname="' + f.name + '">&#x1F50D; Scan Now</button>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+
+  el.querySelectorAll('.sensor-save-btn').forEach(function(b){
+    b.addEventListener('click', function(){ saveSensorMacs(this.dataset.fid, this.dataset.fname); });
+  });
+  el.querySelectorAll('.sensor-scan-btn').forEach(function(b){
+    b.addEventListener('click', function(){ scanSensorNow(this.dataset.fid, this.dataset.fname); });
   });
 }
 
-async function pollLanli() {
-  if (!lanli) return;
-  try {
-    const readings = await lanli.readAllCabinets();
-    if (readings) {
-      console.log('[LANLI] Poll complete:', Object.keys(readings).length, 'cabinets');
-      send({ type: 'lanli_data', readings, farm_id: FARM_ID, timestamp: new Date().toISOString() });
-      await postJson(restUrl('/api/scada/rtu-data'), { farm_id: FARM_ID, readings }).catch(() => {});
-    }
-  } catch(e) {
-    console.error('[LANLI] Poll error:', e.message);
-  }
+function saveSensorMacs(farmId, farmName){
+  const raw = document.getElementById('mac_' + farmId)?.value || '';
+  const macs = raw.split(/[,\n]+/).map(function(s){ return s.trim(); }).filter(Boolean);
+  setSensorMacs(farmId, macs);
+  const range = document.getElementById('iprange_' + farmId)?.value.trim() || '';
+  setSensorIpRange(farmId, range);
+  toast('✓ Sensor config saved for ' + farmName, 'var(--green)');
 }
 
-// ── Connect to server ──────────────────────────────────────
-// Only ever one reconnect in flight. Two paths can ask for one (a close
-// event and a forced terminate), and without this guard they each start
-// their own chain — the agent then opens several sockets, the backend
-// keeps only the newest, and the extra ones closing look exactly like
-// disconnections.
-function scheduleReconnect(why) {
-  if (reconnectScheduled) return;
-  reconnectScheduled = true;
-  console.log(`[WARN] ${why} — retry in ${reconnectMs/1000}s`);
-  setTimeout(() => { reconnectScheduled = false; connect(); }, reconnectMs);
-  reconnectMs = Math.min(reconnectMs * 1.5, 30000);
-}
+function scanSensorNow(farmId, farmName){
+  const macRaw = document.getElementById('mac_' + farmId)?.value || '';
+  const macs   = macRaw.split(/[,\n]+/).map(function(s){ return s.trim(); }).filter(Boolean);
+  const range  = document.getElementById('iprange_' + farmId)?.value.trim() || '';
 
-function connect() {
-  lastConnectAttemptAt = Date.now();
-  const myGen = ++wsGeneration; // stale sockets must not drive reconnects
-  console.log('\n╔══════════════════════════════════════════╗');
-  console.log('║     EKALAVYA — FARM AGENT v1.0.0        ║');
-  console.log('╠══════════════════════════════════════════╣');
-  console.log(`║  Farm   : ${FARM_NAME.padEnd(30)}║`);
-  console.log(`║  ID     : ${FARM_ID.padEnd(30)}║`);
-  console.log(`║  Subnet : ${SUBNETS.join(',').slice(0,30).padEnd(30)}║`);
-  console.log('╚══════════════════════════════════════════╝\n');
-  console.log(`[INFO] Connecting to ${SERVER}...`);
+  if (macs.length === 0 && !range) { toast('Enter a MAC address, an IP range, or both', 'var(--warn)'); return; }
+  saveSensorMacs(farmId, farmName);
 
-  ws = new WebSocket(SERVER, {
-    headers: {
-      'x-agent-key': AGENT_KEY, 'x-farm-id': FARM_ID,
-      'x-farm-name': FARM_NAME, 'x-subnet': SUBNETS.join(','),
-      'x-hostname': os.hostname(), 'x-agent-version': '1.0.0',
-    }
-  });
+  const token = localStorage.getItem('ekl_token');
+  if (!token) { toast('Not logged in', 'var(--red)'); return; }
 
-  let pongTimeout = null;
-  let pingInterval = null;
-
-  // ── Keepalive: detect a dead connection even when no close/error
-  // event ever arrives (common after a server-side restart/redeploy) ──
-  function heartbeatPing() {
-    clearTimeout(pongTimeout);
-    try { ws.ping(); } catch(e) {}
-    // Same 32s overall tolerance as before, but checked far more often
-    // — if Railway's own network layer enforces an idle-connection
-    // timeout shorter than our old 25s/30s pacing, more frequent
-    // traffic keeps the connection active often enough that it never
-    // gets the chance to trigger, regardless of the exact cause.
-    pongTimeout = setTimeout(() => {
-      console.log('[WARN] No pong from server in 32s — forcing reconnect');
-      try { ws.terminate(); } catch(e) {}
-    }, 32000);
+  const body = { farm_id: farmId };
+  if (macs.length > 0) body.macs = macs;
+  if (range) {
+    const ips = expandIPRange(range);
+    if (ips.length === 0) { toast('Invalid IP range format', 'var(--red)'); return; }
+    body.ips = ips;
   }
 
-  // A pong only proves the socket is alive at the network level, which
-  // is not the same as the backend knowing about us — see the note on
-  // lastServerMsgAt above. So it clears the pong timer and nothing more.
-  ws.on('pong', () => { clearTimeout(pongTimeout); });
+  const msg = (body.ips && body.macs) ? 'Scanning ' + farmName + ' and matching MAC...'
+            : body.macs ? 'Resolving MAC for ' + farmName + '...'
+            : 'Scanning ' + farmName + ' for sensors...';
+  toast(msg, 'var(--cyan)');
 
-  let heartbeatMsgInterval = null, lanliInterval = null, ackCheckInterval = null;
-
-  ws.on('open', () => {
-    reconnectMs = 3000;
-    lastServerMsgAt = Date.now(); // start the ack window fresh
-    console.log(`[INFO] ✓ Connected | Farm: ${FARM_NAME}`);
-
-    // The real health check: we send a heartbeat every 8s and the
-    // backend acks every one of them while we're registered. If acks
-    // stop arriving while the socket still reads as open, the backend
-    // has lost track of this agent and only a fresh connection (which
-    // re-sends the registration headers) will fix it.
-    ackCheckInterval = setInterval(() => {
-      if (!ws || ws.readyState !== 1) return;
-      const silentFor = Date.now() - lastServerMsgAt;
-      if (silentFor > 45000) {
-        console.log(`[WARN] Socket is open but the server has not replied in ${Math.round(silentFor/1000)}s — it no longer knows this agent. Reconnecting to re-register.`);
-        try { ws.terminate(); } catch(e) {}
-      }
-    }, 10000);
-    pollTimer = setInterval(pollMiners, POLL_MS);
-    heartbeatMsgInterval = setInterval(() => send({ type:'heartbeat', farm_id:FARM_ID }), 8000);
-    // Ping every 8s; only reconnect if truly unresponsive for 32s
-    pingInterval = setInterval(heartbeatPing, 8000);
-    setTimeout(pollMiners, 5000);
-    // Start Lanli RS485 polling if enabled
-    if (LANLI_ENABLED && lanli) {
-      lanliInterval = setInterval(pollLanli, 30000);
-      setTimeout(pollLanli, 8000);
+  fetch(API_BASE + '/api/sensors/discover', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','Authorization':'Bearer '+token},
+    body: JSON.stringify(body)
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    if (d.ok) {
+      toast('✓ Sent to agent — reading in ~15-30s', 'var(--green)');
+      setTimeout(function(){ fetchSensorFromBackend(farmId); }, 20000);
+      setTimeout(function(){ fetchSensorFromBackend(farmId); }, 60000);
+      setTimeout(function(){ fetchSensorFromBackend(farmId); renderSensorEntryGrid(); }, 120000);
+    } else {
+      toast('✗ ' + (d.error || 'Failed'), 'var(--red)');
     }
-  });
-
-  ws.on('message', raw => {
-    // Any message from the backend proves it's still talking to us at
-    // the application layer — this is the signal the health check above
-    // and the watchdog both rely on.
-    lastServerMsgAt = Date.now();
-    try {
-      const msg = JSON.parse(raw.toString());
-      if (msg.type === 'welcome') {
-        console.log(`[INFO] ${msg.message}`);
-      } else if (msg.type === 'sensor_read_now') {
-        console.log('[TH16] Manual read triggered');
-        // Re-poll all known sensors immediately
-        th16.startLivePolling(th16.getDiscovered().length > 0 ? th16.getDiscovered() : parseTHEnv(), 30000, onSensorReading);
-      } else if (msg.type === 'webui_proxy_request') {
-        handleWebuiProxyRequest(msg);
-      } else if (msg.type === 'action_request') {
-        handleActionRequest(msg);
-      } else if (msg.type === 'sensor_discover') {
-        const { ips, macs, session_id } = msg;
-        send({ type:'sensor_discover_start', session_id, farm_id: FARM_ID });
-
-        const doDiscover = async () => {
-          let found = [];
-          if (ips && ips.length > 0 && macs && macs.length > 0) {
-            // Combined — scan the IP range and confirm the real sensor via MAC.
-            // Best option when the sensor's MAC isn't in the ARP cache yet
-            // (e.g. it's on a subnet the agent hasn't talked to before).
-            console.log(`[TH16] Scanning ${ips.length} IPs, matching against MAC(s): ${macs.join(', ')}`);
-            found = await th16.discoverByRangeAndMac(ips, macs, true);
-          } else if (macs && macs.length > 0) {
-            // MAC-only — relies on the ARP cache (fast, but only works if
-            // the PC has already exchanged traffic with the device)
-            console.log(`[TH16] Resolving MACs: ${macs.join(', ')}`);
-            found = await th16.discoverByMAC(macs);
-          } else if (ips && ips.length > 0) {
-            // IP range scan only — no MAC to confirm against
-            console.log(`[TH16] Scanning ${ips.length} IPs`);
-            found = await th16.discoverInRange(ips, 20);
-          }
-          send({ type:'sensor_discover_done', session_id, farm_id: FARM_ID, found });
-          found.filter(s=>s.temp!=null||s.humidity!=null).forEach(s => onSensorReading(s.ip, s));
-        };
-        doDiscover().catch(e => console.error('[TH16] Discovery error:', e.message));
-      } else if (msg.type === 'hmi_capture') {
-        console.log('[HMI] Screenshot requested');
-        captureHmiScreenshot();
-      } else if (msg.type === 'lanli_list_ports') {
-        if (lanli) {
-          lanli.listPorts().then(ports => send({ type:'lanli_ports', ports, farm_id:FARM_ID }));
-        }
-      } else if (msg.type === 'lanli_read_now') {
-        console.log('[LANLI] Manual read triggered');
-        pollLanli();
-      } else if (msg.type === 'scan') {
-        // Support multi-subnet: subnets[] array or single subnet string
-        const subnetList = Array.isArray(msg.subnets) && msg.subnets.length > 0
-          ? msg.subnets
-          : (msg.subnet ? [msg.subnet] : SUBNETS);
-        console.log(`[SCAN] ${subnetList.length} subnet(s): ${subnetList.join(', ')}`);
-        scanMultipleSubnets(msg.session_id, subnetList, msg.ports, msg.timeout);
-      } else if (msg.type === 'fetch_log') {
-        console.log(`[LOG] Fetching from ${msg.ip}`);
-        fetchMinerLog(msg.ip).then(log => {
-          send({ type:'log_result', ip:msg.ip, request_id:msg.request_id, log: log||'Could not fetch log from miner.' });
-        });
-      } else if (msg.type === 'heartbeat_ack') {
-        // silent
-      } else {
-        console.log(`[MSG] ${msg.type}`);
-      }
-    } catch(e) { console.error('[MSG] Error:', e.message); }
-  });
-
-  ws.on('close', code => {
-    clearInterval(pingInterval);
-    clearInterval(heartbeatMsgInterval);
-    clearInterval(lanliInterval);
-    clearInterval(ackCheckInterval);
-    clearTimeout(pongTimeout);
-
-    // A close from a socket that's already been replaced must not
-    // schedule anything — the newer connection owns the reconnect path.
-    // Its timers are its own; only clear the shared poll timer if this
-    // is still the current connection.
-    if (myGen !== wsGeneration) {
-      console.log(`[INFO] Old connection closed (${code}) — a newer one is already active`);
-      return;
-    }
-    clearInterval(pollTimer);
-
-    // 4003: the backend already has an agent connected for this FARM_ID.
-    // Reconnecting straight away just resumes the tug-of-war that made
-    // both agents trade places every few seconds, so back off hard and
-    // say plainly what needs fixing.
-    if (code === 4003) {
-      console.error('');
-      console.error('  ════════════════════════════════════════════════════════');
-      console.error('  DUPLICATE AGENT — another agent is already connected');
-      console.error(`  using FARM_ID "${FARM_ID}".`);
-      console.error('');
-      console.error('  Two agents sharing one FARM_ID knock each other offline');
-      console.error('  in a loop. Only one may run per farm.');
-      console.error('');
-      console.error('    • Check this PC for a second agent window, or for');
-      console.error('      agent.js running alongside update-check.js');
-      console.error('    • Or give the other machine its own FARM_ID in .env');
-      console.error('');
-      console.error('  Standing down for 5 minutes, then trying once more.');
-      console.error('  ════════════════════════════════════════════════════════');
-      console.error('');
-      reconnectMs = 5 * 60 * 1000;
-      scheduleReconnect('Duplicate FARM_ID');
-      return;
-    }
-
-    scheduleReconnect(`Disconnected (${code})`);
-  });
-
-  ws.on('error', err => console.error(`[ERROR] ${err.message}`));
+  })
+  .catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
 }
 
-connect();
+// ── Fleet stat for settings page ─────────────────────────
+function updateFleetStat() {
+  const el = document.getElementById('fleetStoreStat');
+  if (!el) return;
+  el.textContent = workers.length + ' workers · ' + customers.length + ' customers';
+  const token = localStorage.getItem('ekl_token');
+  if (token 
