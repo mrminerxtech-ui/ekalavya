@@ -109,10 +109,12 @@ require('./services/earnings').start();
 // answerable from live readings alone.
 require('./services/insights').start();
 
-// Warns admins on Telegram (text + a spoken voice note) when a single
-// site has more than 10 machines offline, excluding disabled ones. Does
-// nothing if TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID aren't set — see
-// services/alerts.js for what those are and how to get them.
+// Starts the site-level offline-count checker (warns admins on Telegram,
+// text + a spoken voice note, when a single site has more than 10
+// machines offline, excluding disabled ones) — added onto the existing
+// alerts.js rather than replacing it, so its per-machine
+// checkWorkerThresholds()/raiseAlert() functions are untouched. Does
+// nothing if TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID aren't set.
 require('./services/alerts').start();
 
 app.get('/health', (_, res) => res.json({
