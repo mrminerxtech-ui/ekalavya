@@ -560,7 +560,18 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
                    farm_id: moved ? farmId : old.farm_id,
                    name: newName,
                    model:     keepIfBetter(m.model,     old.model,     ['Unknown']),
-                   brand:     keepIfBetter(m.brand,      old.brand,     ['']),
+                   // getBrand() returns the literal string 'Unknown' (not
+                   // '') when it can't identify a brand from the model —
+                   // so a transient poll miss that briefly failed to
+                   // re-detect the model (this ElphaPEX's server can only
+                   // serve one connection at a time, and getMinerInfo now
+                   // fires 3 HTTP requests at it per cycle) computed
+                   // brand='Unknown' too, and this list not including it
+                   // meant that got treated as a real, better value —
+                   // stomping the correct 'ElphaPEX' straight back to
+                   // 'Unknown' even though model itself, protected against
+                   // exactly this, stayed correct on the same row.
+                   brand:     keepIfBetter(m.brand,      old.brand,     ['', 'Unknown']),
                    worker:    keepIfBetter(m.worker,     old.worker,    ['—']),
                    worker_id: keepIfBetter(m.worker_id,  old.worker_id, ['—']),
                    pool:      keepIfBetter(m.pool,       old.pool,      ['—']),
