@@ -1,8 +1,9 @@
 {
-  "version": "1.1.34",
-  "released_at": "2026-09-25T15:30:00Z",
+  "version": "1.1.35",
+  "released_at": "2026-09-25T15:45:00Z",
   "min_node_version": "16.0.0",
   "changelog": [
+    "Fix the ElphaPEX at 19.3.19.46 showing hashrate in the wrong unit (0.13 TH/s instead of ~130 GH/s-scale — actually its true ~10-14 GH/s displayed 1000x too small) and the wrong algo badge (SHA-256 instead of Scrypt): getAlgo() never recognized ElphaPEX's own 'DG1+' naming at all (only matched 'l' immediately followed by a digit, which 'dg1+' doesn't contain), so it silently fell through to the SHA-256 default — and that wrong algo is exactly what decides whether hashrate is displayed in GH/s or TH/s. Also now reads temp and fan from this unit's own /cgi-bin/stats.cgi (confirmed: chain[].temp_chip in millidegrees, fan[] in RPM with one slot known to report a bogus value that's now sanity-range-checked out), since — same as hashrate before this — the cgminer TCP path those were read from is never answered by this firmware at all.",
     "Root-caused the ElphaPEX at 19.3.19.46 still showing offline with no hashrate despite model/brand/worker now being correctly detected: this firmware never answers the cgminer TCP port, so the ONLY hashrate source in the code was scraping a 'hashrate by nonce is: X Mhash/s' phrase out of the boot log — and a machine with hashrate stuck at 0 gets forced to status:'offline' regardless of how well everything else was identified. Confirmed directly against this unit's own /cgi-bin/summary.cgi and /cgi-bin/stats.cgi (fetched over plain HTTP, same lowercase-field pattern as pools.cgi) that it reports rate_5s/rate_avg in MH/s there — now read as the primary hashrate source, with the boot-log scrape kept only as a last-resort fallback. Also removed the now-resolved [EP-DEBUG2] diagnostic logging.",
     "Fix the ElphaPEX at 19.3.19.46 (and any other HTTP-only, one-connection-at-a-time unit) showing up in a manual 'Scan Network' but never in the recurring 30s poll: v1.1.32's isAsic() re-verification, needed to stop routers/cameras/printers being swept in as miners, ran its full up-to-6-request signature check against a port-80 device EVERY cycle, forever. Piling those extra probes in front of the one request that actually matters was enough to starve it out on a server that can only handle one connection at a time — confirmed true of at least this ElphaPEX — so the recurring poll kept losing the race that an isolated one-off scan usually won by luck. A unit that already passed isAsic() is now trusted for 10 minutes before being re-checked, so routine cycles skip straight to the real data pull; a device that changes identity (e.g. a router taking over an old miner's IP via DHCP) still gets caught within that same window rather than being trusted forever.",
     "Fix a regression from v1.1.31: widening the recurring poll to also accept port 80 (needed for the ElphaPEX, which doesn't run the cgminer TCP service at all) had no verification step, so literally any device answering on port 80 — a router, a camera, a printer — got swept in and treated as a miner. isAsic() (the same real signature check the manual 'Scan Network' already used) now gates the port-80 case; a port-4028 hit is still accepted directly since that's already a reliable enough signal on its own. Also taught isAsic() to recognize ElphaPEX's own /cgi-bin/pools.cgi signature, since it previously matched none of the existing cgminer/Antminer/Avalon/Whatsminer checks and would have been wrongly rejected by this same verification step.",
@@ -18,8 +19,8 @@
   "files": [
     {
       "name": "agent.js",
-      "sha256": "4d08c18f5c58f873d492919989d7f36421c61c6334c4404c4c85f15edc6c7360",
-      "size": 89451
+      "sha256": "5caca9c398f37c892ad2252a589646d3f5a79b25ffe3b833384b25de37e17c2a",
+      "size": 91621
     },
     {
       "name": "sonoff-th.js",
