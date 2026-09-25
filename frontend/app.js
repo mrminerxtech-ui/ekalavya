@@ -2454,11 +2454,24 @@ function loadFleetFromBackend(cb) {
         if (d?.ok && d.workers?.length > 0) {
           let added = 0, updated = 0;
           d.workers.forEach(bw => {
-            const existing = workers.find(lw => lw.ip === bw.ip);
+            // Match by id first, IP only as a fallback. Matching by IP
+            // alone broke once the server started merging duplicates on
+            // its own (services/dedupe.js): the surviving record keeps its
+            // OLD id but moves to the NEW ip, so an IP match landed on the
+            // local copy of the record that was just deleted, while the
+            // local copy of the survivor kept the old ip forever — and
+            // the next load then added the survivor a second time.
+            const existing = workers.find(lw => lw.id === bw.id) || workers.find(lw => lw.ip === bw.ip);
             if (!existing) {
               workers.push(bw); added++;
             } else if (!existing.disabled) {
               let changedThis = false;
+              // The server's poll is what knows where a machine is now.
+              if (existing.id === bw.id && bw.ip && existing.ip !== bw.ip) {
+                existing.ip = bw.ip; changedThis = true;
+                if (bw.farm_id) existing.farm_id = bw.farm_id;
+                if (bw.farm) existing.farm = bw.farm;
+              }
               // Sync live status AND readings from the server's poll-based
               // record (which reflects whether the agent actually saw this
               // machine in its last scan) — but never touch user-set
