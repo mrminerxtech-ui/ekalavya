@@ -1151,6 +1151,153 @@ async function mergeWorkers(keepId, discardId) {
   return { ok: true, worker: merged };
 }
 
+// ── Automatic duplicate merging (used by services/dedupe.js) ─────────
+// The decision of WHAT is a duplicate lives in dedupe.js; these are the
+// database pieces it needs. Postgres only — the file fallback has no
+// metric history to prove two records were never live at the same time,
+// and without that proof nothing is merged automatically.
+
+// Per-record history from miner_metrics: when it was first recorded, and
+// the last time it was seen hashing. Used to tell "old record went dark,
+// then a new record appeared" (a duplicate) apart from "two machines that
+// have both been running for weeks" (not a duplicate).
+async function getWorkerActivityMeta(ids) {
+  if (useFallback || !pool || !ids || !ids.length) return {};
+  try {
+    const r = await pool.query(
+      `SELECT worker_id,
+              MIN(slot) AS first_seen,
+              MAX(slot) FILTER (WHERE status IN ('online','warn')) AS last_online
+         FROM miner_metrics WHERE worker_id = ANY($1) GROUP BY worker_id`,
+      [ids]
+    );
+    const out = {};
+    r.rows.forEach(row => { out[row.worker_id] = { first_seen: row.first_seen, last_online: row.last_online }; });
+    return out;
+  } catch(e) {
+    console.error('[DB] getWorkerActivityMeta error:', e.message);
+    return null;   // null = "couldn't check" — caller must treat as unsafe
+  }
+}
+
+// How many 10-minute slots BOTH records were recorded as hashing. One
+// machine can't be live twice at once, so anything above zero proves
+// these are two different machines, whatever IDs they share.
+async function countOnlineOverlap(idA, idB) {
+  if (useFallback || !pool) return null;
+  try {
+    const r = await pool.query(
+      `SELECT COUNT(*)::int AS n
+         FROM miner_metrics a JOIN miner_metrics b ON a.slot = b.slot
+        WHERE a.worker_id = $1 AND b.worker_id = $2
+          AND a.status IN ('online','warn') AND b.status IN ('online','warn')`,
+      [idA, idB]
+    );
+    return r.rows[0] ? r.rows[0].n : 0;
+  } catch(e) {
+    console.error('[DB] countOnlineOverlap error:', e.message);
+    return null;
+  }
+}
+
+// Folds several records of ONE machine into one, in a single transaction:
+//   keeperId — whose identity survives (id, name, customer, history)
+//   liveId   — the record currently being polled; its live readings
+//              (ip, status, hashrate, temp, pool...) are what's true now
+//   removeIds — every other record in the group; deleted afterwards
+// keeperId and liveId may be the same record. Rows are re-read under
+// FOR UPDATE and re-checked, so a poll that changed things in between
+// (the stale copy came back online, the live one dropped) aborts the
+// merge rather than acting on a stale decision.
+const IDENTITY_FILL_FIELDS = ['mac', 'serial', 'worker_id', 'worker', 'pool', 'model', 'brand'];
+const IDENTITY_BLANKS = ['', '—', 'Unknown'];
+async function applyAutoMerge(keeperId, liveId, removeIds) {
+  if (useFallback || !pool) return { ok: false, error: 'database not available' };
+  const allIds = Array.from(new Set([keeperId, liveId].concat(removeIds || [])));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query(`SELECT id, data FROM workers WHERE id = ANY($1) FOR UPDATE`, [allIds]);
+    const byId = new Map(r.rows.map(row => [row.id, row.data]));
+    if (allIds.some(id => !byId.has(id))) { await client.query('ROLLBACK'); return { ok: false, error: 'a record changed or vanished — skipped' }; }
+
+    const keeper = byId.get(keeperId);
+    const live   = byId.get(liveId);
+    const isLive = w => w.status === 'online' || w.status === 'warn';
+    if (!isLive(live)) { await client.query('ROLLBACK'); return { ok: false, error: 'live record went offline — skipped' }; }
+    const others = allIds.filter(id => id !== liveId).map(id => byId.get(id));
+    if (others.some(isLive)) { await client.query('ROLLBACK'); return { ok: false, error: 'a stale copy came back online — skipped' }; }
+    if ([keeper, live].concat(others).some(w => w.disabled)) { await client.query('ROLLBACK'); return { ok: false, error: 'a record is disabled — skipped' }; }
+
+    // Start from the keeper's identity, lay the live record's current
+    // readings over it.
+    const merged = { ...keeper };
+    LIVE_WORKER_FIELDS.forEach(f => { if (live[f] !== undefined) merged[f] = live[f]; });
+    merged.id = keeper.id;
+    // ...but never let a blank/placeholder on the live side wipe out a real
+    // identifier the keeper (or any other copy) already had.
+    const group = [keeper, live].concat(others);
+    IDENTITY_FILL_FIELDS.forEach(f => {
+      if (merged[f] && !IDENTITY_BLANKS.includes(merged[f])) return;
+      const found = group.map(w => w[f]).find(v => v && !IDENTITY_BLANKS.includes(v));
+      if (found) merged[f] = found;
+    });
+    // Customer assignment: dedupe.js already refused groups with two
+    // different customers, so at most one distinct value exists here.
+    if (!merged.cid) { const c = group.map(w => w.cid).find(Boolean); if (c) merged.cid = c; }
+    // A name that's just the OLD ip with dashes ("19-3-19-40") is an
+    // auto-default, not something a person typed — carrying it over would
+    // show the wrong address as the machine's name forever.
+    const ipName = ip => ip ? String(ip).replace(/\./g, '-') : null;
+    if (!merged.name || merged.name === '—' || merged.name === ipName(keeper.ip)) {
+      merged.name = (live.name && live.name !== '—' && live.name !== ipName(keeper.ip)) ? live.name : (ipName(live.ip) || merged.name);
+    }
+    ['mac_manual', 'serial_manual'].forEach(f => { if (group.some(w => w[f])) merged[f] = true; });
+    merged.merged_from = Array.from(new Set((keeper.merged_from || []).concat(allIds.filter(id => id !== keeperId))));
+    merged.merged_at = new Date().toISOString();
+
+    await client.query(`UPDATE workers SET data=$1, farm_id=$2, updated_at=NOW() WHERE id=$3`,
+      [JSON.stringify(sanitizeWorkerReadings(merged)), merged.farm_id || null, keeperId]);
+
+    const gone = allIds.filter(id => id !== keeperId);
+    for (const id of gone) {
+      await client.query(`DELETE FROM workers WHERE id=$1`, [id]);
+      // Recorded as deleted so a device still holding a cached copy can't
+      // push it back in, and every device prunes it from its local list.
+      await client.query(
+        `INSERT INTO deleted_records(id, kind) VALUES($1,'worker')
+         ON CONFLICT (id, kind) DO UPDATE SET deleted_at = NOW()`, [id]);
+      // Carry its history across to the keeper, so uptime/"when did it
+      // break" charts don't lose the part recorded under the other id.
+      // A slot both happened to record is kept once, from the keeper.
+      await client.query(
+        `UPDATE miner_metrics m SET worker_id = $1
+          WHERE m.worker_id = $2
+            AND NOT EXISTS (SELECT 1 FROM miner_metrics k WHERE k.worker_id = $1 AND k.slot = m.slot)`,
+        [keeperId, id]);
+      await client.query(`DELETE FROM miner_metrics WHERE worker_id = $1`, [id]);
+    }
+
+    // Customers list their machines by id — point any removed id at the
+    // keeper instead, so nobody's machine count silently drops.
+    const cust = await client.query(`SELECT id, data FROM customers`);
+    for (const row of cust.rows) {
+      const miners = Array.isArray(row.data.miners) ? row.data.miners : null;
+      if (!miners || !miners.some(id => gone.includes(id))) continue;
+      const fixed = Array.from(new Set(miners.map(id => gone.includes(id) ? keeperId : id)));
+      await client.query(`UPDATE customers SET data=$1, updated_at=NOW() WHERE id=$2`,
+        [JSON.stringify({ ...row.data, miners: fixed }), row.id]);
+    }
+
+    await client.query('COMMIT');
+    return { ok: true, worker: merged, removed: gone };
+  } catch(e) {
+    try { await client.query('ROLLBACK'); } catch(_) {}
+    console.error('[DB] applyAutoMerge error:', e.message);
+    return { ok: false, error: e.message };
+  } finally { client.release(); }
+}
+
 async function deleteCustomer(id) {
   await addTombstone('customer', id);
   if (useFallback || !pool) {
@@ -1466,4 +1613,4 @@ async function getUptimeReport(days, farmId) {
   }
 }
 
-module.exports = { connect, loadModelPower, saveModelPower, deleteModelPower, normalizeModelKeyDb, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, clearFarmReadings, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, addTombstone, clearTombstone, loadTombstones, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport, getSiteAlertState, setSiteAlertState, clearSiteAlertState };
+module.exports = { connect, loadModelPower, saveModelPower, deleteModelPower, normalizeModelKeyDb, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, clearFarmReadings, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, addTombstone, clearTombstone, loadTombstones, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport, getSiteAlertState, setSiteAlertState, clearSiteAlertState, getWorkerActivityMeta, countOnlineOverlap, applyAutoMerge };
