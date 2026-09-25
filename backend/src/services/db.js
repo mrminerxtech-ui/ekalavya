@@ -229,6 +229,17 @@ async function createTables() {
       updated_at  TIMESTAMPTZ DEFAULT NOW()
     );
 
+    -- Tracks the offline-machine count this site was last alerted at, so
+    -- the "more than 10 offline" Telegram alert fires once per crossing
+    -- rather than every check cycle — and re-fires only if the count
+    -- climbs further (10 -> 15 alerts again; 10 -> 8 -> 12 alerts again
+    -- too, since dropping back under the threshold clears this row).
+    CREATE TABLE IF NOT EXISTS site_alerts (
+      farm_id             TEXT PRIMARY KEY,
+      last_alerted_count  INTEGER NOT NULL,
+      last_alerted_at     TIMESTAMPTZ DEFAULT NOW()
+    );
+
     -- Cumulative customer earnings, accrued in short slots by the
     -- backend rather than calculated on the fly when someone opens a
     -- page. Accruing on view would double-count with two viewers and
@@ -933,6 +944,39 @@ async function deleteModelPower(modelKey) {
   }
 }
 
+// ── Site offline-count alerting (Telegram) ──────────────────
+// getSiteAlertState/setSiteAlertState/clearSiteAlertState back the
+// "more than 10 machines offline" alert in services/alerts.js: they're
+// what makes it fire once per threshold-crossing instead of every check
+// cycle, and re-fire only when things get WORSE, not just stay bad.
+// No file-based fallback here (unlike model_power) — this alert only
+// matters in production, where the real Postgres DB is always in use.
+async function getSiteAlertState(farmId) {
+  if (useFallback || !pool) return null;
+  try {
+    const r = await pool.query('SELECT last_alerted_count FROM site_alerts WHERE farm_id=$1', [farmId]);
+    return r.rows[0] ? r.rows[0].last_alerted_count : null;
+  } catch(e) {
+    console.error('[DB] getSiteAlertState error:', e.message);
+    return null;
+  }
+}
+async function setSiteAlertState(farmId, count) {
+  if (useFallback || !pool) return;
+  try {
+    await pool.query(
+      `INSERT INTO site_alerts(farm_id, last_alerted_count, last_alerted_at) VALUES($1,$2,NOW())
+       ON CONFLICT (farm_id) DO UPDATE SET last_alerted_count=$2, last_alerted_at=NOW()`,
+      [farmId, count]
+    );
+  } catch(e) { console.error('[DB] setSiteAlertState error:', e.message); }
+}
+async function clearSiteAlertState(farmId) {
+  if (useFallback || !pool) return;
+  try { await pool.query('DELETE FROM site_alerts WHERE farm_id=$1', [farmId]); }
+  catch(e) { console.error('[DB] clearSiteAlertState error:', e.message); }
+}
+
 async function loadAgentConfig(farmId) {
   if (useFallback || !pool) return null;
   try {
@@ -1422,4 +1466,4 @@ async function getUptimeReport(days, farmId) {
   }
 }
 
-module.exports = { connect, loadModelPower, saveModelPower, deleteModelPower, normalizeModelKeyDb, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, clearFarmReadings, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, addTombstone, clearTombstone, loadTombstones, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport };
+module.exports = { connect, loadModelPower, saveModelPower, deleteModelPower, normalizeModelKeyDb, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, clearFarmReadings, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, addTombstone, clearTombstone, loadTombstones, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport, getSiteAlertState, setSiteAlertState, clearSiteAlertState };
