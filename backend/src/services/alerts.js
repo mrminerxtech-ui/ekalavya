@@ -116,6 +116,69 @@ function siteAlertingConfigured() {
   return !!(TELEGRAM_TOKEN && TELEGRAM_CHAT);
 }
 
+// ── Real phone calls via Twilio ─────────────────────────────────────
+// No app, no tap, no notification setting can make a phone auto-play
+// audio — that's an OS-level restriction on every platform. An actual
+// phone CALL is the one thing that rings and starts talking on its own
+// the moment it's answered, so this is what genuinely delivers "ringing
+// tone... in voice" rather than a message someone has to open.
+// Needs its own Twilio account (twilio.com — has per-minute call costs
+// and, on a trial account, can only call phone numbers you've verified
+// in the Twilio console first):
+//   TWILIO_ACCOUNT_SID    — from the Twilio console dashboard
+//   TWILIO_AUTH_TOKEN     — same page, click to reveal
+//   TWILIO_FROM_NUMBER    — a Twilio phone number with Voice capability
+//   TWILIO_ALERT_NUMBERS  — comma-separated admin numbers to call, in
+//                           E.164 format (e.g. +971501234567,+15551234567)
+const TWILIO_SID  = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH = process.env.TWILIO_AUTH_TOKEN;
+const TWILIO_FROM = process.env.TWILIO_FROM_NUMBER;
+const TWILIO_TO   = (process.env.TWILIO_ALERT_NUMBERS || '').split(',').map(s => s.trim()).filter(Boolean);
+
+function phoneCallConfigured() {
+  return !!(TWILIO_SID && TWILIO_AUTH && TWILIO_FROM && TWILIO_TO.length);
+}
+
+// Speaks the alert twice with a short pause between — someone answering
+// a call can easily miss the first few words while picking up, so this
+// gives them a second pass rather than one shot at hearing it.
+function buildAlertTwiml(spokenText) {
+  const escaped = spokenText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return `<?xml version="1.0" encoding="UTF-8"?><Response>`
+    + `<Say voice="Polly.Joanna">${escaped}</Say>`
+    + `<Pause length="1"/>`
+    + `<Say voice="Polly.Joanna">${escaped}</Say>`
+    + `</Response>`;
+}
+
+// Calls every configured admin number. Twilio synthesizes the speech
+// itself from the inline Twiml param — no audio file, no hosting a
+// webhook to serve TwiML from, unlike the Telegram voice note above.
+async function sendPhoneCallAlert(spokenText) {
+  if (!phoneCallConfigured()) return false;
+  const twiml = buildAlertTwiml(spokenText);
+  const results = await Promise.allSettled(TWILIO_TO.map(number => {
+    const body = new URLSearchParams({ To: number, From: TWILIO_FROM, Twiml: twiml });
+    return axios.post(
+      `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Calls.json`,
+      body.toString(),
+      {
+        auth: { username: TWILIO_SID, password: TWILIO_AUTH },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        timeout: 15000,
+      }
+    );
+  }));
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      console.error(`[ALERT] Twilio call to ${TWILIO_TO[i]} failed:`, r.reason?.response?.data?.message || r.reason.message);
+    }
+  });
+  const okCount = results.filter(r => r.status === 'fulfilled').length;
+  console.log(`[ALERT] Twilio: ${okCount}/${TWILIO_TO.length} call(s) placed`);
+  return okCount > 0;
+}
+
 // ── Text-to-speech via Google Translate's public TTS endpoint ──────
 // No API key, no account, no cost — the same audio the "listen" button
 // on translate.google.com plays. Unofficial/undocumented, so it's used
@@ -206,8 +269,14 @@ async function checkSiteOfflineCounts() {
     const text = `${counts.offline} of ${counts.total} machines are offline at ${farmName} (excluding disabled). Threshold: ${OFFLINE_THRESHOLD}.`;
     const spoken = `Warning. ${counts.offline} machines are offline at ${farmName}. Please be warned.`;
 
-    console.log(`[ALERT] ${farmName}: ${counts.offline} offline (threshold ${OFFLINE_THRESHOLD}) — sending Telegram alert`);
-    const voiceOk = await sendSiteVoiceAlert(spoken, text);
+    console.log(`[ALERT] ${farmName}: ${counts.offline} offline (threshold ${OFFLINE_THRESHOLD}) — sending alerts`);
+    // Fire both channels together — the phone call is the one that
+    // actually gets heard with no tap required, Telegram is the
+    // always-on record even if a call goes unanswered.
+    const [voiceOk] = await Promise.all([
+      sendSiteVoiceAlert(spoken, text),
+      sendPhoneCallAlert(spoken),
+    ]);
     if (!voiceOk) await sendTelegramAlert(text, 'critical');   // fall back to the existing text-alert function above
     await db.setSiteAlertState(farmId, counts.offline);
   }
@@ -215,11 +284,12 @@ async function checkSiteOfflineCounts() {
 
 let siteAlertTimer = null;
 function start() {
-  if (!siteAlertingConfigured()) {
-    console.log('[ALERT] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — site offline-count voice alerts are disabled.');
+  if (!siteAlertingConfigured() && !phoneCallConfigured()) {
+    console.log('[ALERT] Neither Telegram (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID) nor Twilio (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_FROM_NUMBER/TWILIO_ALERT_NUMBERS) is configured — site offline-count alerts are disabled.');
     return;
   }
-  console.log(`[ALERT] Site offline-count alerting active — checking every ${CHECK_EVERY_MS / 60000}m, threshold ${OFFLINE_THRESHOLD} offline (excluding disabled).`);
+  const channels = [siteAlertingConfigured() && 'Telegram', phoneCallConfigured() && 'phone call'].filter(Boolean).join(' + ');
+  console.log(`[ALERT] Site offline-count alerting active via ${channels} — checking every ${CHECK_EVERY_MS / 60000}m, threshold ${OFFLINE_THRESHOLD} offline (excluding disabled).`);
   checkSiteOfflineCounts().catch(e => console.error('[ALERT]', e.message));
   siteAlertTimer = setInterval(() => { checkSiteOfflineCounts().catch(e => console.error('[ALERT]', e.message)); }, CHECK_EVERY_MS);
 }
