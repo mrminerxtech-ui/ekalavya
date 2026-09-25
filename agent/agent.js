@@ -456,8 +456,14 @@ async function isAsic(ip) {
 // ── Algorithm detection ────────────────────────────────────
 function getAlgo(model) {
   const m = (model||'').toLowerCase();
-  // Scrypt — any L-series Antminer: L3, L3+, L5, L7, L9, L9 Hydro, L11, L15, L19 etc
-  if (/\bl\d/i.test(m) || m.includes('scrypt') || m.includes('litecoin') || m.includes(' ltc')) return 'Scrypt';
+  // Scrypt — any L-series Antminer (L3, L3+, L5, L7, L9, L9 Hydro, L11, L15,
+  // L19 etc) AND ElphaPEX's DG-series (DG1, DG1+, DG-Home1 etc), which this
+  // never matched at all — "elphapex dg1+" has no "l" immediately followed
+  // by a digit, so it fell all the way through to the SHA-256 default
+  // despite being a Scrypt (LTC/DOGE) miner. Same DG-series patterns the
+  // frontend's own getAlgoFromModel() already used.
+  if (/\bl\d/i.test(m) || m.includes('scrypt') || m.includes('litecoin') || m.includes(' ltc')
+      || m.includes('elphapex') || m.includes('dg1') || m.includes('dg-1') || m.includes('dghome')) return 'Scrypt';
   if (m.includes('ka3') || m.includes('kaspa') || m.includes('ika'))             return 'KHeavyHash';
   if (m.includes('d9')  || m.includes('d19')  || m.includes('dash') || m.includes('x11')) return 'X11';
   if (m.includes('hs')  || m.includes('blake') || m.includes('handshake'))        return 'Blake2B';
@@ -616,7 +622,7 @@ async function getHardwareIds(ip) {
 // ── Full miner info ────────────────────────────────────────
 async function getMinerInfo(ip) {
   // Parallel API calls via CGMiner TCP + hardware IDs via HTTP
-  const [summary, stats, devs, pools, hwIds, httpPools, httpSummary] = await Promise.all([
+  const [summary, stats, devs, pools, hwIds, httpPools, httpSummary, httpStats] = await Promise.all([
     cgCmd(ip, 'summary'),
     cgCmd(ip, 'stats'),
     cgCmd(ip, 'devs'),
@@ -644,6 +650,14 @@ async function getMinerInfo(ip) {
     // "MH/s",...}]} — so it's used as the primary source below, with the
     // boot-log scrape kept only as a last-resort fallback.
     httpGet(ip, '/cgi-bin/summary.cgi'),
+    // Temp/fan: confirmed against this unit's own /cgi-bin/stats.cgi —
+    // {"STATS":[{"chain":[{"temp_chip":["63375","65812","",""],...},...],
+    // "fan":["5640","577440","6000","6000"],...}]}. chip temps are in
+    // millidegrees (divide by 1000 → ~63.4°C, ~65.8°C); fan entries are
+    // RPM but at least one slot on this unit reads a clearly bogus value
+    // (577440), so each is sanity-range-checked below same as the TCP
+    // path already does for boardTemps/statsTemps/fanValues.
+    httpGet(ip, '/cgi-bin/stats.cgi'),
   ]);
 
   let model = extractModel(stats, summary);
@@ -786,14 +800,32 @@ async function getMinerInfo(ip) {
     return temps;
   });
 
-  const allTemps = [...boardTemps, ...statsTemps];
+  // HTTP stats.cgi fallback — same reasoning as hashrate above: this
+  // firmware never answers the cgminer TCP port, so boardTemps/statsTemps
+  // are always empty for it. Confirmed against this unit's own
+  // /cgi-bin/stats.cgi: {"STATS":[{"chain":[{"temp_chip":["63375",
+  // "65812","",""],...},...],"fan":["5640","577440","6000","6000"],...}]}.
+  // Chip temps are in millidegrees (divide by 1000); empty-string slots
+  // (unpopulated sensor positions) are filtered out same as everywhere
+  // else, by the existing 30–120°C sanity range.
+  const httpStatsBlock = httpStats?.STATS?.[0];
+  const httpChainTemps = (httpStatsBlock?.chain || []).flatMap(c => c.temp_chip || [])
+    .map(t => parseFloat(t || 0) / 1000).filter(t => t > 30 && t < 120);
+
+  const allTemps = [...boardTemps, ...statsTemps, ...httpChainTemps];
   const temp = allTemps.length ? Math.round(Math.max(...allTemps)) : Math.round(parseFloat(s.Temperature||s.temp||0));
 
   // Fan speed
   const st0 = stats?.STATS?.[0] || {};
   const fanValues = ['fan1','fan2','fan3','fan4','Fan Speed In','Fan Speed Out','fan_num']
     .map(k => parseInt(st0[k]||devs?.DEVS?.[0]?.[k]||0)).filter(v=>v>0);
-  const fan = fanValues.length ? Math.max(...fanValues) : 0;
+  // Same HTTP fallback for fan — this unit's own stats.cgi confirmed one
+  // slot can report a clearly bogus value (577440 RPM), so anything
+  // outside a plausible fan-RPM range is dropped rather than trusted.
+  const httpFanValues = (httpStatsBlock?.fan || [])
+    .map(v => parseInt(v || 0)).filter(v => v > 0 && v < 15000);
+  const fan = fanValues.length ? Math.max(...fanValues)
+    : (httpFanValues.length ? Math.max(...httpFanValues) : 0);
 
   // Pool info — check all configured pools, prefer the active one.
   // Some firmware (confirmed on ElphaPEX, via its own pools.cgi) uses
