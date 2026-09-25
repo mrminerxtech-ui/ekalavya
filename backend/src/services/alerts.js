@@ -4,6 +4,9 @@
 // ============================================================
 const axios = require('axios');
 const store = require('./store');
+const db    = require('./db');
+const agentMgr = require('./agentManager');
+const https = require('https');
 
 const WEBHOOK = process.env.ALERT_WEBHOOK_URL;
 const TELEGRAM_TOKEN  = process.env.TELEGRAM_BOT_TOKEN;
@@ -90,4 +93,135 @@ async function checkWorkerThresholds(worker) {
   await Promise.allSettled(alerts);
 }
 
-module.exports = { raiseAlert, sendSlackAlert, sendTelegramAlert, checkWorkerThresholds };
+// ============================================================
+// SITE-LEVEL OFFLINE-COUNT VOICE ALERT
+// ------------------------------------------------------------
+// Separate from checkWorkerThresholds above (which is per-machine and
+// fires on temp/hashrate/single-machine-offline) — this is the
+// "more than 10 machines offline at one SITE, warn the admins" alert,
+// with a spoken voice note, not just text. Uses the SAME
+// TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID as sendTelegramAlert() above, so
+// it lands in the same chat unless you point it elsewhere.
+//
+// Fires once per threshold-crossing, not every check cycle: db.js's
+// site_alerts table remembers the offline count a site was last
+// alerted at, and this only re-alerts if the count has since gotten
+// WORSE — never just for staying bad, and never again until it drops
+// back under the threshold and crosses it fresh.
+// ============================================================
+const OFFLINE_THRESHOLD = 10;              // "more than 10" → alerts at 11+
+const CHECK_EVERY_MS    = 3 * 60 * 1000;   // how often to re-check every site
+
+function siteAlertingConfigured() {
+  return !!(TELEGRAM_TOKEN && TELEGRAM_CHAT);
+}
+
+// ── Text-to-speech via Google Translate's public TTS endpoint ──────
+// No API key, no account, no cost — the same audio the "listen" button
+// on translate.google.com plays. Unofficial/undocumented, so it's used
+// with a graceful fallback: if it ever fails, sendSiteVoiceAlert() below
+// returns false and the site check falls back to sendTelegramAlert()
+// (plain text, using the existing function above) automatically.
+function fetchGoogleTts(text) {
+  return new Promise((resolve, reject) => {
+    const q = encodeURIComponent(text.slice(0, 200));
+    const url = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=en&q=${q}`;
+    https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, res => {
+      if (res.statusCode !== 200) { res.resume(); reject(new Error('TTS HTTP ' + res.statusCode)); return; }
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+      res.on('error', reject);
+    }).on('error', reject);
+  });
+}
+
+// ── Send the generated MP3 as a Telegram audio message ─────────────
+// Uses sendAudio (not sendVoice) deliberately: Telegram's sendVoice only
+// accepts OGG/Opus, which would need ffmpeg to produce from the TTS
+// output above. sendAudio takes plain MP3 directly — it shows as a
+// tappable audio file with a title rather than the compact round
+// "voice message" bubble, but it's the same spoken audio with no extra
+// encoding step or dependency. Built as a raw multipart body (rather
+// than the `form-data` package) so this doesn't need a new dependency
+// beyond axios, which is already used above.
+async function sendSiteVoiceAlert(spokenText, caption) {
+  if (!siteAlertingConfigured()) return false;
+  let audio;
+  try { audio = await fetchGoogleTts(spokenText); }
+  catch (e) { console.error('[ALERT] TTS generation failed, falling back to text:', e.message); return false; }
+
+  const boundary = '----EkalavyaAlert' + Date.now();
+  const nl = '\r\n';
+  const parts = [
+    Buffer.from(`--${boundary}${nl}Content-Disposition: form-data; name="chat_id"${nl}${nl}${TELEGRAM_CHAT}${nl}`),
+    Buffer.from(`--${boundary}${nl}Content-Disposition: form-data; name="caption"${nl}${nl}${caption}${nl}`),
+    Buffer.from(`--${boundary}${nl}Content-Disposition: form-data; name="title"${nl}${nl}Site Alert${nl}`),
+    Buffer.from(`--${boundary}${nl}Content-Disposition: form-data; name="audio"; filename="alert.mp3"${nl}Content-Type: audio/mpeg${nl}${nl}`),
+    audio,
+    Buffer.from(`${nl}--${boundary}--${nl}`),
+  ];
+  const payload = Buffer.concat(parts);
+
+  try {
+    const res = await axios.post(
+      `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendAudio`,
+      payload,
+      { headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` }, timeout: 15000 }
+    );
+    return res.status === 200;
+  } catch (e) {
+    console.error('[ALERT] Telegram voice send failed:', e.message);
+    return false;
+  }
+}
+
+// ── The actual per-site check, run on a timer by start() below ─────
+async function checkSiteOfflineCounts() {
+  const workers = await db.loadWorkers();
+  const agents  = agentMgr.getAgents();
+
+  const byFarm = {};
+  workers.forEach(w => {
+    if (w.disabled) return;   // excluded, exactly as asked
+    const fid = w.farm_id || 'unassigned';
+    if (!byFarm[fid]) byFarm[fid] = { offline: 0, total: 0 };
+    byFarm[fid].total++;
+    if (w.status !== 'online' && w.status !== 'warn') byFarm[fid].offline++;
+  });
+
+  for (const [farmId, counts] of Object.entries(byFarm)) {
+    const agent = agents.find(a => a.farm_id === farmId);
+    const farmName = (agent && agent.farm_name) || farmId;
+    const prev = await db.getSiteAlertState(farmId);
+
+    if (counts.offline <= OFFLINE_THRESHOLD) {
+      if (prev !== null) await db.clearSiteAlertState(farmId);   // back under threshold — next crossing alerts fresh
+      continue;
+    }
+    // Already alerted at this count or higher — only re-alert if it's
+    // gotten WORSE since then, not just for staying bad.
+    if (prev !== null && counts.offline <= prev) continue;
+
+    const text = `${counts.offline} of ${counts.total} machines are offline at ${farmName} (excluding disabled). Threshold: ${OFFLINE_THRESHOLD}.`;
+    const spoken = `Warning. ${counts.offline} machines are offline at ${farmName}. Please be warned.`;
+
+    console.log(`[ALERT] ${farmName}: ${counts.offline} offline (threshold ${OFFLINE_THRESHOLD}) — sending Telegram alert`);
+    const voiceOk = await sendSiteVoiceAlert(spoken, text);
+    if (!voiceOk) await sendTelegramAlert(text, 'critical');   // fall back to the existing text-alert function above
+    await db.setSiteAlertState(farmId, counts.offline);
+  }
+}
+
+let siteAlertTimer = null;
+function start() {
+  if (!siteAlertingConfigured()) {
+    console.log('[ALERT] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — site offline-count voice alerts are disabled.');
+    return;
+  }
+  console.log(`[ALERT] Site offline-count alerting active — checking every ${CHECK_EVERY_MS / 60000}m, threshold ${OFFLINE_THRESHOLD} offline (excluding disabled).`);
+  checkSiteOfflineCounts().catch(e => console.error('[ALERT]', e.message));
+  siteAlertTimer = setInterval(() => { checkSiteOfflineCounts().catch(e => console.error('[ALERT]', e.message)); }, CHECK_EVERY_MS);
+}
+
+module.exports = { raiseAlert, sendSlackAlert, sendTelegramAlert, checkWorkerThresholds, start, checkSiteOfflineCounts };
