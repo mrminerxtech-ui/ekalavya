@@ -147,6 +147,16 @@ router.post('/worker/merge', authMiddleware, async (req, res) => {
   res.json(result);
 });
 
+// POST /api/fleet/dedupe/run — run the automatic duplicate merge now
+// instead of waiting for its 10-minute timer. Returns what was merged and
+// what was deliberately left alone (with the reason), so it doubles as a
+// way to see why a pair you expected to merge didn't. Staff only.
+router.post('/dedupe/run', authMiddleware, async (req, res) => {
+  if (req.user && req.user.role === 'customer') return res.status(403).json({ ok: false, error: 'Forbidden' });
+  const summary = await require('../services/dedupe').runOnce();
+  res.json({ ok: !summary.error, ...summary });
+});
+
 // DELETE /api/fleet/customer/:id — delete a customer AND unassign
 // any miners that were pointing at them (so they don't end up
 // orphaned, referencing a customer that no longer exists)
