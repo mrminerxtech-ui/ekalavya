@@ -616,7 +616,7 @@ async function getHardwareIds(ip) {
 // ── Full miner info ────────────────────────────────────────
 async function getMinerInfo(ip) {
   // Parallel API calls via CGMiner TCP + hardware IDs via HTTP
-  const [summary, stats, devs, pools, hwIds, httpPools] = await Promise.all([
+  const [summary, stats, devs, pools, hwIds, httpPools, httpSummary] = await Promise.all([
     cgCmd(ip, 'summary'),
     cgCmd(ip, 'stats'),
     cgCmd(ip, 'devs'),
@@ -631,6 +631,19 @@ async function getMinerInfo(ip) {
     // and brand isn't known yet at this point) and only relied on below
     // when the TCP response doesn't already have what's needed.
     httpGet(ip, '/cgi-bin/pools.cgi'),
+    // Same story for hashrate: this firmware never answers the cgminer
+    // TCP port at all, so `summary`/`stats` above are always null for it,
+    // and the ONLY hashrate source used to be scraping a "hashrate by
+    // nonce is: X Mhash/s" phrase out of the boot log — fragile, and
+    // confirmed not actually landing for this unit (hashrate stayed 0,
+    // which also forced status to 'offline' below regardless of how well
+    // everything else was identified). Confirmed directly against this
+    // firmware: /cgi-bin/summary.cgi returns the same shape as cgminer's
+    // own 'summary' command, just fetched over HTTP —
+    // {"SUMMARY":[{"rate_5s":13783.06,"rate_avg":10940.08,"rate_unit":
+    // "MH/s",...}]} — so it's used as the primary source below, with the
+    // boot-log scrape kept only as a last-resort fallback.
+    httpGet(ip, '/cgi-bin/summary.cgi'),
   ]);
 
   let model = extractModel(stats, summary);
@@ -645,12 +658,16 @@ async function getMinerInfo(ip) {
     return true;
   }
 
-  // ElphaPEX's pools.cgi (see httpPools above) carries a clean, structured
-  // "INFO" block with the model right on it — e.g. {"type":"DG1+",
-  // "dev_sn":"...","hw_version":"DG1+_HW_V1.0"}. Far more reliable than
-  // scraping the boot log for it, so it's tried before that fallback.
-  if (!isValidModel(model) && httpPools?.INFO?.type) {
-    const infoCandidate = 'ElphaPEX ' + httpPools.INFO.type;
+  // ElphaPEX's pools.cgi/summary.cgi (see httpPools/httpSummary above)
+  // both carry the same clean, structured "INFO" block with the model
+  // right on it — e.g. {"type":"DG1+","dev_sn":"...","hw_version":
+  // "DG1+_HW_V1.0"}. Far more reliable than scraping the boot log for
+  // it, so it's tried before that fallback; checking both endpoints
+  // means one being briefly busy (this unit's embedded server can only
+  // serve one request at a time) doesn't lose the model on its own.
+  const infoBlock = httpPools?.INFO || httpSummary?.INFO;
+  if (!isValidModel(model) && infoBlock?.type) {
+    const infoCandidate = 'ElphaPEX ' + infoBlock.type;
     if (isValidModel(infoCandidate)) model = infoCandidate;
   }
 
@@ -705,25 +722,41 @@ async function getMinerInfo(ip) {
   const algo  = getAlgo(model);
   const brand = getBrand(model);
 
-  // Serial fallback — same reasoning as the model fallback above: pools.cgi's
-  // INFO block has it directly (dev_sn) when the generic hwIds lookups (which
-  // never checked this endpoint) come up empty.
-  if (!hwIds.serial && httpPools?.INFO?.dev_sn) hwIds.serial = httpPools.INFO.dev_sn;
+  // Serial fallback — same reasoning as the model fallback above: the
+  // INFO block on either endpoint has it directly (dev_sn) when the
+  // generic hwIds lookups (which never checked either endpoint) come up
+  // empty.
+  if (!hwIds.serial && infoBlock?.dev_sn) hwIds.serial = infoBlock.dev_sn;
 
   // Hashrate from summary
   const s      = summary?.SUMMARY?.[0] || {};
   let   rawMhs = parseFloat(s['MHS 5s'] || s['MHS av'] || (s['GHS 5s']||0)*1000 || (s['THS 5s']||0)*1e6 || 0);
 
-  // ElphaPEX fallback — its cgminer 'summary' doesn't expose hashrate in
-  // any of the field names read above, so the ONLY place it's available
-  // is a line in the boot log. getHardwareIds() only fetches that log
-  // as a LAST RESORT when mac/serial are still missing after everything
-  // else — on a machine where the generic mac/serial lookups happen to
-  // succeed (fairly common), the log is never fetched at all, and this
-  // fallback silently had nothing to read, leaving hashrate at 0 and
-  // the machine looking offline even though it was hashing fine. Fetch
-  // the log directly here when that happened, instead of only ever
-  // reusing whatever getHardwareIds() already had cached.
+  // ElphaPEX (and any other firmware that doesn't run the cgminer TCP
+  // service) — confirmed against this exact unit's own /cgi-bin/summary.cgi:
+  // {"SUMMARY":[{"rate_5s":13783.06,"rate_avg":10940.08,"rate_unit":
+  // "MH/s",...}]}. Prefer the instantaneous rate_5s (matches what the TCP
+  // 'MHS 5s' field would have given), fall back to the longer-window
+  // averages if that one's momentarily zero. Normalized to MH/s (what the
+  // TCP path above also returns) using this firmware's own rate_unit,
+  // since a future model reporting GH/s or TH/s here shouldn't silently
+  // read as a thousand times too small.
+  if (!rawMhs || rawMhs <= 0) {
+    const hs = httpSummary?.SUMMARY?.[0];
+    const raw = parseFloat(hs?.rate_5s || hs?.rate_avg || hs?.rate_15m || 0);
+    if (raw > 0) {
+      const unit = String(hs.rate_unit || 'MH/s').toLowerCase();
+      rawMhs = unit.startsWith('gh') ? raw * 1000 : unit.startsWith('th') ? raw * 1e6 : raw;
+    }
+  }
+
+  // Boot-log scrape — kept as a last-resort fallback for firmware/units
+  // where even the HTTP summary above doesn't expose a rate (this was
+  // previously the ONLY source, and turned out not to be reliable enough
+  // on its own: the "hashrate by nonce is: X Mhash/s" line either wasn't
+  // present in every firmware version's log or the log fetch itself kept
+  // losing the race on a busy embedded server, leaving hashrate at 0 and
+  // the machine looking offline even though it was hashing fine).
   if (!rawMhs || rawMhs <= 0) {
     let logForHr = (typeof hwIds?.logText === 'string') ? hwIds.logText : null;
     if (logForHr === null) {
@@ -782,19 +815,6 @@ async function getMinerInfo(ip) {
   // Full worker ID as configured on the miner — includes wallet/worker suffix.
   const userField = p => poolField(p, 'User','user','Username','username','User Name');
   const fullWorkerId = userField(activePool) || allPools.map(userField).find(u => u && u !== '') || '—';
-
-  // TEMP DIAGNOSTIC — the v1.1.29 pool/model fix isn't showing up on the
-  // Workers page despite looking correct against the raw pools.cgi JSON.
-  // Pinned to this one known-problem IP (not brand, which was the trap
-  // last time) so it fires unconditionally and shows exactly which stage
-  // of the pipeline actually has the data and which doesn't. Remove once
-  // this is root-caused.
-  if (ip === '19.3.19.46') {
-    console.log(`[EP-DEBUG2] ${ip} httpPools raw:`, JSON.stringify(httpPools));
-    console.log(`[EP-DEBUG2] ${ip} pools(tcp) raw:`, JSON.stringify(pools));
-    console.log(`[EP-DEBUG2] ${ip} poolsSrc.POOLS.length=${allPools.length} activePool=`, JSON.stringify(activePool));
-    console.log(`[EP-DEBUG2] ${ip} fullWorkerId="${fullWorkerId}" model="${model}" brand="${brand}"`);
-  }
 
 
   // HW errors and shares
