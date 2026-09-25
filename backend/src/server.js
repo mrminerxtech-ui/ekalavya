@@ -109,6 +109,12 @@ require('./services/earnings').start();
 // answerable from live readings alone.
 require('./services/insights').start();
 
+// Warns admins on Telegram (text + a spoken voice note) when a single
+// site has more than 10 machines offline, excluding disabled ones. Does
+// nothing if TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID aren't set — see
+// services/alerts.js for what those are and how to get them.
+require('./services/alerts').start();
+
 app.get('/health', (_, res) => res.json({
   status:    'ok',
   app:       'Ekalavya',
