@@ -117,6 +117,12 @@ require('./services/insights').start();
 // nothing if TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID aren't set.
 require('./services/alerts').start();
 
+// Finds and merges duplicate machine records (same machine recorded twice
+// after an IP change) every 10 minutes — the automatic version of the
+// "Find & Merge Duplicates" button, with stricter safety rules since no
+// person confirms each merge. See services/dedupe.js for the rules.
+require('./services/dedupe').start();
+
 app.get('/health', (_, res) => res.json({
   status:    'ok',
   app:       'Ekalavya',
