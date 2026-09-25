@@ -527,8 +527,20 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
         // one poll cycle of it running. name is now protected the same
         // way cid/disabled already are: only ever take the agent's name
         // when it's a real non-empty value, never let a blank one win.
+        // '—' is the agent's OWN placeholder for "worker ID not resolved
+        // yet", not a real name — but the insert path below used to fall
+        // back to it just like any other truthy string, so a machine
+        // first seen before its pool/worker data resolved got permanently
+        // named the literal text "—". Once that happened, this same line
+        // treated it as a legitimate existing name forever (old.name is
+        // truthy), so it never healed even after m.worker started coming
+        // back correctly on every later poll. Skip it here the same way
+        // the insert path below now does, so a placeholder name isn't
+        // trusted over a real value that's available right now.
+        const oldNameUsable = old.name && old.name !== '—';
+        const newWorkerUsable = m.worker && m.worker !== '—';
         const newName = (m.name && String(m.name).trim()) ? m.name
-          : (old.name || m.worker || (m.ip ? m.ip.replace(/\./g, '-') : old.id));
+          : (oldNameUsable ? old.name : (newWorkerUsable ? m.worker : (m.ip ? m.ip.replace(/\./g, '-') : old.id)));
         // Same "never let a blank reading overwrite a good one" protection
         // as name/cid/disabled, extended to model/worker/pool. These were
         // still exposed to the plain {...old, ...m} spread, so a single
@@ -570,7 +582,12 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
         // discovered here (which is the normal case) got no name ever,
         // and every device loading from /api/fleet/load saw it as blank
         // forever, since loadFleetFromBackend never invents one either.
-        const defaultName = m.name || m.worker || (m.ip ? m.ip.replace(/\./g, '-') : stableWorkerId(m));
+        // '—' is the agent's placeholder for "worker ID not resolved yet",
+        // not a real name — trusting it here the same as any other truthy
+        // string let a machine seen before its pool data resolved get
+        // permanently stuck named the literal text "—" forever (see the
+        // matching note on the update path above).
+        const defaultName = m.name || (m.worker && m.worker !== '—' ? m.worker : null) || (m.ip ? m.ip.replace(/\./g, '-') : stableWorkerId(m));
         const fresh = { ...m, id: stableWorkerId(m), farm_id: farmId, cid: '',
                    disabled: false, status: 'online', source: 'auto-poll',
                    name: defaultName,
@@ -660,9 +677,12 @@ function upsertWorkersFallback(farmId, minersFoundNow, collisions) {
     const old = findExisting(m);
     if (old) {
       const moved = old.ip !== m.ip || old.farm_id !== farmId;
-      // Same name-protection fix as upsertWorkersByIp above.
+      // Same name-protection fix as upsertWorkersByIp above ('—' is a
+      // placeholder, not a real name, on either side of this fallback).
+      const oldNameUsable = old.name && old.name !== '—';
+      const newWorkerUsable = m.worker && m.worker !== '—';
       const newName = (m.name && String(m.name).trim()) ? m.name
-        : (old.name || m.worker || (m.ip ? m.ip.replace(/\./g, '-') : old.id));
+        : (oldNameUsable ? old.name : (newWorkerUsable ? m.worker : (m.ip ? m.ip.replace(/\./g, '-') : old.id)));
       byId.set(old.id, { ...old, ...m, id: old.id, cid: old.cid, disabled: old.disabled,
         disabled_reason: old.disabled_reason, disabled_at: old.disabled_at,
         farm: moved ? (m.farm || old.farm) : old.farm,
@@ -672,7 +692,7 @@ function upsertWorkersFallback(farmId, minersFoundNow, collisions) {
     } else {
       const id = stableWorkerId(m);
       // Same missing-name fix as upsertWorkersByIp above.
-      const defaultName = m.name || m.worker || (m.ip ? m.ip.replace(/\./g, '-') : id);
+      const defaultName = m.name || (m.worker && m.worker !== '—' ? m.worker : null) || (m.ip ? m.ip.replace(/\./g, '-') : id);
       byId.set(id, { ...m, id, farm_id: farmId, cid: '',
         disabled: false, status: 'online', source: 'auto-poll', name: defaultName, added_at: new Date().toISOString() });
       // Rediscovered after deletion — see the matching comment in
@@ -1392,4 +1412,3 @@ async function getUptimeReport(days, farmId) {
 }
 
 module.exports = { connect, loadModelPower, saveModelPower, deleteModelPower, normalizeModelKeyDb, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, clearFarmReadings, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, addTombstone, clearTombstone, loadTombstones, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport };
-
