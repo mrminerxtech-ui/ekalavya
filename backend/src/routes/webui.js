@@ -381,7 +381,7 @@ router.use('/:farmId/:ip', async (req, res) => {
 
       const interceptShim = '<script>' +
         '(function(){' +
-        'var B=' + JSON.stringify(tunnelBase) + ';' +
+        'var B=' + JSON.stringify(tunnelBase) + ',IP=' + JSON.stringify(ip) + ';' +
         // Braiins OS+'s GraphQL client builds its endpoint as
         // `location.origin + "/graphql"` — a fully-qualified absolute
         // URL, not a bare "/graphql" string. That form skipped the
@@ -402,9 +402,21 @@ router.use('/:farmId/:ip', async (req, res) => {
         // the prefix appeared twice (/api/webui/F/ip/api/webui/F/ip/js/…),
         // so jquery, vue and dashboard.js all 404'd and the page showed raw
         // {{template}} tags.
+        //
+        // Full addresses are matched on HOST, not on the exact origin
+        // string. MaraFW asks for its data at http://<host>/… — correct
+        // when the page itself is http://<miner-ip>, but through the tunnel
+        // the page is https, the old origin check (https only) let the
+        // http address through untouched, and Chrome refused to send it
+        // ("blocked: mixed content"), so every panel read "An error
+        // occurred". A full address pointing straight at the miner's own
+        // IP is brought into the tunnel the same way.
         'function fix(u){' +
         'if(typeof u!=="string")return u;' +
-        'if(u.indexOf(window.location.origin)===0){u=u.slice(window.location.origin.length);}' +
+        'if(/^(https?:)?\\/\\//i.test(u)){' +
+        'try{var x=new URL(u,window.location.href);' +
+        'if(x.host===window.location.host||x.hostname===window.location.hostname||x.hostname===IP){u=x.pathname+x.search+x.hash;}' +
+        'else return u;}catch(e){return u;}}' +
         'if(u.indexOf("/api/webui/")===0)return u;' +
         // A path from the miner's root ("/cgi-bin/x", "/api/v1/…") is
         // pointed at this miner's tunnel folder explicitly, rather than
