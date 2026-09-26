@@ -204,8 +204,16 @@ function callMeBotConfigured() { return CALLMEBOT_USERS.length > 0; }
 // Their reply is a small HTML page describing what happened (queued,
 // not authorised, too many calls, …). Tags are stripped so the log line
 // says in plain words why a call didn't ring.
+// Their page carries analytics <script> blocks ahead of the actual
+// message; those are dropped whole (not just their tags), otherwise the
+// script text used up the log line and cut the real answer off.
 function plainText(html) {
-  return String(html || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 220);
+  return String(html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ').trim().slice(0, 500);
 }
 
 async function sendCallMeBotAlert(spokenText) {
