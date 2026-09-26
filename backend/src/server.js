@@ -62,6 +62,11 @@ app.use(compression());
 // nothing: agent-list polling from every open tab, health checks, and
 // successful tunnel sub-resource fetches (a single miner page is dozens
 // of them). Failures are always logged. LOG_VERBOSE=1 logs everything.
+// The miner Web UI tunnel carries the user's login token in its URL
+// (?token=...), so the request log was recording a working admin token
+// in plain text. Mask it before it's written.
+const hideToken = u => String(u || '').replace(/([?&]token=)[^&\s]+/gi, '$1[hidden]');
+morgan.token('url', req => hideToken(req.originalUrl || req.url));
 app.use(morgan('dev', {
   skip: (req, res) => {
     if (process.env.LOG_VERBOSE === '1') return false;
