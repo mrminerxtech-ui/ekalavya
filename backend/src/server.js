@@ -102,6 +102,12 @@ app.use('/api/insights',  require('./routes/insights'));
 app.use('/api/team',      require('./routes/team'));
 app.use('/api/power',     require('./routes/power'));
 
+// A reload inside a single-page miner UI (MaraFW) lands here as e.g.
+// /configuration — sends the browser back into the right miner's tunnel.
+// Only answers browser page loads; API clients and health checks pass
+// through untouched. See routes/webui.js.
+app.use(require('./routes/webui').reloadFallback);
+
 // Accrues each customer's mining earnings every 10 minutes from the
 // machines that are actually hashing. Runs on a server-side timer,
 // never on page view, so totals reflect observed uptime rather than
