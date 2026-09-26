@@ -1,14 +1,37 @@
 {
-  "name": "Ekalavya — ASIC Mining Monitoring",
-  "short_name": "Ekalavya",
-  "start_url": "./index.html",
-  "display": "standalone",
-  "background_color": "#0C0B09",
-  "theme_color": "#0C0B09",
-  "icons": [
-    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
-    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  "version": "1.1.36",
+  "released_at": "2026-09-26T06:30:00Z",
+  "min_node_version": "16.0.0",
+  "changelog": [
+    "Avalon (Canaan) support for machine locate and control, using the exact commands from Canaan's own management tool (Canaan Mine Master 2.0): LED on/off to find a machine on the rack (ascset|0,led,1-1 / 1-0, sent as plain text to port 4028 the way Canaan does it — the old LED action only knew Antminer's blink.cgi, so it silently did nothing on an Avalon), a real Avalon reboot (ascset|0,reboot,1 — cgminer 'restart' only restarts the mining software), work mode Normal/High Performance (0,workmode,N, optionally rebooting to apply) and fan speed (0,fan-spd,N, 30-100% or -1 for automatic; anything lower is refused so a machine can't be cooked by a typo). An LED switched on to locate a machine now turns itself off again after a set time (default 10 minutes) so forgotten LEDs don't stay lit.",
+    "Fix the ElphaPEX at 19.3.19.46 showing hashrate in the wrong unit (0.13 TH/s instead of ~130 GH/s-scale — actually its true ~10-14 GH/s displayed 1000x too small) and the wrong algo badge (SHA-256 instead of Scrypt): getAlgo() never recognized ElphaPEX's own 'DG1+' naming at all (only matched 'l' immediately followed by a digit, which 'dg1+' doesn't contain), so it silently fell through to the SHA-256 default — and that wrong algo is exactly what decides whether hashrate is displayed in GH/s or TH/s. Also now reads temp and fan from this unit's own /cgi-bin/stats.cgi (confirmed: chain[].temp_chip in millidegrees, fan[] in RPM with one slot known to report a bogus value that's now sanity-range-checked out), since — same as hashrate before this — the cgminer TCP path those were read from is never answered by this firmware at all.",
+    "Root-caused the ElphaPEX at 19.3.19.46 still showing offline with no hashrate despite model/brand/worker now being correctly detected: this firmware never answers the cgminer TCP port, so the ONLY hashrate source in the code was scraping a 'hashrate by nonce is: X Mhash/s' phrase out of the boot log — and a machine with hashrate stuck at 0 gets forced to status:'offline' regardless of how well everything else was identified. Confirmed directly against this unit's own /cgi-bin/summary.cgi and /cgi-bin/stats.cgi (fetched over plain HTTP, same lowercase-field pattern as pools.cgi) that it reports rate_5s/rate_avg in MH/s there — now read as the primary hashrate source, with the boot-log scrape kept only as a last-resort fallback. Also removed the now-resolved [EP-DEBUG2] diagnostic logging.",
+    "Fix the ElphaPEX at 19.3.19.46 (and any other HTTP-only, one-connection-at-a-time unit) showing up in a manual 'Scan Network' but never in the recurring 30s poll: v1.1.32's isAsic() re-verification, needed to stop routers/cameras/printers being swept in as miners, ran its full up-to-6-request signature check against a port-80 device EVERY cycle, forever. Piling those extra probes in front of the one request that actually matters was enough to starve it out on a server that can only handle one connection at a time — confirmed true of at least this ElphaPEX — so the recurring poll kept losing the race that an isolated one-off scan usually won by luck. A unit that already passed isAsic() is now trusted for 10 minutes before being re-checked, so routine cycles skip straight to the real data pull; a device that changes identity (e.g. a router taking over an old miner's IP via DHCP) still gets caught within that same window rather than being trusted forever.",
+    "Fix a regression from v1.1.31: widening the recurring poll to also accept port 80 (needed for the ElphaPEX, which doesn't run the cgminer TCP service at all) had no verification step, so literally any device answering on port 80 — a router, a camera, a printer — got swept in and treated as a miner. isAsic() (the same real signature check the manual 'Scan Network' already used) now gates the port-80 case; a port-4028 hit is still accepted directly since that's already a reliable enough signal on its own. Also taught isAsic() to recognize ElphaPEX's own /cgi-bin/pools.cgi signature, since it previously matched none of the existing cgminer/Antminer/Avalon/Whatsminer checks and would have been wrongly rejected by this same verification step.",
+    "Found why the v1.1.29 pools.cgi fix never took effect: the recurring 30s poll only ever considered a unit for polling if it answered the cgminer TCP port (4028) within 1.5s — a unit whose firmware doesn't run that service at all (confirmed: 19.3.19.46 was simply never appearing in the agent's own console output, cycle after cycle) was silently skipped before getMinerInfo() — and every one of its HTTP fallbacks — ever ran. It only ever got added to the fleet via a one-off manual 'Scan Network', whose own reachability check already accepted HTTP (port 80) too; the recurring poll now does the same, so an HTTP-only unit keeps getting refreshed every cycle instead of silently going stale after its first scan.",
+    "The v1.1.29 fix for ElphaPEX at 19.3.19.46 isn't showing up on the Workers page despite matching the raw pools.cgi JSON — temporarily logs '[EP-DEBUG2]' lines pinned to that exact IP (unconditional, not gated by brand this time) showing httpPools, the TCP pools response, the resolved active pool, and the final worker/model/brand values, so the actual break point can be read off the console. Remove once root-caused.",
+    "Root-caused the ElphaPEX blank worker/pool/model fields, confirmed against this exact firmware's own /cgi-bin/pools.cgi response: it uses entirely lowercase field names (user/url/status/priority) instead of stock cgminer's capitalized ones (User/URL/Status/Priority), so every read of those fields was silently matching nothing. All pool/worker reads now check both casings. Also now reads the model and serial number directly from pools.cgi's structured 'INFO' block ({\"type\":\"DG1+\",\"dev_sn\":\"...\"}) as a cleaner, more reliable source than scraping the boot log for them, and falls back to pools.cgi entirely for pool data on units where the cgminer TCP port doesn't return it at all.",
+    "Fix the single-instance lock refusing to ever start: it only checked whether SOME process currently has the old PID number, not whether that process is actually the agent. After a crash or a PC reboot, Windows/Node quickly reassigns that same PID to an unrelated process, so the check kept reporting a false 'already running' forever and the agent never started — exactly what happened on the Ghummadh site PC (stuck in a restart loop, never actually polling any miner). The lock file's own last-touched time is now checked too: a genuinely running agent refreshes it every 8s, so anything older than 3 minutes is treated as abandoned and reclaimed, regardless of what process now happens to hold that PID.",
+    "Fix ElphaPEX (DG1/DG1+) hashrate and model showing blank/offline: the boot-log read those values depend on was only ever fetched when a machine's MAC and serial number were BOTH still unknown, so a unit that had already been identified some other way silently never got its hashrate parsed at all. The log is now read directly whenever hashrate comes back empty, regardless of why.",
+    "Refuse to start when another agent is already running on this PC. Two agents sharing a FARM_ID knock each other off the backend in a loop — one farm was reconnecting every 3.6 seconds, 104 times in six minutes",
+    "Back off for five minutes, with a clear explanation, when the backend reports that another agent already holds this FARM_ID, instead of reconnecting immediately and resuming the tug-of-war",
+    "Release the instance lock cleanly on exit, and ignore a stale lock left behind by a crashed agent"
+  ],
+  "files": [
+    {
+      "name": "agent.js",
+      "sha256": "ba4003347e3fa0f0aea24d5b8b3ee6d024ab239c1a2cea607f06375fa63b861c",
+      "size": 98737
+    },
+    {
+      "name": "sonoff-th.js",
+      "sha256": "f68b055c80a16aaf2300d8ad58bc888eb53ed31c94f2609fa514cd264b76e522",
+      "size": 18391
+    },
+    {
+      "name": "lanli-rs485.js",
+      "sha256": "069b79a9252f403551c69e9cfd605616d0f44d7f6f4cf3236897d18e9c6d43a7",
+      "size": 5067
+    }
   ]
 }
