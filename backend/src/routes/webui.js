@@ -123,6 +123,21 @@ router.use('/:farmId/:ip', async (req, res) => {
     console.log(`[WEBUI] ↺ recovered parent-relative request → farm=${farmId} ip=${ip} path=${hideTok(climbedPrefix + req.url)}`);
   }
 
+  // ── Safety net: a tunnel path nested inside a tunnel path ──
+  // If a page still carries an older copy of the shim (browser cache), or
+  // some other script builds a URL the same broken way, the request
+  // arrives as /api/webui/F/ip/api/webui/F/ip/js/x.js. Forwarding that
+  // to the miner as-is is a guaranteed 404, so the repeated prefix is
+  // dropped here — but only when it names this same miner, so a request
+  // can never be quietly re-routed to a different machine.
+  {
+    const nested = /^\/api\/webui\/([^/?#]+)\/(\d{1,3}(?:\.\d{1,3}){3})(?=[/?#]|$)/;
+    let m;
+    while ((m = req.url.match(nested)) && m[2] === ip) {
+      req.url = req.url.slice(m[0].length) || '/';
+    }
+  }
+
   const proxyBase = `/api/webui/${farmId}/${ip}`;
 
   // ── Auth check ────────────────────────────────────────────
@@ -329,9 +344,21 @@ router.use('/:farmId/:ip', async (req, res) => {
         // the tunnel at all). Stripping window.location.origin off the
         // front first, when present, reduces this case to the same
         // leading-slash fix already handled below.
+        //
+        // A path that is ALREADY inside the tunnel ("/api/webui/...") is
+        // correct as it stands and must be left alone. Antminer dashboards
+        // load dashboard.html over XHR and insert it with jQuery .html();
+        // jQuery then fetches each <script> in it using the script's fully
+        // resolved URL — which already carries the tunnel prefix. Stripping
+        // the origin and then the slash turned that into a RELATIVE path,
+        // the browser resolved it against the current tunnel folder, and
+        // the prefix appeared twice (/api/webui/F/ip/api/webui/F/ip/js/…),
+        // so jquery, vue and dashboard.js all 404'd and the page showed raw
+        // {{template}} tags.
         'function fix(u){' +
         'if(typeof u!=="string")return u;' +
         'if(u.indexOf(window.location.origin)===0){u=u.slice(window.location.origin.length);}' +
+        'if(u.indexOf("/api/webui/")===0)return u;' +
         'if(u.charAt(0)==="/"&&u.charAt(1)!=="/"){return u.slice(1);}return u;}' +
         'var oF=window.fetch;' +
         'window.fetch=function(i,init){' +
