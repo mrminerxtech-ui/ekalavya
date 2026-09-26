@@ -102,6 +102,11 @@ app.use('/api/insights',  require('./routes/insights'));
 app.use('/api/team',      require('./routes/team'));
 app.use('/api/power',     require('./routes/power'));
 
+// Twilio fetches an alert call's spoken message from here when the call
+// is answered. No login (Twilio can't send one) — each link carries a
+// random id that only exists for 30 minutes. See services/alerts.js.
+app.all('/api/alerts/twiml/:id', require('./services/alerts').twimlHandler);
+
 // A reload inside a single-page miner UI (MaraFW) lands here as e.g.
 // /configuration — sends the browser back into the right miner's tunnel.
 // Only answers browser page loads; API clients and health checks pass
