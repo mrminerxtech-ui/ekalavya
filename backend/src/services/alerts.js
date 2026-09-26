@@ -239,15 +239,42 @@ async function sendSiteVoiceAlert(spokenText, caption) {
   }
 }
 
+// ── False-alarm protection ────────────────────────────────────────
+// A site's internet dropping for a few seconds used to look exactly like
+// 100+ machines going offline (the agent's poll after the reconnect only
+// saw part of the fleet), and phoned everyone. Now a site only alarms if
+//   • it's over the threshold on TWO checks in a row (~6 min), and
+//   • its farm agent isn't in the middle of reconnecting — no alarm
+//     within AGENT_SETTLE_MS of it (re)connecting, or while it has only
+//     just dropped.
+// A site whose agent has been gone for longer than AGENT_GONE_MS still
+// alarms — that is the real emergency (power or internet lost on site) —
+// and says so in the message.
+const AGENT_SETTLE_MS = 3 * 60 * 1000;
+const AGENT_GONE_MS   = 5 * 60 * 1000;
+// Once a site has alarmed, it only alarms again if at least this many MORE
+// machines go down — one flaky unit flipping 65 <-> 66 must not phone
+// everyone every few minutes. And when things improve, the "alerted at"
+// level follows the count back down, so a one-off spike can't leave the
+// bar stuck so high that a later real incident never trips it.
+const WORSE_BY        = 5;
+const startedAt       = Date.now();
+const lastSeenAgent   = new Map();   // farm_id -> last time we saw it connected
+const overLastCheck   = new Map();   // farm_id -> offline count at the previous check (if over threshold)
+
 // ── The actual per-site check, run on a timer by start() below ─────
 async function checkSiteOfflineCounts() {
   const workers = await db.loadWorkers();
   const agents  = agentMgr.getAgents();
+  const now = Date.now();
+  agents.forEach(a => lastSeenAgent.set(a.farm_id, now));
 
   const byFarm = {};
+  const farmNames = {};
   workers.forEach(w => {
     if (w.disabled) return;   // excluded, exactly as asked
     const fid = w.farm_id || 'unassigned';
+    if (w.farm && !farmNames[fid]) farmNames[fid] = w.farm;
     if (!byFarm[fid]) byFarm[fid] = { offline: 0, total: 0 };
     byFarm[fid].total++;
     if (w.status !== 'online' && w.status !== 'warn') byFarm[fid].offline++;
@@ -255,21 +282,55 @@ async function checkSiteOfflineCounts() {
 
   for (const [farmId, counts] of Object.entries(byFarm)) {
     const agent = agents.find(a => a.farm_id === farmId);
-    const farmName = (agent && agent.farm_name) || farmId;
+    const farmName = (agent && agent.farm_name) || farmNames[farmId] || farmId;
+    if (farmId === 'unassigned') continue;   // not a real site
     const prev = await db.getSiteAlertState(farmId);
 
     if (counts.offline <= OFFLINE_THRESHOLD) {
+      overLastCheck.delete(farmId);
       if (prev !== null) await db.clearSiteAlertState(farmId);   // back under threshold — next crossing alerts fresh
       continue;
     }
-    // Already alerted at this count or higher — only re-alert if it's
-    // gotten WORSE since then, not just for staying bad.
-    if (prev !== null && counts.offline <= prev) continue;
 
-    const text = `${counts.offline} of ${counts.total} machines are offline at ${farmName} (excluding disabled). Threshold: ${OFFLINE_THRESHOLD}.`;
-    const spoken = `Warning. ${counts.offline} machines are offline at ${farmName}. Please be warned.`;
+    // Is this site's agent settled enough for the numbers to mean anything?
+    let agentGone = false;
+    if (agent) {
+      if (now - new Date(agent.connected_at).getTime() < AGENT_SETTLE_MS) {
+        console.log(`[ALERT] ${farmName}: ${counts.offline} offline, but its agent only just (re)connected — waiting before alarming`);
+        overLastCheck.delete(farmId);
+        continue;
+      }
+    } else {
+      const seen = lastSeenAgent.get(farmId) || startedAt;
+      if (now - seen < AGENT_GONE_MS) { overLastCheck.delete(farmId); continue; }   // just dropped — may be a blip
+      agentGone = true;
+    }
 
-    console.log(`[ALERT] ${farmName}: ${counts.offline} offline (threshold ${OFFLINE_THRESHOLD}) — sending alerts`);
+    // Two checks in a row, counted at the LOWER of the two, so a single
+    // bad reading can neither trigger an alarm nor inflate the count the
+    // next one is compared against.
+    const before = overLastCheck.get(farmId);
+    overLastCheck.set(farmId, counts.offline);
+    if (before === undefined) {
+      console.log(`[ALERT] ${farmName}: ${counts.offline} offline — confirming on the next check before alarming`);
+      continue;
+    }
+    const confirmed = Math.min(before, counts.offline);
+
+    // Already alerted: follow improvements down silently, and only
+    // re-alert once it's clearly WORSE than that, not just for staying bad.
+    if (prev !== null && confirmed < prev) { await db.setSiteAlertState(farmId, confirmed); continue; }
+    if (prev !== null && confirmed < prev + WORSE_BY) continue;
+
+    const text = agentGone
+      ? `${farmName} is unreachable: its farm agent has been disconnected for over ${AGENT_GONE_MS / 60000} minutes, so all ${confirmed} of its machines show offline. The site may have lost power or internet.`
+      : `${confirmed} of ${counts.total} machines are offline at ${farmName} (excluding disabled), confirmed on two checks. Threshold: ${OFFLINE_THRESHOLD}.`;
+    const spoken = agentGone
+      ? `Warning. ${farmName} is not reachable. The site may have lost power or internet. Please check.`
+      : `Warning. ${confirmed} machines are offline at ${farmName}. Please be warned.`;
+    counts.offline = confirmed;   // what gets recorded as "alerted at" below
+
+    console.log(`[ALERT] ${farmName}: ${confirmed} offline (threshold ${OFFLINE_THRESHOLD}${agentGone ? ', agent unreachable' : ''}) — sending alerts`);
     // Fire both channels together — the phone call is the one that
     // actually gets heard with no tap required, Telegram is the
     // always-on record even if a call goes unanswered.
