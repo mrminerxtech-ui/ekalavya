@@ -217,7 +217,10 @@ function postJson(urlStr, body) {
 }
 
 function restUrl(pathSuffix) {
-  const server = process.env.MMX_SERVER || '';
+  // Same default as agent.js. Without it, a PC with no MMX_SERVER set
+  // built the address "/api/agents/checkin" (no host) and every check-in
+  // failed — "[CHECKIN] Could not reach backend" once a minute, forever.
+  const server = process.env.MMX_SERVER || 'wss://ekalavya-backend-production.up.railway.app/agent';
   return server.replace('wss://', 'https://').replace('ws://', 'http://').replace(/\/agent$/, '') + pathSuffix;
 }
 
