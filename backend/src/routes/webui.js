@@ -77,6 +77,16 @@ const IP_SEGMENT = /^\d{1,3}(?:\.\d{1,3}){3}$/;
 router.use('/:farmId/:ip', async (req, res) => {
   let { farmId, ip } = req.params;
 
+  // helmet's default Referrer-Policy is "no-referrer", which stops the
+  // browser sending a Referer on ANY request from a tunnelled page — and
+  // the parent-relative recovery below depends entirely on the Referer to
+  // work out which miner a "../i18n/strings.properties" request belongs
+  // to. Without it every such request failed with a 400, the language
+  // files never loaded, and the dashboard showed [rate], [network],
+  // [pool] instead of real labels. "same-origin" sends the Referer only
+  // back to this server, never to any other site.
+  res.set('Referrer-Policy', 'same-origin');
+
   // ── Recover from a parent-relative path that climbed too far ──
   //
   // Miner firmware requests some files with a parent-relative path —
@@ -406,7 +416,10 @@ router.use('/:farmId/:ip', async (req, res) => {
 
       html = html
         .replace(/(href|src|action)=(["'])\/(?!\/)/gi, '$1=$2')
-        .replace(/<head([^>]*)>/i, `<head$1>${viewportTag}${interceptShim}`);
+        // The meta tag repeats the Referrer-Policy header above inside the
+        // page itself, so it still applies if a proxy or cache in between
+        // ever drops or rewrites the header.
+        .replace(/<head([^>]*)>/i, `<head$1><meta name="referrer" content="same-origin">${viewportTag}${interceptShim}`);
       bodyBuf = Buffer.from(html, 'utf8');
     }
 
