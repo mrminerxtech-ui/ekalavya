@@ -343,8 +343,45 @@ router.use('/:farmId/:ip', async (req, res) => {
       // entirely — neither override above ever sees this happen. This
       // patches the property itself so ANY assignment gets fixed, no
       // matter which mechanism sets it.
+      // This miner's folder inside the tunnel, e.g. /api/webui/Farm%203/19.3.19.155/
+      const tunnelBase = '/api/webui/' + encodeURIComponent(farmId) + '/' + ip + '/';
+
+      // ── Single-page apps (MaraFW and similar) ──────────────────
+      // MaraFW's dashboard is a React app that picks which screen to show
+      // by reading the address bar. Through the tunnel the address is
+      // /api/webui/Farm 3/<ip>/, which matches none of its screens, so it
+      // loaded every file correctly and then showed React Router's own
+      // "Unexpected Application Error! 404 Not Found".
+      //
+      // For these pages the address bar is quietly changed to the path the
+      // app expects (/, /configuration, …) BEFORE the app starts, and a
+      // <base> tag keeps every relative file and API request pointed at
+      // the tunnel. The real tunnel folder is kept in this tab's
+      // sessionStorage so a reload (which would otherwise hit
+      // /configuration on our own server) can find its way back to the
+      // same miner — see reloadFallback below. sessionStorage is per tab,
+      // so two miners open side by side never get mixed up.
+      //
+      // Detected by an ES-module <script>, which is how Vite-built apps
+      // like MaraFW load. Stock Antminer, Avalon and Braiins OS+ pages
+      // don't use one, so they keep working exactly as before.
+      const isSpa = /<script[^>]+type=["']?module/i.test(html);
+      const spaShim = !isSpa ? '' :
+        `<base href="${tunnelBase}">` +
+        '<script>(function(){' +
+        'var B=' + JSON.stringify(tunnelBase) + ';' +
+        'try{sessionStorage.setItem("ekl_tunnel_base",B);}catch(e){}' +
+        'var dp,dB;try{dp=decodeURIComponent(location.pathname);dB=decodeURIComponent(B);}catch(e){return;}' +
+        'if(dp.indexOf(dB)!==0)return;' +
+        // The login token only needs to reach the server once; it is
+        // dropped from the address bar so it isn't left on screen.
+        'var s=new URLSearchParams(location.search);s.delete("token");var q=s.toString();' +
+        'history.replaceState(history.state,"",encodeURI("/"+dp.slice(dB.length))+(q?"?"+q:"")+location.hash);' +
+        '})();</script>';
+
       const interceptShim = '<script>' +
         '(function(){' +
+        'var B=' + JSON.stringify(tunnelBase) + ';' +
         // Braiins OS+'s GraphQL client builds its endpoint as
         // `location.origin + "/graphql"` — a fully-qualified absolute
         // URL, not a bare "/graphql" string. That form skipped the
@@ -369,7 +406,12 @@ router.use('/:farmId/:ip', async (req, res) => {
         'if(typeof u!=="string")return u;' +
         'if(u.indexOf(window.location.origin)===0){u=u.slice(window.location.origin.length);}' +
         'if(u.indexOf("/api/webui/")===0)return u;' +
-        'if(u.charAt(0)==="/"&&u.charAt(1)!=="/"){return u.slice(1);}return u;}' +
+        // A path from the miner's root ("/cgi-bin/x", "/api/v1/…") is
+        // pointed at this miner's tunnel folder explicitly, rather than
+        // made relative. Relative only worked while the page sat at the
+        // folder's top level — it went wrong for a page in a subfolder,
+        // and for single-page apps whose address bar now reads "/".
+        'if(u.charAt(0)==="/"&&u.charAt(1)!=="/"){return B+u.slice(1);}return u;}' +
         'var oF=window.fetch;' +
         'window.fetch=function(i,init){' +
         'if(typeof i==="string")i=fix(i);' +
@@ -419,7 +461,7 @@ router.use('/:farmId/:ip', async (req, res) => {
         // The meta tag repeats the Referrer-Policy header above inside the
         // page itself, so it still applies if a proxy or cache in between
         // ever drops or rewrites the header.
-        .replace(/<head([^>]*)>/i, `<head$1><meta name="referrer" content="same-origin">${viewportTag}${interceptShim}`);
+        .replace(/<head([^>]*)>/i, `<head$1><meta name="referrer" content="same-origin">${spaShim}${viewportTag}${interceptShim}`);
       bodyBuf = Buffer.from(html, 'utf8');
     }
 
@@ -503,4 +545,28 @@ function tunnelErrorPage(message) {
     <p style="font-size:12px">Check the miner is powered on and the farm agent is connected.</p></div></body></html>`;
 }
 
+// ── Reloading a single-page miner app ───────────────────────────
+// After the address bar is changed for a single-page app (see isSpa
+// above), pressing reload asks OUR server for "/configuration" instead of
+// the miner. Only the tab itself knows which miner it was showing (kept
+// in sessionStorage), so a browser page request for an unknown path gets
+// a tiny page that sends it back into the right tunnel — or, in a tab
+// that never opened a miner, a plain "not found".
+// Mounted in server.js ahead of everything except the API routes.
+function reloadFallback(req, res, next) {
+  if (req.method !== 'GET') return next();
+  if (req.path.startsWith('/api/') || req.path === '/health') return next();
+  const dest = req.headers['sec-fetch-dest'];
+  if (dest && dest !== 'document') return next();
+  if (!/text\/html/i.test(req.headers.accept || '')) return next();   // API clients, health checks
+  res.set('Cache-Control', 'no-store');
+  res.status(200).send('<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>' +
+    '<script>(function(){var b=null;try{b=sessionStorage.getItem("ekl_tunnel_base");}catch(e){}' +
+    'if(b&&/^\\/api\\/webui\\/[^/]+\\/\\d{1,3}(\\.\\d{1,3}){3}\\/$/.test(b)){' +
+    'location.replace(b+location.pathname.slice(1)+location.search+location.hash);return;}' +
+    'document.body.innerHTML="<p style=\\"font-family:sans-serif\\">Page not found. Open the miner again from Ekalavya.</p>";' +
+    '})();</script></body></html>');
+}
+
 module.exports = router;
+module.exports.reloadFallback = reloadFallback;
