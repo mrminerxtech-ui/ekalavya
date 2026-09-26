@@ -369,7 +369,22 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
   -webkit-mask-image:radial-gradient(ellipse at 40% 45%,#000 20%,transparent 75%);mask-image:radial-gradient(ellipse at 40% 45%,#000 20%,transparent 75%);animation:gridDrift 30s linear infinite;}
 @keyframes gridDrift{to{background-position:44px 44px,44px 44px;}}
 .lb-top,.lb-mid,.lb-foot{position:relative;}
-.lb-logo{width:240px;max-width:70%;height:auto;display:block;}
+/* Brand lockup — the EKALAVYA logo drawn in code instead of an image,
+   so it stays sharp at any size and the tagline is plain editable text.
+   Everything scales from one number: the lockup's font-size. */
+.brand-lockup{display:flex;align-items:center;gap:.42em;font-size:64px;line-height:1;}
+.bl-chip{width:1.9em;height:1.9em;flex-shrink:0;overflow:visible;filter:drop-shadow(0 0 .35em rgba(247,165,49,.22));}
+.bl-text{display:flex;flex-direction:column;}
+.bl-word{font:800 1em/1 var(--font);letter-spacing:.07em;color:#f1ece3;}
+.bl-bar{width:2.1em;height:.055em;min-height:2px;border-radius:2px;background:#f7a531;margin:.24em 0 .22em;}
+.bl-tag{font:600 .215em/1.2 var(--mono);letter-spacing:.3em;text-transform:uppercase;color:#f7a531;white-space:nowrap;}
+.lb-top .brand-lockup{font-size:clamp(46px,4.4vw,72px);}
+/* The logo takes all the free height above the headline and sits in the
+   middle of it, instead of a small mark pinned in the corner. */
+.lb-top{flex:1;display:flex;align-items:center;min-height:170px;padding-bottom:12px;}
+.lb-foot{margin-top:44px;}
+.lc-lockup{display:none;justify-content:center;margin:0 auto 30px;}
+.lc-lockup .brand-lockup{font-size:40px;}
 .lb-kicker{font:600 11.5px/1 var(--font);letter-spacing:.18em;text-transform:uppercase;color:var(--cyan);margin-bottom:16px;display:flex;align-items:center;gap:10px;}
 .lb-kicker::before{content:"";width:26px;height:1px;background:var(--cyan);}
 .lb-h{font:800 44px/1.08 var(--font);letter-spacing:-.03em;color:#fff;max-width:560px;}
@@ -503,7 +518,8 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
    which is why the phone tab bar used to show up on desktop as well. */
 @media (min-width:769px){#bottomNav{display:none!important;}}
 @media (max-width:1180px){.scan-grid{grid-template-columns:1fr 1fr;}.lb-h{font-size:36px;}.lb-feats{grid-template-columns:1fr;max-width:380px;}}
-@media (max-width:960px){.login-shell{grid-template-columns:1fr;}.login-brand{display:none;}.lc-logo{display:block;}}
+@media (max-width:960px){.login-shell{grid-template-columns:1fr;}.login-brand{display:none;}.lc-lockup{display:flex;}}
+@media (max-width:420px){.lc-lockup .brand-lockup{font-size:34px;}}
 @media (max-width:768px){
   #sidebar,.tb-toggle{display:none;}
   #bottomNav{display:block;}
@@ -689,6 +705,16 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
   <symbol id="i-power" viewBox="0 0 24 24"><path d="M18.36 6.64a9 9 0 1 1-12.73 0M12 2v10"/></symbol>
   <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></symbol>
   <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></symbol>
+  <!-- EKALAVYA brand chip (fixed colours, not currentColor) -->
+  <symbol id="brand-chip" viewBox="0 0 64 64">
+    <g stroke="#ece6da" stroke-width="3" stroke-linecap="round" fill="none">
+      <path d="M23 5v7M29 5v7M35 5v7M41 5v7M23 52v7M29 52v7M35 52v7M41 52v7M5 23h7M5 29h7M5 35h7M5 41h7M52 23h7M52 29h7M52 35h7M52 41h7"/>
+      <rect x="14" y="14" width="36" height="36" rx="5" fill="#0b1220"/>
+    </g>
+    <circle cx="19.6" cy="19.6" r="1.5" fill="#f7a531"/>
+    <g stroke="#f7a531" stroke-width="2.3" stroke-linecap="round"><path d="M29.4 20.2v3.2M34.2 20.2v3.2M29.4 40.6v3.2M34.2 40.6v3.2"/></g>
+    <text x="32" y="40.6" text-anchor="middle" font-family="Inter,system-ui,Arial,sans-serif" font-size="24" font-weight="800" fill="#f7a531">B</text>
+  </symbol>
   <symbol id="i-hash" viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M10 3L8 21M16 3l-2 18"/></symbol>
 </svg>
 
@@ -747,7 +773,12 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
 <div id="loginScreen">
   <div class="login-shell">
     <section class="login-brand" aria-hidden="true">
-      <div class="lb-top"><img class="lb-logo" src="logo-full.png" alt="EKY Monitoring"></div>
+      <div class="lb-top">
+        <div class="brand-lockup" role="img" aria-label="Ekalavya — Remote ASIC Management">
+          <svg class="bl-chip"><use href="#brand-chip"/></svg>
+          <div class="bl-text"><div class="bl-word">EKALAVYA</div><div class="bl-bar"></div><div class="bl-tag">Remote ASIC Management</div></div>
+        </div>
+      </div>
       <div class="lb-mid">
         <div class="lb-kicker">Mining operations console</div>
         <div class="lb-h">Every machine. Every site. <em>One console.</em></div>
@@ -767,7 +798,12 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
     <section class="login-panel">
       <div class="login-card">
         <div class="login-glow"></div>
-        <img class="lc-logo" src="logo-full.png" alt="EKY Monitoring">
+        <div class="lc-lockup">
+          <div class="brand-lockup" role="img" aria-label="Ekalavya — Remote ASIC Management">
+            <svg class="bl-chip"><use href="#brand-chip"/></svg>
+            <div class="bl-text"><div class="bl-word">EKALAVYA</div><div class="bl-bar"></div><div class="bl-tag">Remote ASIC Management</div></div>
+          </div>
+        </div>
         <div class="lc-h">Welcome back</div>
         <div class="lc-sub">Sign in to your monitoring console</div>
         <div class="ltabs">
