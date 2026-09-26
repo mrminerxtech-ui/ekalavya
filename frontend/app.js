@@ -4669,9 +4669,159 @@ function showWebUiFallback(w, url, message) {
   document.body.appendChild(wrap);
 }
 
+// ── Miner logs: View / Download ─────────────────────────────────
+// The agent already fetches the miner's log (/cgi-bin/log.cgi, the same
+// text the miner's own "Current Log" page shows) and sends it back in the
+// reply's `logs` field. These two buttons used to go through doAction(),
+// which only shows a "… sent to <miner>" toast — so the log arrived and
+// was thrown away, and the person only ever saw "Sending fetchlogs…".
+function requestMinerLog(w) {
+  const token = localStorage.getItem('ekl_token');
+  return fetch(API_BASE + '/api/actions/fetchlogs', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','Authorization':'Bearer ' + (token||'')},
+    body: JSON.stringify({ ip: w.ip, farm_id: w.farm_id, worker_id: w.id })
+  }).then(function(r){
+    return r.text().then(function(text){
+      let d;
+      try { d = JSON.parse(text); }
+      catch(e) { throw new Error('Server returned an unexpected response (HTTP ' + r.status + ')'); }
+      if (!d.ok) throw new Error(d.error || 'Could not retrieve logs from this miner');
+      if (!d.logs) throw new Error('The miner answered, but sent no log text');
+      return String(d.logs);
+    });
+  });
+}
+
+function minerLogFileName(w) {
+  const d = new Date(), p = function(n){ return String(n).padStart(2, '0'); };
+  const stamp = d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate()) + '_' + p(d.getHours()) + p(d.getMinutes());
+  const who = String(w.name || w.ip || 'miner').replace(/[^A-Za-z0-9._-]+/g, '_');
+  return who + '_' + String(w.ip || '').replace(/\./g, '-') + '_log_' + stamp + '.txt';
+}
+
+function saveMinerLog(w, text) {
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = minerLogFileName(w); a.style.display = 'none';
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ URL.revokeObjectURL(url); try { a.remove(); } catch(e){} }, 2000);
+}
+
+function downloadMinerLog(w) {
+  toast('Fetching log from ' + (w.name || w.ip) + '…', 'var(--cyan)');
+  requestMinerLog(w)
+    .then(function(text){ saveMinerLog(w, text); toast('✓ Log saved — ' + minerLogFileName(w), 'var(--green)'); })
+    .catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
+}
+
+var _logViewer = null;   // { w, text, timer }
+function closeMinerLog() {
+  if (_logViewer && _logViewer.timer) clearInterval(_logViewer.timer);
+  _logViewer = null;
+  const el = document.getElementById('minerLogViewer');
+  if (el) el.remove();
+}
+
+function viewMinerLog(w) {
+  closeMinerLog();
+  _logViewer = { w: w, text: '', timer: null };
+
+  const wrap = document.createElement('div');
+  wrap.id = 'minerLogViewer';
+  wrap.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.7);display:flex;'
+    + 'align-items:center;justify-content:center;padding:12px';
+  const btn = 'background:none;border:1px solid var(--b1);color:var(--txt);border-radius:4px;'
+    + 'padding:6px 10px;font-size:11px;cursor:pointer;white-space:nowrap';
+  wrap.innerHTML =
+      '<div style="background:var(--s1);border:1px solid var(--b1);border-radius:8px;width:100%;max-width:1100px;'
+    +   'height:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden">'
+    +   '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--b1)">'
+    +     '<div style="flex:1;min-width:160px">'
+    +       '<div style="font-family:Orbitron,sans-serif;font-size:12px;font-weight:700;color:var(--cyan)">' + escHtml(w.name || w.ip) + ' — Miner Log</div>'
+    +       '<div id="minerLogStatus" style="font-size:10px;color:var(--mute);margin-top:2px">Fetching…</div>'
+    +     '</div>'
+    +     '<input id="minerLogFilter" placeholder="Filter lines…" style="background:var(--s2,#0b1622);border:1px solid var(--b1);'
+    +       'color:var(--txt);border-radius:4px;padding:6px 8px;font-size:11px;width:150px">'
+    +     '<label style="font-size:10px;color:var(--mute);display:flex;align-items:center;gap:4px;cursor:pointer">'
+    +       '<input type="checkbox" id="minerLogAuto"> Auto-refresh</label>'
+    +     '<button id="minerLogRefresh" style="' + btn + '">&#x21bb; Refresh</button>'
+    +     '<button id="minerLogCopy" style="' + btn + '">Copy</button>'
+    +     '<button id="minerLogSave" style="' + btn + '">&#x2913; Download</button>'
+    +     '<button id="minerLogClose" style="' + btn + ';color:var(--mute)">&#x2715;</button>'
+    +   '</div>'
+    +   '<pre id="minerLogText" style="flex:1;margin:0;padding:10px 12px;overflow:auto;font-family:\'Share Tech Mono\',monospace;'
+    +     'font-size:11px;line-height:1.5;color:var(--txt);white-space:pre-wrap;word-break:break-word"></pre>'
+    + '</div>';
+  document.body.appendChild(wrap);
+
+  const pre = document.getElementById('minerLogText');
+  const status = document.getElementById('minerLogStatus');
+  const filter = document.getElementById('minerLogFilter');
+
+  function render(keepPlace) {
+    if (!_logViewer) return;
+    const q = filter.value.trim().toLowerCase();
+    const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
+    const lines = _logViewer.text.split('\n');
+    const shown = q ? lines.filter(function(l){ return l.toLowerCase().indexOf(q) !== -1; }) : lines;
+    pre.textContent = shown.join('\n') || (q ? '(no lines match "' + filter.value + '")' : '');
+    // The newest lines are at the bottom — start there, and on refresh
+    // stay there unless the person has scrolled up to read something.
+    if (!keepPlace || atBottom) pre.scrollTop = pre.scrollHeight;
+  }
+
+  let loading = false;
+  function load(isRefresh) {
+    if (loading || !_logViewer) return;
+    loading = true;
+    status.textContent = isRefresh ? 'Refreshing…' : 'Fetching…';
+    requestMinerLog(w).then(function(text){
+      if (!_logViewer) return;
+      _logViewer.text = text;
+      const n = text.split('\n').length;
+      status.textContent = w.ip + ' · ' + n + ' lines · fetched ' + new Date().toLocaleTimeString();
+      render(isRefresh);
+    }).catch(function(e){
+      if (!_logViewer) return;
+      status.textContent = '✗ ' + e.message;
+      if (!_logViewer.text) pre.textContent = e.message;
+    }).then(function(){ loading = false; });
+  }
+
+  filter.addEventListener('input', function(){ render(false); });
+  document.getElementById('minerLogRefresh').onclick = function(){ load(true); };
+  document.getElementById('minerLogClose').onclick = closeMinerLog;
+  wrap.addEventListener('click', function(e){ if (e.target === wrap) closeMinerLog(); });
+  document.getElementById('minerLogSave').onclick = function(){
+    if (!_logViewer || !_logViewer.text) { toast('Nothing to save yet', 'var(--warn)'); return; }
+    saveMinerLog(w, _logViewer.text);
+  };
+  document.getElementById('minerLogCopy').onclick = function(){
+    if (!_logViewer || !_logViewer.text) return;
+    const done = function(){ toast('✓ Log copied', 'var(--green)'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(_logViewer.text).then(done).catch(function(){ toast('✗ Copy blocked by the browser', 'var(--red)'); });
+    }
+  };
+  // Every 15 s — each refresh is one request to the miner through the
+  // farm agent, so this stays gentle on the miner's small web server.
+  document.getElementById('minerLogAuto').onchange = function(e){
+    if (!_logViewer) return;
+    if (_logViewer.timer) { clearInterval(_logViewer.timer); _logViewer.timer = null; }
+    if (e.target.checked) _logViewer.timer = setInterval(function(){ load(true); }, 15000);
+  };
+
+  load(false);
+}
+
 function doAction(action, wid){
   const w = workers.find(function(x){ return x.id === (wid || activeWid); });
   if(!w){ toast('No miner selected', 'var(--warn)'); return; }
+
+  if (action === 'fetchlogs')    { viewMinerLog(w); return; }
+  if (action === 'downloadlogs') { downloadMinerLog(w); return; }
 
   // worker_id here means "which miner to look up" — kept consistent
   // with the backend's lookup field. Parameterized actions add their
