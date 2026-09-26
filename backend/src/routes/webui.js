@@ -15,6 +15,7 @@
 // literally anyone with the URL) could reach every machine on every
 // farm, not just their own.
 // ============================================================
+const hideTok = u => String(u || '').replace(/([?&]token=)[^&\s]+/gi, '$1[hidden]');
 const express  = require('express');
 const router   = express.Router();
 const jwt      = require('jsonwebtoken');
@@ -98,7 +99,7 @@ router.use('/:farmId/:ip', async (req, res) => {
     const ref = req.headers.referer || req.headers.referrer || '';
     const m = String(ref).match(/\/api\/webui\/([^/?#]+)\/(\d{1,3}(?:\.\d{1,3}){3})(?:[/?#]|$)/);
     if (!m) {
-      console.warn(`[WEBUI] ✗ 400 cannot resolve miner from segment "${ip}" — no usable Referer (${req.url})`);
+      console.warn(`[WEBUI] ✗ 400 cannot resolve miner from segment "${ip}" — no usable Referer (${hideTok(req.url)})`);
       return res.status(400).send(tunnelErrorPage(
         `This page asked for "${ip}${req.url}" using a path that points outside the miner, and there was no Referer to recover the real address from.`));
     }
@@ -119,7 +120,7 @@ router.use('/:farmId/:ip', async (req, res) => {
 
     farmId = realFarm;
     ip     = realIp;
-    console.log(`[WEBUI] ↺ recovered parent-relative request → farm=${farmId} ip=${ip} path=${climbedPrefix}${req.url}`);
+    console.log(`[WEBUI] ↺ recovered parent-relative request → farm=${farmId} ip=${ip} path=${hideTok(climbedPrefix + req.url)}`);
   }
 
   const proxyBase = `/api/webui/${farmId}/${ip}`;
@@ -212,12 +213,12 @@ router.use('/:farmId/:ip', async (req, res) => {
   // LOG_VERBOSE — failures are logged separately either way.
   const isPageLoad = minerPath === '/' || /\.(html?|cgi)$/i.test(minerPath.split('?')[0]) === false;
   if (process.env.LOG_VERBOSE === '1' || isPageLoad) {
-    console.log(`[WEBUI] ${req.method} ${minerPath} → farm=${farmId} ip=${ip} user=${user.id}(${user.role})`);
+    console.log(`[WEBUI] ${req.method} ${hideTok(minerPath)} → farm=${farmId} ip=${ip} user=${user.id}(${user.role})`);
   }
 
   const agent = agentMgr.getAgent(farmId);
   if (!agent) {
-    console.warn(`[WEBUI] ✗ 502 ${req.url}  — agent "${farmId}" was not connected at this moment`);
+    console.warn(`[WEBUI] ✗ 502 ${hideTok(req.url)}  — agent "${farmId}" was not connected at this moment`);
     return res.status(502).send(tunnelErrorPage(`Farm agent "${farmId}" is not connected right now.`));
   }
 
