@@ -142,23 +142,70 @@ function phoneCallConfigured() {
 // Speaks the alert twice with a short pause between — someone answering
 // a call can easily miss the first few words while picking up, so this
 // gives them a second pass rather than one shot at hearing it.
+//
+// Uses Twilio's standard voice unless TWILIO_VOICE names another (e.g.
+// Polly.Joanna): the standard one works on every account, trial included,
+// while premium voices may not.
 function buildAlertTwiml(spokenText) {
-  const escaped = spokenText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return `<?xml version="1.0" encoding="UTF-8"?><Response>`
-    + `<Say voice="Polly.Joanna">${escaped}</Say>`
-    + `<Pause length="1"/>`
-    + `<Say voice="Polly.Joanna">${escaped}</Say>`
-    + `</Response>`;
+  const escaped = String(spokenText).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const voice = (process.env.TWILIO_VOICE || '').replace(/[^A-Za-z0-9._-]/g, '');
+  const say = `<Say${voice ? ` voice="${voice}"` : ''}>${escaped}</Say>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><Response>${say}<Pause length="1"/>${say}</Response>`;
 }
 
-// Calls every configured admin number. Twilio synthesizes the speech
-// itself from the inline Twiml param — no audio file, no hosting a
-// webhook to serve TwiML from, unlike the Telegram voice note above.
+// ── Serving the spoken message by link ──────────────────────────────
+// Twilio trial accounts refuse the message sent inline with the call
+// ("trial accounts have limited parameter access"). What they do accept
+// is a Url: Twilio fetches the call's script from a web address when the
+// person answers. So each alert's script is kept here briefly under a
+// random, unguessable id and served at /api/alerts/twiml/<id> (mounted in
+// server.js). Works the same on paid accounts.
+//
+// The address comes from PUBLIC_BASE_URL if set, else from the domain
+// Railway gives the service (RAILWAY_PUBLIC_DOMAIN). With neither, calls
+// fall back to the inline message, which only paid accounts accept.
+const crypto = require('crypto');
+const TWIML_TTL_MS = 30 * 60 * 1000;
+const pendingTwiml = new Map();   // id -> { xml, expires }
+
+function publicBaseUrl() {
+  const explicit = (process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (explicit) return explicit;
+  const rail = (process.env.RAILWAY_PUBLIC_DOMAIN || '').trim();
+  return rail ? 'https://' + rail : null;
+}
+
+function twimlUrlFor(spokenText) {
+  const base = publicBaseUrl();
+  if (!base) return null;
+  const now = Date.now();
+  for (const [k, v] of pendingTwiml) if (v.expires < now) pendingTwiml.delete(k);
+  const id = crypto.randomBytes(16).toString('hex');
+  pendingTwiml.set(id, { xml: buildAlertTwiml(spokenText), expires: now + TWIML_TTL_MS });
+  return `${base}/api/alerts/twiml/${id}`;
+}
+
+// Twilio asks for the script (POST by default) when the call is answered.
+// No login here: Twilio can't carry one, and the random id is what keeps
+// it private. An unknown or expired id still gets a valid, harmless
+// script, so a late pickup hears something sensible, not an error.
+function twimlHandler(req, res) {
+  const entry = pendingTwiml.get(String(req.params.id || ''));
+  const xml = entry && entry.expires >= Date.now()
+    ? entry.xml
+    : buildAlertTwiml('This Ekalavya alert has expired. Please check the dashboard.');
+  res.set('Content-Type', 'text/xml');
+  res.send(xml);
+}
+
+// Calls every configured admin number.
 async function sendPhoneCallAlert(spokenText) {
   if (!phoneCallConfigured()) return false;
-  const twiml = buildAlertTwiml(spokenText);
+  const url = twimlUrlFor(spokenText);
+  const script = url ? { Url: url } : { Twiml: buildAlertTwiml(spokenText) };
+  if (!url) console.log('[ALERT] No public address known (set PUBLIC_BASE_URL) — sending the message inline, which Twilio trial accounts refuse');
   const results = await Promise.allSettled(TWILIO_TO.map(number => {
-    const body = new URLSearchParams({ To: number, From: TWILIO_FROM, Twiml: twiml });
+    const body = new URLSearchParams({ To: number, From: TWILIO_FROM, ...script });
     return axios.post(
       `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Calls.json`,
       body.toString(),
@@ -437,8 +484,14 @@ function start() {
   // Say plainly when a call channel is off, so a missing or misspelt
   // variable shows up in the startup log instead of as a silent no-call
   // during a real outage (which is how the Twilio mix-up went unnoticed).
+  if (phoneCallConfigured()) {
+    const base = publicBaseUrl();
+    console.log(base
+      ? `[ALERT] Twilio will fetch each call's message from ${base}/api/alerts/twiml/…`
+      : '[ALERT] Twilio: no public address known — set PUBLIC_BASE_URL (e.g. https://your-backend.up.railway.app), trial accounts need it');
+  }
   if (!phoneCallConfigured()) {
-    const missing = ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM_NUMBER', 'TWILIO_ALERT_NUMBERS'].filter(k => !process.env[k]);
+    const missing =['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM_NUMBER', 'TWILIO_ALERT_NUMBERS'].filter(k => !process.env[k]);
     console.log(`[ALERT] Twilio calls OFF${missing.length ? ' — not set: ' + missing.join(', ') : ''}`);
   }
   if (!callMeBotConfigured()) console.log('[ALERT] CallMeBot calls OFF — CALLMEBOT_USERS not set');
@@ -447,4 +500,4 @@ function start() {
   siteAlertTimer = setInterval(() => { checkSiteOfflineCounts().catch(e => console.error('[ALERT]', e.message)); }, CHECK_EVERY_MS);
 }
 
-module.exports = { raiseAlert, sendSlackAlert, sendTelegramAlert, checkWorkerThresholds, start, checkSiteOfflineCounts };
+module.exports = { raiseAlert, sendSlackAlert, sendTelegramAlert, checkWorkerThresholds, start, checkSiteOfflineCounts, twimlHandler };
