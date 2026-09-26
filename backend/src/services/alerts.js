@@ -179,6 +179,64 @@ async function sendPhoneCallAlert(spokenText) {
   return okCount > 0;
 }
 
+// ── Free phone calls via CallMeBot (Telegram voice call) ────────────
+// A second, free call channel alongside Twilio: CallMeBot places a real
+// Telegram voice call to each person and reads the alert out loud, so
+// the phone rings like any incoming call with nothing to open or tap.
+// Twilio's free trial blocks some custom call scripts and limits who
+// and where it can call — this one works without any paid account.
+//
+// Setup, once per person: in Telegram, send /start to @CallMeBot_txtbot
+// (that is what authorises it to call you). Then set on Railway:
+//   CALLMEBOT_USERS — comma-separated Telegram usernames, e.g. @abhi,@ravi
+//                     (a phone number with country code, +971…, also works)
+//
+// It is a free shared service with no delivery guarantee, so Telegram
+// text + voice note and Twilio (if set) still fire as before — this adds
+// a ring, it doesn't replace anything. Known limit on their side: the
+// iPhone Telegram app may ring but not play the spoken message.
+const CALLMEBOT_USERS = (process.env.CALLMEBOT_USERS || '')
+  .split(',').map(s => s.trim()).filter(Boolean)
+  .map(u => (u.startsWith('@') || u.startsWith('+')) ? u : '@' + u);
+
+function callMeBotConfigured() { return CALLMEBOT_USERS.length > 0; }
+
+// Their reply is a small HTML page describing what happened (queued,
+// not authorised, too many calls, …). Tags are stripped so the log line
+// says in plain words why a call didn't ring.
+function plainText(html) {
+  return String(html || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 220);
+}
+
+async function sendCallMeBotAlert(spokenText) {
+  if (!callMeBotConfigured()) return false;
+  const text = String(spokenText).slice(0, 250);          // their limit is 256 characters
+  let okCount = 0;
+  // One after another rather than all at once: it's a shared free
+  // service, and a burst of simultaneous calls is what it throttles.
+  for (const user of CALLMEBOT_USERS) {
+    try {
+      const res = await axios.get('http://api.callmebot.com/start.php', {
+        // rpt: say it twice (someone picking up can miss the start);
+        // cc=missed: if the call isn't answered, they also send it as text.
+        params: { user, text, rpt: 2, cc: 'missed' },
+        timeout: 60000,
+        responseType: 'text',
+        validateStatus: () => true,
+      });
+      // Their reply is logged word for word — it is the only place that
+      // says why a call didn't ring (e.g. the person never sent /start).
+      const said = plainText(res.data);
+      if (res.status === 200) { okCount++; console.log(`[ALERT] CallMeBot → ${user}: ${said}`); }
+      else console.error(`[ALERT] CallMeBot → ${user} refused (HTTP ${res.status}): ${said}`);
+    } catch (e) {
+      console.error(`[ALERT] CallMeBot call to ${user} failed:`, e.message);
+    }
+  }
+  console.log(`[ALERT] CallMeBot: ${okCount}/${CALLMEBOT_USERS.length} call(s) placed`);
+  return okCount > 0;
+}
+
 // ── Text-to-speech via Google Translate's public TTS endpoint ──────
 // No API key, no account, no cost — the same audio the "listen" button
 // on translate.google.com plays. Unofficial/undocumented, so it's used
@@ -337,6 +395,7 @@ async function checkSiteOfflineCounts() {
     const [voiceOk] = await Promise.all([
       sendSiteVoiceAlert(spoken, text),
       sendPhoneCallAlert(spoken),
+      sendCallMeBotAlert(spoken),
     ]);
     if (!voiceOk) await sendTelegramAlert(text, 'critical');   // fall back to the existing text-alert function above
     await db.setSiteAlertState(farmId, counts.offline);
@@ -344,13 +403,38 @@ async function checkSiteOfflineCounts() {
 }
 
 let siteAlertTimer = null;
+// Places one test call on every configured call channel when the server
+// starts with ALERT_TEST_CALL=1 — a way to check the phone really rings
+// without waiting for a real outage. Remove the variable afterwards, or
+// every restart/redeploy will ring you again.
+async function sendTestCalls() {
+  const spoken = 'This is a test call from Ekalavya. Site alert calls are working.';
+  console.log('[ALERT] ALERT_TEST_CALL=1 — placing a test call on every configured call channel');
+  if (phoneCallConfigured()) await sendPhoneCallAlert(spoken);
+  if (callMeBotConfigured()) await sendCallMeBotAlert(spoken);
+  if (!phoneCallConfigured() && !callMeBotConfigured()) console.log('[ALERT] Test call skipped — no call channel (Twilio or CallMeBot) is configured');
+}
+
 function start() {
-  if (!siteAlertingConfigured() && !phoneCallConfigured()) {
-    console.log('[ALERT] Neither Telegram (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID) nor Twilio (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_FROM_NUMBER/TWILIO_ALERT_NUMBERS) is configured — site offline-count alerts are disabled.');
+  if (!siteAlertingConfigured() && !phoneCallConfigured() && !callMeBotConfigured()) {
+    console.log('[ALERT] No alert channel is configured — Telegram (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID), Twilio (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_FROM_NUMBER/TWILIO_ALERT_NUMBERS) or CallMeBot (CALLMEBOT_USERS) — site offline-count alerts are disabled.');
     return;
   }
-  const channels = [siteAlertingConfigured() && 'Telegram', phoneCallConfigured() && 'phone call'].filter(Boolean).join(' + ');
+  const channels = [
+    siteAlertingConfigured() && 'Telegram',
+    phoneCallConfigured()    && `Twilio call (${TWILIO_TO.length} number(s))`,
+    callMeBotConfigured()    && `CallMeBot call (${CALLMEBOT_USERS.join(', ')})`,
+  ].filter(Boolean).join(' + ');
   console.log(`[ALERT] Site offline-count alerting active via ${channels} — checking every ${CHECK_EVERY_MS / 60000}m, threshold ${OFFLINE_THRESHOLD} offline (excluding disabled).`);
+  // Say plainly when a call channel is off, so a missing or misspelt
+  // variable shows up in the startup log instead of as a silent no-call
+  // during a real outage (which is how the Twilio mix-up went unnoticed).
+  if (!phoneCallConfigured()) {
+    const missing = ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM_NUMBER', 'TWILIO_ALERT_NUMBERS'].filter(k => !process.env[k]);
+    console.log(`[ALERT] Twilio calls OFF${missing.length ? ' — not set: ' + missing.join(', ') : ''}`);
+  }
+  if (!callMeBotConfigured()) console.log('[ALERT] CallMeBot calls OFF — CALLMEBOT_USERS not set');
+  if (process.env.ALERT_TEST_CALL === '1') sendTestCalls().catch(e => console.error('[ALERT] Test call error:', e.message));
   checkSiteOfflineCounts().catch(e => console.error('[ALERT]', e.message));
   siteAlertTimer = setInterval(() => { checkSiteOfflineCounts().catch(e => console.error('[ALERT]', e.message)); }, CHECK_EVERY_MS);
 }
