@@ -3,6 +3,50 @@
 // ============================================================
 const connectedAgents = new Map();
 
+// ── Riding out brief connection drops ───────────────────────
+// A farm whose internet blips (seen at Ghummadh: dropped every few
+// minutes, reconnecting within seconds) used to have EVERY machine
+// marked offline on each drop, and the short first poll after the
+// reconnect marked most of them offline again. That produced false
+// "100+ machines offline" alarms while nothing on site was actually down.
+//
+// 1) Disconnect grace: machines are only marked offline if the agent
+//    stays away for DISCONNECT_GRACE_MS. A reconnect inside that window
+//    cancels it — the next poll brings fresh readings anyway.
+// 2) Short-poll guard: a poll that finds fewer machines than usual right
+//    after a reconnect, or >10% fewer at any time, still updates the ones it
+//    found, but doesn't mark the missing ones offline. A genuine outage
+//    is applied once it has persisted past SHORT_POLL_CONFIRM_MS.
+const DISCONNECT_GRACE_MS   = 2 * 60 * 1000;
+const RECONNECT_SETTLE_MS   = 3 * 60 * 1000;
+const SHORT_POLL_RATIO      = 0.9;            // > 10% of the usual machines missing = "short"
+const SHORT_POLL_CONFIRM_MS = 3 * 60 * 1000;
+const pendingClears = new Map();   // farm_id -> timer
+const pollState     = new Map();   // farm_id -> { typical, shortSince }
+
+function decideOfflinePass(farmId, count, connectedAt) {
+  const now = Date.now();
+  const st = pollState.get(farmId) || { typical: 0, shortSince: 0 };
+  const sinceConnect = connectedAt ? now - new Date(connectedAt).getTime() : Infinity;
+  const settling = sinceConnect < RECONNECT_SETTLE_MS;
+  // Right after a reconnect ANY drop is held back until confirmed;
+  // otherwise only a drop of more than 10%.
+  const short = st.typical > 0 && (count < st.typical * SHORT_POLL_RATIO || (settling && count < st.typical));
+  if (!short) {
+    pollState.set(farmId, { typical: count, shortSince: 0 });
+    return { skip: false };
+  }
+  if (!st.shortSince) st.shortSince = now;
+  pollState.set(farmId, st);
+  const unconfirmed = now - st.shortSince < SHORT_POLL_CONFIRM_MS;
+  if (settling || unconfirmed) {
+    return { skip: true, why: `${count} of usual ${st.typical} answered` + (settling ? ' just after reconnect' : ' — waiting to confirm') };
+  }
+  // Persisted long enough: it's real. Accept it as the new normal.
+  pollState.set(farmId, { typical: count, shortSince: 0 });
+  return { skip: false, confirmed: true };
+}
+
 // ── Duplicate-agent detection ───────────────────────────────
 // Replacing a farm's existing connection is correct when the old socket
 // is a stale one the agent has already given up on. It is exactly wrong
@@ -81,6 +125,10 @@ function registerAgent(ws, info) {
     try { existing.ws.terminate(); } catch(e) {}
   }
 
+  // Back inside the grace window — don't mark its machines offline.
+  const pendingClear = pendingClears.get(info.farm_id);
+  if (pendingClear) { clearTimeout(pendingClear); pendingClears.delete(info.farm_id); }
+
   const agent = {
     farm_id:       info.farm_id,
     farm_name:     info.farm_name,
@@ -136,6 +184,23 @@ function unregisterAgent(farmId, ws) {
       const { broadcast } = require('../websocket');
       broadcast({ type: 'agent_disconnected', farm_id: farmId });
     } catch(e) {}
+    // The agent is gone — no more polls will arrive to clear stale
+    // readings, so they're cleared rather than left showing last-known
+    // hashrate/temp for machines nobody can see. But only if it STAYS
+    // gone: a blip that reconnects within DISCONNECT_GRACE_MS leaves the
+    // readings alone (see the note at the top of this file).
+    const prev = pendingClears.get(farmId);
+    if (prev) clearTimeout(prev);
+    const farmName = agent.farm_name;
+    pendingClears.set(farmId, setTimeout(() => {
+      pendingClears.delete(farmId);
+      if (connectedAgents.has(farmId)) return;   // came back after all
+      console.log(`[AGENT] ${farmName} still disconnected after ${DISCONNECT_GRACE_MS / 60000} min — marking its machines offline`);
+      pollState.delete(farmId);
+      try {
+        require('./db').clearFarmReadings(farmId).catch(e => console.error('[AGENT] clearFarmReadings error:', e.message));
+      } catch(e) {}
+    }, DISCONNECT_GRACE_MS));
   }
 }
 
@@ -182,7 +247,10 @@ function handleAgentMessage(farmId, msg) {
     // independent of whether anyone has the app open right now.
     if (msg.type === 'poll_result' && Array.isArray(msg.miners)) {
       const db = require('./db');
-      db.upsertWorkersByIp(farmId, msg.miners).then(ok => {
+      const d = decideOfflinePass(farmId, msg.miners.length, agent.connected_at);
+      if (d.skip) console.log(`[POLL→DB] ${farmId}: short poll (${d.why}) — updating those, not marking the rest offline yet`);
+      if (d.confirmed) console.log(`[POLL→DB] ${farmId}: drop to ${msg.miners.length} machines has persisted — applying it`);
+      db.upsertWorkersByIp(farmId, msg.miners, { skipMarkOffline: !!d.skip }).then(ok => {
         if (ok) console.log(`[POLL→DB] ${farmId}: ${msg.miners.length} miners persisted`);
       }).catch(e => console.error('[POLL→DB] error:', e.message));
     }
@@ -337,6 +405,9 @@ setInterval(() => {
       try {
         const { broadcast } = require('../websocket');
         broadcast({ type: 'agent_disconnected', farm_id: farmId });
+      } catch(e) {}
+      try {
+        require('./db').clearFarmReadings(farmId).catch(e => console.error('[AGENT] clearFarmReadings error:', e.message));
       } catch(e) {}
     }
   });
