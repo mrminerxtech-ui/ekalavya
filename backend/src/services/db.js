@@ -437,10 +437,15 @@ function scrubCollidingIds(farmId, miners) {
   return collisions;
 }
 
-async function upsertWorkersByIp(farmId, minersFoundNow) {
+// opts.skipMarkOffline: update/insert every machine this poll found, but
+// DON'T mark the machines it missed as offline. Used for a suspiciously
+// short poll (e.g. the first one after an agent reconnect) — see
+// decideOfflinePass() in agentManager.js.
+async function upsertWorkersByIp(farmId, minersFoundNow, opts) {
   minersFoundNow = minersFoundNow || [];
+  const skipMarkOffline = !!(opts && opts.skipMarkOffline);
   const collisions = scrubCollidingIds(farmId, minersFoundNow);
-  if (useFallback || !pool) return upsertWorkersFallback(farmId, minersFoundNow, collisions);
+  if (useFallback || !pool) return upsertWorkersFallback(farmId, minersFoundNow, collisions, skipMarkOffline);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -633,7 +638,7 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
     // that's offline isn't hashing at its old rate, and leaving that
     // stale number in place made a genuinely dead machine's row look
     // like it was still mining right up until someone opened it.
-    const allForFarm = await client.query(`SELECT id, data FROM workers WHERE farm_id = $1`, [farmId]);
+    const allForFarm = skipMarkOffline ? { rows: [] } : await client.query(`SELECT id, data FROM workers WHERE farm_id = $1`, [farmId]);
     let cleaned = 0;
     for (const row of allForFarm.rows) {
       if (nowIps.has(row.data.ip) || row.data.disabled) continue;
@@ -670,7 +675,7 @@ async function upsertWorkersByIp(farmId, minersFoundNow) {
   } finally { client.release(); }
 }
 
-function upsertWorkersFallback(farmId, minersFoundNow, collisions) {
+function upsertWorkersFallback(farmId, minersFoundNow, collisions, skipMarkOffline) {
   // File-based fallback — same MAC/Serial-first matching as above,
   // simplified for the in-memory/file store
   const existing = loadFallback('workers');
@@ -726,7 +731,7 @@ function upsertWorkersFallback(farmId, minersFoundNow, collisions) {
   // Mark missing-from-this-poll workers (for this farm) as offline, and
   // clear their last-known readings along with it — see the matching
   // comment in upsertWorkersByIp above for why.
-  byId.forEach((w, id) => {
+  if (!skipMarkOffline) byId.forEach((w, id) => {
     if (w.farm_id !== farmId || nowIps.has(w.ip) || w.disabled) return;
     // Already-offline rows are re-cleaned rather than skipped — see the
     // matching comment in upsertWorkersByIp for why they can be dirty.
