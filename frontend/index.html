@@ -453,6 +453,30 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
 .action-label{font:650 13px/1.3 var(--font);font-weight:650;color:#fff!important;}
 .action-desc{font-size:11.5px;color:var(--mute);line-height:1.4;}
 .act-cyan{--ac:var(--cyan);}.act-green{--ac:var(--green);}.act-warn{--ac:var(--warn);}.act-red{--ac:var(--red);}.act-orange{--ac:var(--orange);}.act-purple{--ac:var(--purple);}.act-mute{--ac:var(--mute);}
+/* Locate (LED) */
+.loc-row{display:flex;gap:12px;align-items:stretch;flex-wrap:wrap;}
+.loc-btn{flex:1 1 260px;display:flex;align-items:center;gap:14px;padding:14px 16px;border-radius:12px;cursor:pointer;text-align:left;
+  border:1px solid rgba(250,204,21,.35);background:linear-gradient(135deg,rgba(250,204,21,.12),rgba(250,204,21,.03));color:#fff;transition:all .15s;}
+.loc-btn:hover{border-color:var(--gold);background:linear-gradient(135deg,rgba(250,204,21,.2),rgba(250,204,21,.05));}
+.loc-btn:disabled{opacity:.6;cursor:progress;}
+.loc-t b{display:block;font:650 14px/1.2 var(--font);font-weight:650;}
+.loc-t small{display:block;font-size:11.5px;color:var(--mute);margin-top:2px;}
+.loc-dot{width:16px;height:16px;border-radius:50%;background:#5a4b12;box-shadow:inset 0 0 0 2px rgba(250,204,21,.5);flex-shrink:0;}
+.loc-sec.lit .loc-dot{background:var(--gold);box-shadow:0 0 0 4px rgba(250,204,21,.18),0 0 18px var(--gold);animation:ledBlink 1s steps(2,end) infinite;}
+@keyframes ledBlink{50%{background:#5a4b12;box-shadow:inset 0 0 0 2px rgba(250,204,21,.5);}}
+.loc-opts{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.loc-opts label{font:600 11.5px/1 var(--font);color:var(--mute);}
+.loc-status{margin-top:10px;font-size:12px;color:var(--mute);min-height:16px;}
+.loc-sec.lit .loc-status{color:#fde68a;}
+/* Avalon controls */
+.av-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;}
+.av-card{background:var(--s2);border:1px solid var(--b1);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:10px;align-items:flex-start;}
+.av-h{display:flex;align-items:center;gap:8px;width:100%;font:650 13px/1.2 var(--font);font-weight:650;color:#fff;}
+.av-h .ic{color:var(--orange);}
+.av-val{margin-left:auto;font:600 13px/1 var(--mono);color:var(--cyan);}
+.av-chk{display:flex;align-items:center;gap:8px;font-size:12.5px;color:#c9d4e2;cursor:pointer;}
+.av-note{font-size:11.5px;color:var(--mute);line-height:1.45;}
+#avFan{width:100%;accent-color:var(--cyan);}
 .config-panel{background:var(--s2);border:1px solid var(--b1);border-radius:12px;padding:16px;margin-top:10px;display:none;}
 .config-panel.open{display:block;animation:fi .2s ease;}
 .log-viewer{background:#04070b;border:1px solid var(--b1);border-radius:10px;font:500 11.5px/1.7 var(--mono);padding:12px 14px;max-height:300px;overflow-y:auto;color:#7ee8bf;}
@@ -715,6 +739,9 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
     <g stroke="#f7a531" stroke-width="2.3" stroke-linecap="round"><path d="M29.4 20.2v3.2M34.2 20.2v3.2M29.4 40.6v3.2M34.2 40.6v3.2"/></g>
     <text x="32" y="40.6" text-anchor="middle" font-family="Inter,system-ui,Arial,sans-serif" font-size="24" font-weight="800" fill="#f7a531">B</text>
   </symbol>
+  <symbol id="i-bulb" viewBox="0 0 24 24"><path d="M9 18h6M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.74V16h8v-1.26A7 7 0 0 0 12 2z"/></symbol>
+  <symbol id="i-fan" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M12 10c0-4 1-7 4-7s3 4-2 6M14 12c4 0 7 1 7 4s-4 3-6-2M12 14c0 4-1 7-4 7s-3-4 2-6M10 12c-4 0-7-1-7-4s4-3 6 2"/></symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M12 14l4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></symbol>
   <symbol id="i-hash" viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M10 3L8 21M16 3l-2 18"/></symbol>
 </svg>
 
@@ -1433,6 +1460,54 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
   <div class="ctrl-body">
     <div class="ctrl-stats" id="ctrlStats"></div>
 
+    <!-- LOCATE — blink the machine's LED so it can be found on the rack.
+         Avalon: Canaan's own LED command; Antminer: blink.cgi (the agent
+         picks the right one from the machine's brand). -->
+    <div class="ctrl-sec loc-sec" id="ctrlLocateSec" style="--sec-c:var(--gold)">
+      <div class="ctrl-sec-title"><svg class="ic sm"><use href="#i-bulb"/></svg>Locate this machine</div>
+      <div class="loc-row">
+        <button class="loc-btn" id="ledOnBtn" type="button" onclick="uiLed(true)"><span class="loc-dot"></span><span class="loc-t"><b>Blink LED</b><small>Light it up on the rack</small></span></button>
+        <div class="loc-opts">
+          <label for="ledMinutes">Auto-off</label>
+          <select class="si" id="ledMinutes">
+            <option value="5">after 5 min</option>
+            <option value="10" selected>after 10 min</option>
+            <option value="30">after 30 min</option>
+            <option value="0">never (manual)</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" id="ledOffBtn" type="button" onclick="uiLed(false)">LED off</button>
+        </div>
+      </div>
+      <div class="loc-status" id="ledStatus"></div>
+    </div>
+
+    <!-- AVALON CONTROLS — Canaan-specific tuning, staff only; shown only
+         when the open machine is an Avalon. -->
+    <div class="ctrl-sec" id="ctrlAvalonSec" style="display:none;--sec-c:var(--orange)">
+      <div class="ctrl-sec-title"><svg class="ic sm"><use href="#i-gauge"/></svg>Avalon controls <span class="badge bor" style="margin-left:auto">Canaan</span></div>
+      <div class="av-grid">
+        <div class="av-card">
+          <div class="av-h"><svg class="ic sm"><use href="#i-gauge"/></svg>Work mode</div>
+          <div class="seg" id="avModeSeg">
+            <button class="fbtn active" type="button" data-mode="0">Normal</button>
+            <button class="fbtn" type="button" data-mode="1">High Performance</button>
+          </div>
+          <label class="av-chk"><input type="checkbox" id="avModeReboot" checked> Reboot to apply</label>
+          <button class="btn btn-sm" type="button" onclick="uiAvalonMode()">Apply work mode</button>
+          <div class="av-note">High Performance draws more power and runs hotter.</div>
+        </div>
+        <div class="av-card">
+          <div class="av-h"><svg class="ic sm"><use href="#i-fan"/></svg>Fan speed <span class="av-val" id="avFanVal">70%</span></div>
+          <input type="range" id="avFan" min="30" max="100" step="5" value="70" oninput="document.getElementById('avFanVal').textContent=this.value+'%'">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-sm" type="button" onclick="uiAvalonFan(false)">Set fan speed</button>
+            <button class="btn btn-ghost btn-sm" type="button" onclick="uiAvalonFan(true)">Automatic</button>
+          </div>
+          <div class="av-note">A fixed speed overrides the miner's own cooling control. Use Automatic to hand it back.</div>
+        </div>
+      </div>
+    </div>
+
     <div class="ctrl-sec">
       <div class="ctrl-sec-title"><svg class="ic sm"><use href="#i-chart"/></svg>Hashrate &amp; Uptime History</div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px">
@@ -1987,6 +2062,96 @@ window.onerror = function(msg, src, line, col, err) {
     }
     if (cmdList) cmdList.addEventListener('click', function(e){ var r = e.target.closest('.cmdk-it'); if (r) choose(+r.getAttribute('data-i')); });
     if (cmdk) cmdk.addEventListener('mousedown', function(e){ if (e.target === cmdk) closeCmdk(); });
+  });
+
+  // ── Miner controls: LED locate + Avalon tuning ───────────────────────
+  // Posts to the backend's /api/actions/* routes, which relay through the
+  // farm agent (the only thing with a network path to the miner).
+  function currentMiner(){
+    var id = (typeof activeWid !== 'undefined') ? activeWid : null;
+    var list = (typeof workers !== 'undefined' && Array.isArray(workers)) ? workers : [];
+    return id ? list.find(function(w){ return w.id === id; }) : null;
+  }
+  function isAvalon(w){ return !!w && /avalon|canaan/i.test((w.brand || '') + ' ' + (w.model || '')); }
+  function minerAction(action, extra){
+    var w = currentMiner();
+    if (!w) { toast('No machine selected', 'var(--warn)'); return Promise.reject(new Error('no machine')); }
+    var body = Object.assign({ ip: w.ip, farm_id: w.farm_id, worker_id: w.id }, extra || {});
+    var token = lsGet('ekl_token') || '';
+    return fetch(API_BASE + '/api/actions/' + action, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify(body)
+    }).then(function(r){
+      return r.text().then(function(t){
+        var d; try { d = JSON.parse(t); } catch (e) { throw new Error('Unexpected server reply (HTTP ' + r.status + ')'); }
+        if (!r.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + r.status));
+        return d;
+      });
+    });
+  }
+  // Remembers, per machine, until when its LED was switched on from THIS
+  // browser, so reopening the panel still shows it lit. Display only.
+  var ledUntil = {};
+  function paintLed(){
+    var w = currentMiner(), sec = $('ctrlLocateSec'), st = $('ledStatus');
+    if (!sec || !st) return;
+    var u = w && ledUntil[w.id];
+    var lit = !!u && (u.until === 0 || u.until > Date.now());
+    sec.classList.toggle('lit', lit);
+    if (!lit) { st.textContent = ''; return; }
+    st.textContent = u.until === 0 ? 'LED is on — switch it off when you have found the machine.'
+      : 'LED is on — switches off by itself at ' + new Date(u.until).toLocaleTimeString(undefined, { hour:'2-digit', minute:'2-digit' }) + '.';
+  }
+  window.uiLed = function(on){
+    var w = currentMiner(); if (!w) return;
+    var btn = $(on ? 'ledOnBtn' : 'ledOffBtn');
+    var minutes = parseInt(($('ledMinutes') || {}).value, 10); if (isNaN(minutes)) minutes = 10;
+    if (btn) btn.disabled = true;
+    toast((on ? 'Switching LED on for ' : 'Switching LED off for ') + (w.name || w.ip) + '…', 'var(--cyan)');
+    minerAction('led', { on: on, minutes: minutes }).then(function(d){
+      if (on) ledUntil[w.id] = { until: minutes ? Date.now() + minutes * 60000 : 0 }; else delete ledUntil[w.id];
+      paintLed();
+      toast('✓ ' + (d.message || (on ? 'LED on' : 'LED off')) + ' — ' + (w.name || w.ip), 'var(--green)');
+    }).catch(function(e){ toast('LED: ' + e.message, 'var(--red)'); })
+      .then(function(){ if (btn) btn.disabled = false; });
+  };
+  window.uiAvalonMode = function(){
+    var w = currentMiner(); if (!w) return;
+    var act = document.querySelector('#avModeSeg .fbtn.active');
+    var mode = act ? parseInt(act.getAttribute('data-mode'), 10) : 0;
+    var reboot = !!($('avModeReboot') || {}).checked;
+    var label = mode === 1 ? 'High Performance' : 'Normal';
+    if (!confirm('Set ' + (w.name || w.ip) + ' to ' + label + ' mode?' + (reboot ? '\n\nThe machine will reboot to apply it (a few minutes offline).' : ''))) return;
+    toast('Setting ' + label + ' mode on ' + (w.name || w.ip) + '…', 'var(--cyan)');
+    minerAction('workmode', { mode: mode, reboot: reboot })
+      .then(function(d){ toast('✓ ' + d.message, 'var(--green)'); })
+      .catch(function(e){ toast('Work mode: ' + e.message, 'var(--red)'); });
+  };
+  window.uiAvalonFan = function(auto){
+    var w = currentMiner(); if (!w) return;
+    var speed = auto ? -1 : parseInt(($('avFan') || {}).value, 10);
+    if (!auto && !confirm('Fix the fans on ' + (w.name || w.ip) + ' at ' + speed + '%?\n\nThis overrides the miner\'s own cooling control until you set it back to Automatic.')) return;
+    minerAction('fanspeed', { speed: speed })
+      .then(function(d){ toast('✓ ' + d.message, 'var(--green)'); })
+      .catch(function(e){ toast('Fan: ' + e.message, 'var(--red)'); });
+  };
+  safe(function(){
+    var seg = $('avModeSeg');
+    if (seg) seg.addEventListener('click', function(e){
+      var b = e.target.closest('.fbtn'); if (!b) return;
+      seg.querySelectorAll('.fbtn').forEach(function(x){ x.classList.toggle('active', x === b); });
+    });
+    // Each time the control panel opens: show the Avalon section only for
+    // an Avalon, only to staff; refresh the LED state for this machine.
+    var cp = $('ctrlPanel');
+    if (cp) new MutationObserver(function(){
+      if (cp.style.display !== 'flex') return;
+      var w = currentMiner();
+      var av = $('ctrlAvalonSec');
+      if (av) av.style.display = (isAvalon(w) && !customerMode()) ? '' : 'none';
+      paintLed();
+    }).observe(cp, { attributes:true, attributeFilter:['style'] });
+    setInterval(function(){ var cp2 = $('ctrlPanel'); if (cp2 && cp2.style.display === 'flex') paintLed(); }, 30000);
   });
 
   // ── Keyboard: Ctrl/⌘+K search, "/" search, Esc closes things ────────
