@@ -88,7 +88,8 @@ router.post('/restart', authMiddleware, requireRole('admin','manager','technicia
 router.post('/reboot', authMiddleware, requireRole('admin','manager','technician','customer'), async (req, res) => {
   const w = await getWorkerOr404(req, res); if (!w) return;
   await persistWorkerUpdate(w.id, { status: 'rebooting', last_action: 'reboot', last_action_at: new Date().toISOString() });
-  const result = await runTunneledActionRaw(w, 'reboot');
+  // brand/model let the agent use Canaan's own reboot command on Avalons
+  const result = await runTunneledActionRaw(w, 'reboot', { brand: w.brand, model: w.model });
   if (!result.ok) return res.status(502).json({ error: result.error || 'Reboot failed' });
   res.json({ ok: true, action: 'reboot', message: result.message || `Hard reboot sent to ${w.name}` });
 });
@@ -109,8 +110,49 @@ router.post('/wake', authMiddleware, requireRole('admin','manager','technician',
   res.json({ ok: true, action: 'wake', message: result.message || `${w.name} waking up` });
 });
 
+// Locate a machine by its LED. brand/model tell the agent which command
+// the miner speaks (Avalon: Canaan's ascset LED; Antminer: blink.cgi).
+// minutes = switch the LED off again automatically (default 10, 0 = stay
+// on until someone turns it off).
 router.post('/led', authMiddleware, requireRole('admin','manager','technician','customer'), async (req, res) => {
-  await runTunneledAction(req, res, 'led', { on: req.body.on !== false });
+  const w = await getWorkerOr404(req, res); if (!w) return;
+  const on = req.body.on !== false;
+  const minutes = req.body.minutes === undefined ? 10 : Math.max(0, Math.min(120, parseInt(req.body.minutes, 10) || 0));
+  const result = await runTunneledActionRaw(w, 'led', { on, minutes, brand: w.brand, model: w.model });
+  if (!result.ok) return res.status(502).json({ error: result.error || 'LED command failed' });
+  // Not stored on the machine record: the agent switches it off on its
+  // own after `minutes`, so a saved "on" flag would soon be wrong.
+  res.json({ ok: true, action: 'led', on, message: result.message || `LED ${on ? 'on' : 'off'} on ${w.name}` });
+});
+
+// ── Avalon (Canaan) tuning — staff only. Commands taken from Canaan's
+// own management tool; see the notes in agent.js (avalonAscset). ──
+function requireAvalon(w, res) {
+  if (/avalon|canaan/i.test(`${w.brand || ''} ${w.model || ''}`)) return true;
+  res.status(400).json({ error: 'These controls are for Avalon (Canaan) miners only' });
+  return false;
+}
+router.post('/workmode', authMiddleware, requireRole('admin','manager','technician'), async (req, res) => {
+  const w = await getWorkerOr404(req, res); if (!w) return;
+  if (!requireAvalon(w, res)) return;
+  const mode = parseInt(req.body.mode, 10);
+  if (mode !== 0 && mode !== 1) return res.status(400).json({ error: 'mode must be 0 (Normal) or 1 (High Performance)' });
+  const reboot = req.body.reboot !== false;
+  const result = await runTunneledActionRaw(w, 'avalon_workmode', { mode, reboot, brand: w.brand, model: w.model });
+  if (!result.ok) return res.status(502).json({ error: result.error || 'Work mode change failed' });
+  await persistWorkerUpdate(w.id, { work_mode: mode === 1 ? 'high' : 'normal', last_action: 'workmode', last_action_at: new Date().toISOString() });
+  console.log(`[ACTIONS] ${w.name} (${w.ip}) work mode → ${mode === 1 ? 'High Performance' : 'Normal'} by ${req.user?.name || req.user?.id}`);
+  res.json({ ok: true, action: 'workmode', message: result.message });
+});
+router.post('/fanspeed', authMiddleware, requireRole('admin','manager','technician'), async (req, res) => {
+  const w = await getWorkerOr404(req, res); if (!w) return;
+  if (!requireAvalon(w, res)) return;
+  const speed = parseInt(req.body.speed, 10);
+  if (!(speed === -1 || (speed >= 30 && speed <= 100))) return res.status(400).json({ error: 'speed must be -1 (auto) or 30–100' });
+  const result = await runTunneledActionRaw(w, 'avalon_fan', { speed, brand: w.brand, model: w.model });
+  if (!result.ok) return res.status(502).json({ error: result.error || 'Fan speed change failed' });
+  console.log(`[ACTIONS] ${w.name} (${w.ip}) fan → ${speed === -1 ? 'auto' : speed + '%'} by ${req.user?.name || req.user?.id}`);
+  res.json({ ok: true, action: 'fanspeed', message: result.message });
 });
 
 router.post('/chiptest', authMiddleware, requireRole('admin','manager','technician','customer'), async (req, res) => {
