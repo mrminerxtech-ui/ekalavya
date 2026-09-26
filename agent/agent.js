@@ -419,6 +419,62 @@ function cgCmd(ip, cmd) {
   });
 }
 
+// ── Avalon (Canaan) control commands ─────────────────────────
+// Taken directly from Canaan's own management tool (Canaan Mine Master
+// 2.0, decompiled): every Avalon control is an `ascset` sent as PLAIN
+// TEXT — "ascset|<parameter>" — to the same cgminer port 4028, not the
+// JSON form cgCmd() uses. The reply comes back in cgminer's text format
+// ("STATUS=I,When=...,Code=118,Msg=ASC 0 set info: ...|"), parsed below
+// into the same {STATUS:[{STATUS,Msg}]} shape cgSuccess() already reads.
+//   LED on / off   0,led,1-1  /  0,led,1-0
+//   Reboot         0,reboot,1
+//   Work mode      0,workmode,<0 normal | 1 high performance>
+//   Fan speed      0,fan-spd,<percent>
+// Resolves null if the miner couldn't be reached at all, '' if it
+// accepted the connection but sent nothing back (normal for a reboot:
+// the machine goes down before answering), otherwise the reply text.
+function cgText(ip, text, timeout) {
+  return new Promise(resolve => {
+    const s = new net.Socket();
+    let d = '', connected = false, done = false;
+    const finish = v => { if (!done) { done = true; resolve(v); } };
+    const got = () => (connected ? d.replace(/\0/g, '').trim() : null);
+    s.setTimeout(timeout || 6000);
+    s.on('connect', () => { connected = true; s.write(text); });
+    s.on('data',  c => d += c.toString());
+    s.on('close', () => finish(got()));
+    s.on('error',   () => finish(got()));
+    s.on('timeout', () => { s.destroy(); finish(got()); });
+    try { s.connect(CGPORT, ip); } catch(e) { finish(null); }
+  });
+}
+function parseCgText(raw) {
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch(e) {}
+  const first = raw.split('|')[0];
+  const out = {};
+  first.split(',').forEach(kv => { const i = kv.indexOf('='); if (i > 0) out[kv.slice(0, i).trim()] = kv.slice(i + 1).trim(); });
+  // Msg can itself contain commas ("ASC 0 set info: PS[0 1204 ...]") —
+  // take everything from "Msg=" up to ",Description=" as the message.
+  const m = /Msg=(.*?)(,Description=|$)/.exec(first);
+  if (m) out.Msg = m[1];
+  return out.STATUS ? { STATUS: [out] } : null;
+}
+async function avalonAscset(ip, param) {
+  const raw = await cgText(ip, 'ascset|' + param);
+  const r = parseCgText(raw);
+  console.log(`[AVALON] ${ip} ascset|${param} → ${raw ? raw.slice(0, 200) : 'no reply'}`);
+  return { ok: cgSuccess(r), msg: cgErrorMsg(r), raw };
+}
+function isAvalonLike(params) {
+  const s = ((params && params.brand) || '') + ' ' + ((params && params.model) || '');
+  return /avalon|canaan/i.test(s);
+}
+// LEDs switched on to find a machine are switched off again on their
+// own, so a forgotten one doesn't stay lit for weeks. Keyed by IP so a
+// second "blink" just restarts the countdown.
+const ledOffTimers = new Map();
+
 // ── ASIC verification ───────────────────────────────────────
 // Only devices responding properly to CGMiner OR known miner HTTP APIs
 async function isAsic(ip) {
@@ -1288,6 +1344,20 @@ async function handleActionRequest(msg) {
         break;
       }
       case 'reboot': {
+        // Avalon: a real machine reboot via Canaan's own command. The
+        // generic cgminer 'restart' below only restarts the mining
+        // software on this firmware, which isn't what "reboot" means.
+        if (isAvalonLike(params)) {
+          const a = await avalonAscset(ip, '0,reboot,1');
+          if (a.ok || a.raw === '') {
+            // Connected, then the machine went down before answering —
+            // that IS the reboot happening (Canaan's own tool doesn't even
+            // wait for a reply to this one). null would mean unreachable.
+            await reply(true, { message: a.ok ? 'Reboot sent (Avalon)' : 'Reboot sent (Avalon) — machine went down before replying, which is normal' });
+            break;
+          }
+          console.log(`[ACTION] ${ip} Avalon reboot rejected (${a.msg}) — trying generic reboot`);
+        }
         let r = await cgCmd(ip, 'restart');
         console.log(`[ACTION-DEBUG] ${ip} reboot cgminer response:`, JSON.stringify(r).slice(0, 300));
         if (!cgSuccess(r)) {
@@ -1327,9 +1397,61 @@ async function handleActionRequest(msg) {
         break;
       }
       case 'led': {
-        const r = await httpPost(ip, 80, '/cgi-bin/blink.cgi', JSON.stringify({ blink: params?.on ? 1 : 0 }), 5000);
-        if (httpOk(r)) await reply(true, { message: 'LED command sent' });
-        else await reply(false, { error: 'Miner did not accept the LED command (HTTP status: ' + r.status + ')' });
+        const on = params?.on !== false;
+        const minutes = Math.max(0, Math.min(120, parseInt(params?.minutes, 10) || 0));
+        const clearTimer = () => { const t = ledOffTimers.get(ip); if (t) { clearTimeout(t); ledOffTimers.delete(ip); } };
+        const armTimer = (offFn) => {
+          clearTimer();
+          if (on && minutes > 0) ledOffTimers.set(ip, setTimeout(() => { ledOffTimers.delete(ip); offFn().catch(() => {}); }, minutes * 60000));
+        };
+        const tail = on && minutes > 0 ? ` — switches off by itself in ${minutes} min` : '';
+
+        // Avalon first when we know it's one (Canaan's own ascset LED
+        // command); otherwise the Antminer-style blink.cgi, and only then
+        // ascset as a last try for a machine whose brand isn't on record.
+        const tryAvalon = async () => {
+          const a = await avalonAscset(ip, '0,led,1-' + (on ? 1 : 0));
+          if (a.ok) { armTimer(() => avalonAscset(ip, '0,led,1-0')); await reply(true, { message: (on ? 'LED on' : 'LED off') + tail }); return true; }
+          return a;
+        };
+        const tryBlinkCgi = async () => {
+          const r = await httpPost(ip, 80, '/cgi-bin/blink.cgi', JSON.stringify({ blink: on ? 1 : 0 }), 5000);
+          if (httpOk(r)) { armTimer(() => httpPost(ip, 80, '/cgi-bin/blink.cgi', JSON.stringify({ blink: 0 }), 5000)); await reply(true, { message: (on ? 'LED blinking' : 'LED off') + tail }); return true; }
+          return r;
+        };
+        if (!on) clearTimer();
+        if (isAvalonLike(params)) {
+          const a = await tryAvalon(); if (a === true) break;
+          const r = await tryBlinkCgi(); if (r === true) break;
+          await reply(false, { error: 'Miner did not accept the LED command' + (a.msg ? ' (' + a.msg + ')' : '') });
+        } else {
+          const r = await tryBlinkCgi(); if (r === true) break;
+          const a = await tryAvalon(); if (a === true) break;
+          await reply(false, { error: 'Miner did not accept the LED command (HTTP status: ' + r.status + (a.msg ? '; cgminer: ' + a.msg : '') + ')' });
+        }
+        break;
+      }
+      case 'avalon_workmode': {
+        const mode = parseInt(params?.mode, 10);
+        if (mode !== 0 && mode !== 1) { await reply(false, { error: 'Work mode must be 0 (Normal) or 1 (High Performance)' }); break; }
+        const a = await avalonAscset(ip, '0,workmode,' + mode);
+        if (!a.ok) { await reply(false, { error: a.raw === null ? 'Could not reach the miner on port 4028' : 'Miner rejected the work mode change' + (a.msg ? ': ' + a.msg : ' (no reply)') }); break; }
+        let msg = 'Work mode set to ' + (mode === 1 ? 'High Performance' : 'Normal');
+        if (params?.reboot) {
+          const b = await avalonAscset(ip, '0,reboot,1');
+          msg += (b.ok || b.raw === '') ? ' — rebooting to apply' : ' — reboot to apply was rejected, reboot it manually';
+        }
+        await reply(true, { message: msg, miner_msg: a.msg });
+        break;
+      }
+      case 'avalon_fan': {
+        const speed = parseInt(params?.speed, 10);
+        // -1 hands fan control back to the miner. A fixed speed below 30%
+        // is refused here outright: too easy to overheat a machine by accident.
+        if (!(speed === -1 || (speed >= 30 && speed <= 100))) { await reply(false, { error: 'Fan speed must be Auto or 30–100%' }); break; }
+        const a = await avalonAscset(ip, '0,fan-spd,' + speed);
+        if (a.ok) await reply(true, { message: speed === -1 ? 'Fan control set to automatic' : 'Fan speed set to ' + speed + '%', miner_msg: a.msg });
+        else await reply(false, { error: a.raw === null ? 'Could not reach the miner on port 4028' : 'Miner rejected the fan setting' + (a.msg ? ': ' + a.msg : ' (no reply)') });
         break;
       }
       case 'chiptest': {
