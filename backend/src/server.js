@@ -168,6 +168,10 @@ server.on('upgrade', (request, socket, head) => {
   // platform logs). The base only exists to satisfy the URL parser —
   // we just want the path.
   const pathname = new URL(request.url, 'http://localhost').pathname;
+  // Miner web UIs opened through the tunnel may try a live socket (e.g.
+  // Goldshell's pool-test results) and retry it; those aren't relayed yet,
+  // so they're refused quietly rather than logged on every retry.
+  if (pathname.startsWith('/api/webui/')) { socket.destroy(); return; }
   console.log(`[WS] Upgrade: ${pathname}`);
 
   if (pathname === '/ws') {
