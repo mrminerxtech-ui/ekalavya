@@ -232,7 +232,19 @@ router.use('/:farmId/:ip', async (req, res) => {
   // climbedPrefix restores the folder that a parent-relative path had
   // turned into the miner-address segment, so the miner is asked for
   // "/i18n/strings.properties" rather than "/strings.properties".
-  const minerPath = climbedPrefix + (req.url === '/' ? '/' : req.url);
+  //
+  // When the climb swallowed BOTH segments and the file name was the last
+  // part of the address (Goldshell's "../../img/load.gif" arrives as
+  // /api/webui/img/load.gif), nothing is left after the two segments and
+  // Express reports the remainder as "/" — which used to be tacked on,
+  // asking the miner for "/img/load.gif/" (a 404). The "/" is only kept
+  // when the address the browser actually asked for ended in one.
+  let rest = req.url;
+  if (climbedPrefix && (rest === '/' || rest.startsWith('/?'))) {
+    const askedPath = String(req.originalUrl || '').split('?')[0];
+    if (!askedPath.endsWith('/')) rest = rest.slice(1);
+  }
+  const minerPath = climbedPrefix + rest;
   // One miner page is dozens of these. Log the page itself (worth
   // knowing who opened which miner) and keep the rest behind
   // LOG_VERBOSE — failures are logged separately either way.
