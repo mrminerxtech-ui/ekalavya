@@ -34,6 +34,14 @@
 //   7. No disabled record in the group, and no two different customers
 //      assigned within it (that needs a human to decide).
 //
+// A third, narrower kind of group: two records at the SAME SITE and the
+// SAME IP (a stale copy of the machine that's live there now — usually
+// an old IP-based record). Rules 5–6 are skipped for these, because the
+// copy's history was wrong (it was left "online" alongside the real
+// machine); instead nothing may say they're different machines (MAC,
+// serial, pool worker) and the copy must have been dark 20+ minutes.
+// Rules 3 and 7 still apply.
+//
 // What survives: the record with the customer assignment (or, failing
 // that, the oldest one) keeps its id, name, customer and history; the
 // live record's current IP/status/readings are laid over it; the rest
@@ -113,9 +121,26 @@ function buildGroups(workers) {
     if (!byWid.has(wid)) byWid.set(wid, []);
     byWid.get(wid).push(w);
   });
+  const inWidGroup = new Set();
   byWid.forEach((members, wid) => {
     if (members.length < 2 || members.length > WORKER_ID_MAX_GROUP) return;
+    members.forEach(m => inWidGroup.add(m.id));
     groups.push({ members, basis: 'worker ID "' + wid + '"' });
+  });
+
+  // Same site + same IP: a stale copy of the machine that is live at
+  // that address right now (typically an old IP-based record from
+  // before the machine's MAC was known, pushed back by a device's local
+  // cache). Only records not already in a group above.
+  const bySiteIp = new Map();
+  workers.forEach(w => {
+    if (inHwGroup.has(w.id) || inWidGroup.has(w.id) || !w.ip || !w.farm_id) return;
+    const k = w.farm_id + '|' + w.ip;
+    if (!bySiteIp.has(k)) bySiteIp.set(k, []);
+    bySiteIp.get(k).push(w);
+  });
+  bySiteIp.forEach(members => {
+    if (members.length >= 2) groups.push({ members, basis: 'same site + IP' });
   });
   return groups;
 }
@@ -143,6 +168,27 @@ async function evaluateGroup(group) {
   for (const w of members) {
     if (w.id === liveRec.id) continue;
     if (contradicts(w, liveRec)) { rejected.push(`${label(w)}: different MAC/serial`); continue; }
+    // Same site + same IP copies. Their history is exactly what can't be
+    // trusted — until the poll fix, a copy sharing a live machine's IP
+    // was left marked online with stale readings, so it "overlaps" the
+    // real machine in every slot, and rules 5–6 would refuse it forever.
+    // What's required instead: nothing says they're different machines
+    // (MAC, serial and pool worker all agree or are unknown — a machine
+    // that merely used to have this IP differs on one of them), and the
+    // copy has been dark for 20+ minutes.
+    // A MAC/serial or worker-ID group whose copy sits at the live
+    // machine's own site and IP is the same case, with even stronger
+    // evidence (a matching ID AND the same address), so it gets the same
+    // treatment.
+    const sameSpot = w.farm_id && w.farm_id === liveRec.farm_id && w.ip && w.ip === liveRec.ip;
+    if (basis === 'same site + IP' || sameSpot) {
+      const wa = normWid(w.worker_id || w.worker), wb = normWid(liveRec.worker_id || liveRec.worker);
+      if (basis === 'same site + IP' && wa && wb && wa !== wb) { rejected.push(`${label(w)}: different pool worker — a machine that used to have this IP`); continue; }
+      const lastOnIp = ts(meta[w.id] && meta[w.id].last_online);
+      if (lastOnIp && now - lastOnIp < STALE_MIN_MS) { rejected.push(`${label(w)}: was online ${Math.round((now - lastOnIp) / 60000)}m ago`); continue; }
+      accepted.push(w);
+      continue;
+    }
     const lastOn = ts(meta[w.id] && meta[w.id].last_online);
     // A worker-ID match is only a name someone typed in, so it needs the
     // timing evidence of rule 6 to go with it. A copy with no recorded
