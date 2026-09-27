@@ -499,7 +499,9 @@ async function upsertWorkersByIp(farmId, minersFoundNow, opts) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const nowIps = new Set(minersFoundNow.map(m => m.ip));
+    // Which records this poll actually updated. Anything else at this
+    // site is offline — see the mark-offline step at the end.
+    const touched = new Set();
 
     // A record already saved under a colliding ID is poisoned too — it
     // holds whichever machine wrote last. Clear the bad value off it so
@@ -556,7 +558,15 @@ async function upsertWorkersByIp(farmId, minersFoundNow, opts) {
       let existing = null;
       if (m.mac) {
         const byMac = await client.query(`SELECT id, data, farm_id, updated_at FROM workers WHERE data->>'mac' = $1 FOR UPDATE`, [m.mac]);
-        if (byMac.rows.length > 0 && !claimedElsewhere(byMac.rows[0])) existing = byMac.rows[0];
+        // Several records can carry the same MAC (a stale copy awaiting
+        // the dedupe service). Taking whichever the database returned
+        // first could alternate between them from poll to poll, so both
+        // looked alive. Prefer the one already at this site and IP, then
+        // the most recently updated.
+        const macRows = byMac.rows.slice().sort((a, b) =>
+          ((b.farm_id === farmId && b.data.ip === m.ip) - (a.farm_id === farmId && a.data.ip === m.ip))
+          || (new Date(b.updated_at) - new Date(a.updated_at)));
+        if (macRows.length > 0 && !claimedElsewhere(macRows[0])) existing = macRows[0];
       }
       if (!existing && m.serial) {
         const bySerial = await client.query(`SELECT id, data, farm_id, updated_at FROM workers WHERE data->>'serial' = $1 FOR UPDATE`, [m.serial]);
@@ -654,6 +664,7 @@ async function upsertWorkersByIp(farmId, minersFoundNow, opts) {
           `UPDATE workers SET data=$1, farm_id=$2, updated_at=NOW() WHERE id=$3`,
           [JSON.stringify(sanitizeWorkerReadings(merged)), merged.farm_id, old.id]
         );
+        touched.add(old.id);
         if (moved) console.log(`[DB] Miner ${old.id} moved: ${old.farm_id}(${old.ip}) → ${farmId}(${m.ip})`);
       } else {
         // Every OTHER place a fresh worker record gets built (the
@@ -688,6 +699,7 @@ async function upsertWorkersByIp(farmId, minersFoundNow, opts) {
           `INSERT INTO workers(id, data, farm_id) VALUES($1,$2,$3)`,
           [fresh.id, JSON.stringify(fresh), farmId]
         );
+        touched.add(fresh.id);
         // A machine that was deleted from the fleet but is still
         // plugged in and hashing will be rediscovered here. That's a
         // legitimate re-appearance, so drop its deletion record —
@@ -706,7 +718,13 @@ async function upsertWorkersByIp(farmId, minersFoundNow, opts) {
     const allForFarm = skipMarkOffline ? { rows: [] } : await client.query(`SELECT id, data FROM workers WHERE farm_id = $1`, [farmId]);
     let cleaned = 0;
     for (const row of allForFarm.rows) {
-      if (nowIps.has(row.data.ip) || row.data.disabled) continue;
+      // By record, not by IP. Going by IP left a stale duplicate that
+      // shares its address with a live machine "online" forever, with
+      // its last readings — counted as running in the power-by-site
+      // table and the online totals, and (because its history then
+      // showed it online alongside the real machine) never eligible for
+      // the automatic duplicate merge either.
+      if (touched.has(row.id) || row.data.disabled) continue;
       const goingOffline = row.data.status !== 'offline';
       // A row that is ALREADY marked offline used to be skipped outright,
       // which is why records that had been re-seeded with stale readings
@@ -751,7 +769,7 @@ function upsertWorkersFallback(farmId, minersFoundNow, collisions, skipMarkOffli
       if (w && w[c.field] === c.value) { w['bad_' + c.field] = c.value; w[c.field] = null; }
     });
   });
-  const nowIps = new Set(minersFoundNow.map(m => m.ip));
+  const touched = new Set();   // records this poll updated — see the DB path
   const byId = new Map(existing.map(w => [w.id, w]));
 
   // Same matching and the same identity checks as upsertWorkersByIp.
@@ -774,6 +792,7 @@ function upsertWorkersFallback(farmId, minersFoundNow, collisions, skipMarkOffli
       // Same name-protection fix as upsertWorkersByIp above ('—' is a
       // placeholder, not a real name, on either side of this fallback).
       const newName = pickWorkerName(m, old);
+      touched.add(old.id);
       byId.set(old.id, { ...old, ...m, id: old.id, cid: old.cid, disabled: old.disabled,
         disabled_reason: old.disabled_reason, disabled_at: old.disabled_at,
         farm: moved ? (m.farm || old.farm) : old.farm,
@@ -785,6 +804,7 @@ function upsertWorkersFallback(farmId, minersFoundNow, collisions, skipMarkOffli
       if (byId.has(id)) id = id + '-' + Date.now().toString(36);   // id taken — see the DB path
       // Same missing-name fix as upsertWorkersByIp above.
       const defaultName = m.name || (m.worker && m.worker !== '—' ? m.worker : null) || (m.ip ? m.ip.replace(/\./g, '-') : id);
+      touched.add(id);
       byId.set(id, { ...m, id, farm_id: farmId, cid: '',
         disabled: false, status: 'online', source: 'auto-poll', name: defaultName, added_at: new Date().toISOString() });
       // Rediscovered after deletion — see the matching comment in
@@ -797,7 +817,7 @@ function upsertWorkersFallback(farmId, minersFoundNow, collisions, skipMarkOffli
   // clear their last-known readings along with it — see the matching
   // comment in upsertWorkersByIp above for why.
   if (!skipMarkOffline) byId.forEach((w, id) => {
-    if (w.farm_id !== farmId || nowIps.has(w.ip) || w.disabled) return;
+    if (w.farm_id !== farmId || touched.has(id) || w.disabled) return;
     // Already-offline rows are re-cleaned rather than skipped — see the
     // matching comment in upsertWorkersByIp for why they can be dirty.
     if (w.status === 'offline' && !hasStaleReadings(w)) return;
@@ -1683,4 +1703,4 @@ async function getUptimeReport(days, farmId) {
   }
 }
 
-module.exports = { connect, loadModelPower, saveModelPower, deleteModelPower, normalizeModelKeyDb, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, clearFarmReadings, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, addTombstone, clearTombstone, loadTombstones, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport, getSiteAlertState, setSiteAlertState, clearSiteAlertState, getWorkerActivityMeta, countOnlineOverlap, applyAutoMerge };
+module.exports = { identityConflict, connect, loadModelPower, saveModelPower, deleteModelPower, normalizeModelKeyDb, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, clearFarmReadings, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, addTombstone, clearTombstone, loadTombstones, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport, getSiteAlertState, setSiteAlertState, clearSiteAlertState, getWorkerActivityMeta, countOnlineOverlap, applyAutoMerge };
