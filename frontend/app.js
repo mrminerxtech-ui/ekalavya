@@ -74,8 +74,7 @@ function detectBrand(model){ const m=(model||'').toLowerCase(); if(m.includes('a
 
 // ── Render functions ──────────────────────────────────────
 function renderAll(){
-  try{ renderDash(); }catch(e){ console.error('renderDash:',e); }
-  try{ renderPowerPanel(); }catch(e){ console.error('renderPowerPanel:',e); }
+  try{ renderDash(); }catch(e){ console.error('renderDash:',e); }   // includes the power panel
   try{ renderWorkers(); }catch(e){ console.error('renderWorkers:',e); }
   try{ renderAgents(); }catch(e){}
   try{ renderCustomers(); }catch(e){}
@@ -3462,7 +3461,23 @@ function drawPie(online, offline, disabled_) {
   if (data.length === 0) leg.innerHTML = '<div style="color:#3d5570;text-align:center">No data</div>';
 }
 
+// Every dashboard redraw also redraws the power-by-site table and the
+// sidebar machine count. Many live-update paths (agent polls, the
+// periodic fleet refresh, opening the dashboard) call renderDash()
+// alone, so the power table used to keep whatever fleet it was last
+// drawn from: after duplicates were merged, the ring showed 262 machines
+// while the power table still counted 431 "running". Now power per site
+// always follows the machines that are online right now, including
+// machines added or removed since.
 function renderDash(){
+  try { renderDashCore(); }
+  finally {
+    try { renderPowerPanel(); } catch(e) { console.error('renderPowerPanel:', e); }
+    try { updateNavCount(); } catch(e) {}
+  }
+}
+
+function renderDashCore(){
   const alertList = updateAlertBadges();
   const dAl = document.getElementById('dAlerts'); if (dAl) dAl.textContent = alertList.length;
   const disabled = workers.filter(w=>w.disabled);
