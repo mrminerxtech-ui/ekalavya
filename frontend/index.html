@@ -215,6 +215,7 @@ body.sb-collapsed #sidebar .user-card{justify-content:center;padding:8px;}
 .wchip.rep{color:var(--orange);}.wchip.rep::after{content:"in repair";}
 .wchip.crit{color:var(--red);}.wchip.crit::after{content:"critical";}
 .wchip.wrn{color:var(--warn);}.wchip.wrn::after{content:"warning";}
+.wchip.low{color:var(--warn);}.wchip.low::after{content:"low hash";}
 
 /* ── Buttons ───────────────────────────────────────────────── */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:8px 14px;border-radius:9px;font:600 12.5px/1.1 var(--font);letter-spacing:.005em;text-transform:none;cursor:pointer;
@@ -270,6 +271,17 @@ tr:last-child td{border-bottom:none;}
 #workersTbody tr.wdis td{color:var(--mute);}
 #workersTbody tr.wdis td:first-child{box-shadow:inset 3px 0 0 var(--orange);}
 #workersTbody tr.wdis:hover td{background:rgba(138,155,172,.06);}
+/* Row colour by state: a coloured bar on the left edge plus a light tint,
+   so online / low hashing / offline can be told apart while scrolling. */
+#workersTbody tr.won td:first-child{box-shadow:inset 3px 0 0 var(--green);}
+#workersTbody tr.wlow td{background:rgba(251,191,36,.07);}
+#workersTbody tr.wlow td:first-child{box-shadow:inset 3px 0 0 var(--warn);}
+#workersTbody tr.woff td{background:rgba(247,89,108,.07);}
+#workersTbody tr.woff td:first-child{box-shadow:inset 3px 0 0 var(--red);}
+#workersTbody tr.wslp td{background:rgba(167,139,250,.06);}
+#workersTbody tr.wslp td:first-child{box-shadow:inset 3px 0 0 var(--purple);}
+#workersTbody tr.wlow:hover td{background:rgba(251,191,36,.12);}
+#workersTbody tr.woff:hover td{background:rgba(247,89,108,.12);}
 .sortable-th{cursor:pointer;user-select:none;white-space:nowrap;transition:color .15s;}
 .sortable-th:hover{color:var(--txt);}
 .sort-arrow{font-size:9px;color:var(--cyan);display:inline-block;width:8px;}
@@ -610,6 +622,14 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
   #workersTbody .open-ctrl-btn{width:100%;justify-content:center;padding:10px;font-size:13px;}
   #workersTbody tr.wdis td:first-child{box-shadow:none;}
   #workersTbody tr.wdis{box-shadow:inset 3px 0 0 var(--orange);}
+  /* On phones each row is a card: colour the whole card instead of cells */
+  #workersTbody tr.won td:first-child,#workersTbody tr.wlow td:first-child,
+  #workersTbody tr.woff td:first-child,#workersTbody tr.wslp td:first-child{box-shadow:none;}
+  #workersTbody tr.wlow td,#workersTbody tr.woff td,#workersTbody tr.wslp td{background:transparent;}
+  #workersTbody tr.won{box-shadow:inset 3px 0 0 var(--green);}
+  #workersTbody tr.wlow{box-shadow:inset 3px 0 0 var(--warn);background:rgba(251,191,36,.07);}
+  #workersTbody tr.woff{box-shadow:inset 3px 0 0 var(--red);background:rgba(247,89,108,.07);}
+  #workersTbody tr.wslp{box-shadow:inset 3px 0 0 var(--purple);background:rgba(167,139,250,.06);}
 }
 @media (max-width:380px){.more-grid{grid-template-columns:repeat(2,1fr);}.bi-lbl{font-size:9.5px;}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important;}}
@@ -981,6 +1001,7 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
         <div class="page-title">Workers <span id="wcTitle"></span></div>
         <div class="wchips">
           <span class="wchip on" id="wOnlineBadge" onclick="uiWorkersFilter('online')" title="Show online">0</span>
+          <span class="wchip low" id="wLowBadge" onclick="uiWorkersFilter('low')" title="Running 15%+ below the median of the same model" style="display:none">0</span>
           <span class="wchip off" id="wOfflineBadge" onclick="uiWorkersFilter('offline')" title="Show offline">0</span>
           <span class="wchip rep" id="wDisBadge" onclick="uiWorkersFilter('disabled')" title="Show in repair" style="display:none">0</span>
         </div>
@@ -997,6 +1018,7 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
           </select>
           <button class="fbtn active" data-wf="all" onclick="setWF('all',this)">All</button>
           <button class="fbtn" data-wf="online" onclick="setWF('online',this)">Online</button>
+          <button class="fbtn" data-wf="low" onclick="setWF('low',this)" title="Running 15%+ below the median of the same model">Low hash</button>
           <button class="fbtn" data-wf="offline" onclick="setWF('offline',this)">Offline</button>
           <button class="fbtn" data-wf="warn" onclick="setWF('warn',this)">Warning</button>
           <button class="fbtn" data-wf="disabled" onclick="setWF('disabled',this)">Disabled</button>
