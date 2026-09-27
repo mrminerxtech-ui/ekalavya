@@ -38,7 +38,10 @@ async function sendTelegramAlert(message, level = 'warn') {
   try {
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       chat_id: TELEGRAM_CHAT,
-      text: `${LEVEL_EMOJI[level]} *Ekalavya Alert*\n${message}`,
+      // The message body is escaped: machine names like "T21_015" contain
+      // Markdown characters, and an unbalanced "_" makes Telegram reject
+      // the whole message — an alert that silently never arrives.
+      text: `${LEVEL_EMOJI[level]} *Ekalavya Alert*\n${String(message).replace(/([_*`\[])/g, '\\$1')}`,
       parse_mode: 'Markdown',
     }, { timeout: 5000 });
   } catch (e) {
@@ -371,6 +374,83 @@ const AGENT_GONE_MS   = 5 * 60 * 1000;
 // level follows the count back down, so a one-off spike can't leave the
 // bar stuck so high that a later real incident never trips it.
 const WORSE_BY        = 5;
+const REARM_AT        = OFFLINE_THRESHOLD - 3;   // must recover to this many offline (or fewer) before a fresh alarm
+
+// ── Count MACHINES, not database records ──────────────────────────
+// When a miner's IP changes (DHCP after a reboot or power cut), the
+// poller can create a second record for it; the old record then sits
+// offline until the dedupe service can safely merge it (dedupe.js —
+// deliberately cautious, it can take a while). Counting records made
+// every such stale copy look like another offline machine: Ghummadh
+// alarmed at 19–20 offline while only 3 miners were actually down.
+//
+// Records at the same site that share a hardware ID (MAC or serial) are
+// one physical machine here: counted once, and online if ANY of its
+// records is online. Records with no hardware ID are counted as they are.
+// Sleeping machines were put to sleep on purpose, so — like the app's own
+// offline filter — they don't count as offline.
+function normHw(kind, v) {
+  if (!v) return null;
+  if (kind === 'mac') {
+    const h = String(v).toUpperCase().replace(/[^0-9A-F]/g, '');
+    if (h.length !== 12 || /^0+$/.test(h) || /^F+$/.test(h)) return null;   // factory placeholders
+    return 'mac:' + h;
+  }
+  const s = String(v).trim();
+  if (s.length < 4 || /^(—|-|0+|unknown|none|null|n\/a)$/i.test(s)) return null;
+  return 'sn:' + s;
+}
+
+function countPhysicalMachines(workers) {
+  const byFarm = {};
+  const groups = {};   // farm -> Map(root -> [records])
+  const parent = new Map();
+  const find = k => { while (parent.get(k) !== k) { parent.set(k, parent.get(parent.get(k))); k = parent.get(k); } return k; };
+  const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+
+  const active = workers.filter(w => w && !w.disabled);   // disabled excluded, as before
+  active.forEach((w, i) => {
+    const fid = w.farm_id || 'unassigned';
+    const self = fid + '|rec:' + (w.id || i);
+    parent.set(self, self);
+    [normHw('mac', w.mac), normHw('sn', w.serial)].filter(Boolean).forEach(hw => {
+      const key = fid + '|' + hw;
+      if (!parent.has(key)) parent.set(key, key);
+      union(self, key);
+    });
+  });
+  active.forEach((w, i) => {
+    const fid = w.farm_id || 'unassigned';
+    const root = find(fid + '|rec:' + (w.id || i));
+    if (!groups[fid]) groups[fid] = new Map();
+    if (!groups[fid].has(root)) groups[fid].set(root, []);
+    groups[fid].get(root).push(w);
+  });
+
+  for (const [fid, m] of Object.entries(groups)) {
+    const c = { offline: 0, total: 0, offlineList: [], records: 0 };
+    for (const recs of m.values()) {
+      c.total++; c.records += recs.length;
+      if (recs.some(r => r.status === 'online' || r.status === 'warn')) continue;
+      if (recs.some(r => r.status === 'sleeping')) continue;
+      c.offline++;
+      const r = recs.find(x => x.name && x.name !== x.ip) || recs[0];
+      c.offlineList.push(r.name && r.name !== r.ip ? `${r.name} (${r.ip || '?'})` : (r.ip || r.id || '?'));
+    }
+    byFarm[fid] = c;
+  }
+  return byFarm;
+}
+
+// Short list of which machines are down, for the Telegram text — so an
+// alarm can be checked at a glance instead of trusted blindly. Kept short:
+// Telegram captions are capped at 1024 characters.
+function offlineListText(counts, max = 12) {
+  const l = counts.offlineList || [];
+  if (!l.length) return '';
+  const shown = l.slice(0, max).map(s => String(s).slice(0, 40));
+  return '\nOffline: ' + shown.join(', ') + (l.length > max ? ` … +${l.length - max} more` : '');
+}
 const startedAt       = Date.now();
 const lastSeenAgent   = new Map();   // farm_id -> last time we saw it connected
 const overLastCheck   = new Map();   // farm_id -> offline count at the previous check (if over threshold)
@@ -382,16 +462,9 @@ async function checkSiteOfflineCounts() {
   const now = Date.now();
   agents.forEach(a => lastSeenAgent.set(a.farm_id, now));
 
-  const byFarm = {};
+  const byFarm = countPhysicalMachines(workers);
   const farmNames = {};
-  workers.forEach(w => {
-    if (w.disabled) return;   // excluded, exactly as asked
-    const fid = w.farm_id || 'unassigned';
-    if (w.farm && !farmNames[fid]) farmNames[fid] = w.farm;
-    if (!byFarm[fid]) byFarm[fid] = { offline: 0, total: 0 };
-    byFarm[fid].total++;
-    if (w.status !== 'online' && w.status !== 'warn') byFarm[fid].offline++;
-  });
+  workers.forEach(w => { const fid = w.farm_id || 'unassigned'; if (w.farm && !farmNames[fid]) farmNames[fid] = w.farm; });
 
   for (const [farmId, counts] of Object.entries(byFarm)) {
     const agent = agents.find(a => a.farm_id === farmId);
@@ -401,7 +474,16 @@ async function checkSiteOfflineCounts() {
 
     if (counts.offline <= OFFLINE_THRESHOLD) {
       overLastCheck.delete(farmId);
-      if (prev !== null) await db.clearSiteAlertState(farmId);   // back under threshold — next crossing alerts fresh
+      if (prev !== null) {
+        // Only re-arm once the site has CLEARLY recovered. Alhayer sat at
+        // 10–11 offline all evening: every dip to 10 used to reset the
+        // alarm and the next 11 alarmed again — five identical messages.
+        // Now a dip to 8–10 just lowers the "alerted at" level (so it
+        // takes 5 more machines down to alarm again), and only a real
+        // recovery to REARM_AT or fewer starts a fresh alarm cycle.
+        if (counts.offline <= REARM_AT) await db.clearSiteAlertState(farmId);
+        else if (counts.offline < prev) await db.setSiteAlertState(farmId, counts.offline);
+      }
       continue;
     }
 
@@ -437,7 +519,8 @@ async function checkSiteOfflineCounts() {
 
     const text = agentGone
       ? `${farmName} is unreachable: its farm agent has been disconnected for over ${AGENT_GONE_MS / 60000} minutes, so all ${confirmed} of its machines show offline. The site may have lost power or internet.`
-      : `${confirmed} of ${counts.total} machines are offline at ${farmName} (excluding disabled), confirmed on two checks. Threshold: ${OFFLINE_THRESHOLD}.`;
+      : `${confirmed} of ${counts.total} machines are offline at ${farmName} (excluding disabled), confirmed on two checks. Threshold: ${OFFLINE_THRESHOLD}.`
+        + offlineListText(counts);
     const spoken = agentGone
       ? `Warning. ${farmName} is not reachable. The site may have lost power or internet. Please check.`
       : `Warning. ${confirmed} machines are offline at ${farmName}. Please be warned.`;
