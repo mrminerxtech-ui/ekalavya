@@ -51,7 +51,29 @@ router.post('/save', authMiddleware, async (req, res) => {
   const deadWorkers   = new Set(tombstones.filter(t => t.kind === 'worker').map(t => t.id));
   const deadCustomers = new Set(tombstones.filter(t => t.kind === 'customer').map(t => t.id));
 
-  const workers = incomingWorkers.filter(w => !w || !deadWorkers.has(w.id));
+  let workers = incomingWorkers.filter(w => !w || !deadWorkers.has(w.id));
+
+  // A device can also hold a copy of a machine under an id the server has
+  // never had — typically an old IP-based id from before the machine's
+  // MAC was known. Saving it created a second record for a machine the
+  // server already tracks: same site, same IP, same hardware. Those are
+  // dropped here. A genuinely new machine (added from the network
+  // scanner) isn't on the server under any record yet, so it still saves.
+  {
+    const serverWorkers = await db.loadWorkers();
+    const serverIds = new Set(serverWorkers.map(w => w && w.id));
+    const bySiteIp = new Map();
+    serverWorkers.forEach(w => { if (w && w.ip) bySiteIp.set((w.farm_id || '') + '|' + w.ip, w); });
+    const before = workers.length;
+    workers = workers.filter(w => {
+      if (!w || serverIds.has(w.id) || !w.ip) return true;
+      const same = bySiteIp.get((w.farm_id || '') + '|' + w.ip);
+      return !(same && !db.identityConflict(w, same, true));
+    });
+    if (workers.length < before) {
+      console.log(`[FLEET] Ignored ${before - workers.length} copy/copies of machines already on the server under another id`);
+    }
+  }
   let processedCustomers = (customers || []).filter(c => !c || !deadCustomers.has(c.id));
   const blocked = (incomingWorkers.length - workers.length) + ((customers || []).length - processedCustomers.length);
   if (blocked > 0) {
