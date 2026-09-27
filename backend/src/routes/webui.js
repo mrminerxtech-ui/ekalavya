@@ -436,6 +436,24 @@ router.use('/:farmId/:ip', async (req, res) => {
         // folder's top level — it went wrong for a page in a subfolder,
         // and for single-page apps whose address bar now reads "/".
         'if(u.charAt(0)==="/"&&u.charAt(1)!=="/"){return B+u.slice(1);}return u;}' +
+        // WebSockets. Goldshell's pool page opens
+        // ws://<host>:443/mcb/resultpool; from an https page Chrome
+        // refuses an insecure ws:// socket by THROWING, which crashed the
+        // pool-settings code and left its sections as raw {{…}} text.
+        // A socket aimed at this host or the miner is re-pointed at the
+        // tunnel over the page's own scheme (wss:// on https), so creating
+        // it no longer throws and the rest of the page renders. (The
+        // tunnel doesn't relay live sockets yet, so that one feature —
+        // e.g. Goldshell's pool-test result — still won't report back.)
+        'var OWS=window.WebSocket;' +
+        'if(OWS){var WS=function(u,p){' +
+        'try{var x=new URL(String(u),window.location.href);' +
+        'if(/^wss?:$/.test(x.protocol)&&(x.hostname===window.location.hostname||x.hostname===IP)){' +
+        'var pth=x.pathname.indexOf("/api/webui/")===0?x.pathname:B+x.pathname.replace(/^\\//,"");' +
+        'u=(window.location.protocol==="https:"?"wss:":"ws:")+"//"+window.location.host+pth+x.search;}}catch(e){}' +
+        'return p===undefined?new OWS(u):new OWS(u,p);};' +
+        'WS.prototype=OWS.prototype;WS.CONNECTING=0;WS.OPEN=1;WS.CLOSING=2;WS.CLOSED=3;' +
+        'window.WebSocket=WS;}' +
         'var oF=window.fetch;' +
         'window.fetch=function(i,init){' +
         'if(typeof i==="string")i=fix(i);' +
