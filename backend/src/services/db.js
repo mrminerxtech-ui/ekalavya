@@ -340,6 +340,56 @@ async function createTables() {
 // old record is orphaned. MAC and serial are burned into the hardware
 // and never change, so they make a correct identity; IP is only a
 // last resort for machines that expose neither.
+// ── Is this poll result really the machine on that record? ─────────
+// Matching falls back to weaker keys (pool worker ID, then IP) when a
+// machine's MAC/serial aren't known. Those fallbacks used to take the
+// record without checking that the hardware agreed — so after a DHCP
+// shuffle, machine B landing on machine A's old IP was written INTO A's
+// record: B's readings (and MAC) under A's name. From then on B matched
+// that record by its own MAC and kept showing A's name.
+//
+// A fallback candidate is now rejected when the two clearly disagree:
+// different MACs, different serials, or (for the IP fallback, where
+// nothing stronger has matched) different pool worker IDs.
+function idKeyMac(v) {
+  if (!v) return null;
+  const h = String(v).toUpperCase().replace(/[^0-9A-F]/g, '');
+  return (h.length === 12 && !/^0+$/.test(h) && !/^F+$/.test(h)) ? h : null;
+}
+function idKeySerial(v) {
+  if (!v) return null;
+  const s = String(v).trim();
+  return (s.length >= 4 && !/^(—|-|0+|unknown|none|null|n\/a)$/i.test(s)) ? s : null;
+}
+function idKeyWorker(o) {
+  const v = o && (o.worker_id || o.worker);
+  const s = v ? String(v).trim() : '';
+  return (s && s !== '—') ? s : null;
+}
+function identityConflict(m, rec, checkWorker) {
+  if (!rec) return null;
+  const ma = idKeyMac(m.mac), mb = idKeyMac(rec.mac);
+  if (ma && mb && ma !== mb) return 'MAC';
+  const sa = idKeySerial(m.serial), sb = idKeySerial(rec.serial);
+  if (sa && sb && sa !== sb) return 'serial';
+  if (checkWorker) {
+    const wa = idKeyWorker(m), wb = idKeyWorker(rec);
+    if (wa && wb && wa !== wb) return 'pool worker';
+  }
+  return null;
+}
+
+// The name follows the pool worker the miner itself reports, whenever it
+// reports a real one. There is no manual rename — "Set Worker ID" changes
+// it on the miner too — so this is always the true name, and it also
+// heals records that were mixed up before identityConflict() existed.
+function pickWorkerName(m, old) {
+  if (m.name && String(m.name).trim()) return m.name;
+  if (m.worker && m.worker !== '—') return m.worker;
+  if (old && old.name && old.name !== '—') return old.name;
+  return m.ip ? m.ip.replace(/\./g, '-') : (old ? old.id : null);
+}
+
 function stableWorkerId(m) {
   if (m.mac)    return 'w-mac-' + String(m.mac).toUpperCase().replace(/[^0-9A-F]/g, '');
   if (m.serial) return 'w-sn-'  + String(m.serial).replace(/[^0-9A-Za-z]/g, '');
@@ -510,7 +560,8 @@ async function upsertWorkersByIp(farmId, minersFoundNow, opts) {
       }
       if (!existing && m.serial) {
         const bySerial = await client.query(`SELECT id, data, farm_id, updated_at FROM workers WHERE data->>'serial' = $1 FOR UPDATE`, [m.serial]);
-        if (bySerial.rows.length > 0 && !claimedElsewhere(bySerial.rows[0])) existing = bySerial.rows[0];
+        if (bySerial.rows.length > 0 && !claimedElsewhere(bySerial.rows[0])
+            && !identityConflict(m, bySerial.rows[0].data, false)) existing = bySerial.rows[0];
       }
       // Last hardware-based fallback: the pool Worker ID (the
       // wallet.worker-name string configured ON the miner) survives a
@@ -524,11 +575,21 @@ async function upsertWorkersByIp(farmId, minersFoundNow, opts) {
           `SELECT id, data, farm_id, updated_at FROM workers WHERE data->>'worker_id' = $1 AND data->>'worker_id' != '—' FOR UPDATE`,
           [m.worker_id]
         );
-        if (byWid.rows.length > 0 && !claimedElsewhere(byWid.rows[0])) existing = byWid.rows[0];
+        // Many sites give every miner the same worker name, so this only
+        // counts when exactly ONE record fits and its hardware doesn't
+        // disagree — otherwise it was picking an arbitrary machine.
+        const fits = byWid.rows.filter(r => !claimedElsewhere(r) && !identityConflict(m, r.data, false));
+        if (fits.length === 1) existing = fits[0];
       }
       if (!existing) {
         const byIp = await client.query(`SELECT id, data FROM workers WHERE data->>'ip' = $1 AND farm_id = $2 FOR UPDATE`, [m.ip, farmId]);
-        if (byIp.rows.length > 0) existing = byIp.rows[0];
+        if (byIp.rows.length > 0) {
+          const why = identityConflict(m, byIp.rows[0].data, true);
+          if (why) {
+            console.log(`[DB] ${m.ip} on ${farmId} is now a different machine (${why} differs from ` +
+                        `"${byIp.rows[0].data.name || byIp.rows[0].id}") — not reusing that record`);
+          } else existing = byIp.rows[0];
+        }
       }
 
       if (existing) {
@@ -553,10 +614,7 @@ async function upsertWorkersByIp(farmId, minersFoundNow, opts) {
         // back correctly on every later poll. Skip it here the same way
         // the insert path below now does, so a placeholder name isn't
         // trusted over a real value that's available right now.
-        const oldNameUsable = old.name && old.name !== '—';
-        const newWorkerUsable = m.worker && m.worker !== '—';
-        const newName = (m.name && String(m.name).trim()) ? m.name
-          : (oldNameUsable ? old.name : (newWorkerUsable ? m.worker : (m.ip ? m.ip.replace(/\./g, '-') : old.id)));
+        const newName = pickWorkerName(m, old);
         // Same "never let a blank reading overwrite a good one" protection
         // as name/cid/disabled, extended to model/worker/pool. These were
         // still exposed to the plain {...old, ...m} spread, so a single
@@ -615,7 +673,14 @@ async function upsertWorkersByIp(farmId, minersFoundNow, opts) {
         // permanently stuck named the literal text "—" forever (see the
         // matching note on the update path above).
         const defaultName = m.name || (m.worker && m.worker !== '—' ? m.worker : null) || (m.ip ? m.ip.replace(/\./g, '-') : stableWorkerId(m));
-        const fresh = { ...m, id: stableWorkerId(m), farm_id: farmId, cid: '',
+        // The natural id can already be taken — e.g. an IP-based id still
+        // held by the machine that used to have this address. Inserting
+        // it again would fail and roll back the WHOLE poll, so a taken id
+        // gets a unique suffix instead.
+        let newId = stableWorkerId(m);
+        const taken = await client.query(`SELECT 1 FROM workers WHERE id = $1`, [newId]);
+        if (taken.rows.length > 0) newId = newId + '-' + Date.now().toString(36);
+        const fresh = { ...m, id: newId, farm_id: farmId, cid: '',
                    disabled: false, status: 'online', source: 'auto-poll',
                    name: defaultName,
                    added_at: new Date().toISOString() };
@@ -689,15 +754,17 @@ function upsertWorkersFallback(farmId, minersFoundNow, collisions, skipMarkOffli
   const nowIps = new Set(minersFoundNow.map(m => m.ip));
   const byId = new Map(existing.map(w => [w.id, w]));
 
+  // Same matching and the same identity checks as upsertWorkersByIp.
   function findExisting(m) {
     if (m.mac)    { const f = existing.find(w => w.mac === m.mac); if (f) return f; }
-    if (m.serial) { const f = existing.find(w => w.serial === m.serial); if (f) return f; }
-    // Pool Worker ID fallback — see the matching comment in
-    // upsertWorkersByIp above for why this matters after a reboot.
+    if (m.serial) { const f = existing.find(w => w.serial === m.serial && !identityConflict(m, w, false)); if (f) return f; }
     if (m.worker_id && m.worker_id !== '—') {
-      const f = existing.find(w => w.worker_id === m.worker_id && w.worker_id !== '—'); if (f) return f;
+      const fits = existing.filter(w => w.worker_id === m.worker_id && w.worker_id !== '—' && !identityConflict(m, w, false));
+      if (fits.length === 1) return fits[0];
     }
-    return existing.find(w => w.ip === m.ip && w.farm_id === farmId) || null;
+    const byIp = existing.find(w => w.ip === m.ip && w.farm_id === farmId);
+    if (byIp && identityConflict(m, byIp, true)) return null;
+    return byIp || null;
   }
 
   minersFoundNow.forEach(m => {
@@ -706,10 +773,7 @@ function upsertWorkersFallback(farmId, minersFoundNow, collisions, skipMarkOffli
       const moved = old.ip !== m.ip || old.farm_id !== farmId;
       // Same name-protection fix as upsertWorkersByIp above ('—' is a
       // placeholder, not a real name, on either side of this fallback).
-      const oldNameUsable = old.name && old.name !== '—';
-      const newWorkerUsable = m.worker && m.worker !== '—';
-      const newName = (m.name && String(m.name).trim()) ? m.name
-        : (oldNameUsable ? old.name : (newWorkerUsable ? m.worker : (m.ip ? m.ip.replace(/\./g, '-') : old.id)));
+      const newName = pickWorkerName(m, old);
       byId.set(old.id, { ...old, ...m, id: old.id, cid: old.cid, disabled: old.disabled,
         disabled_reason: old.disabled_reason, disabled_at: old.disabled_at,
         farm: moved ? (m.farm || old.farm) : old.farm,
@@ -717,7 +781,8 @@ function upsertWorkersFallback(farmId, minersFoundNow, collisions, skipMarkOffli
         name: newName,
         status: m.status || 'online' });
     } else {
-      const id = stableWorkerId(m);
+      let id = stableWorkerId(m);
+      if (byId.has(id)) id = id + '-' + Date.now().toString(36);   // id taken — see the DB path
       // Same missing-name fix as upsertWorkersByIp above.
       const defaultName = m.name || (m.worker && m.worker !== '—' ? m.worker : null) || (m.ip ? m.ip.replace(/\./g, '-') : id);
       byId.set(id, { ...m, id, farm_id: farmId, cid: '',
