@@ -164,6 +164,7 @@ function renderWorkers() {
 
   // Apply active filter + search first, then sort
   refreshAgentFilterOptions();
+  computeHashBench();   // per-model medians, used for the low-hash colour and filter
 
   let displayWorkers = workers.filter(function(w){ return matchesWorkerFilter(w, workerFilter); });
   if (workerAgentFilter !== 'all') {
@@ -207,12 +208,20 @@ function renderWorkers() {
     const tc   = w.temp >= 90 ? 'color:var(--red)' : w.temp >= 80 ? 'color:var(--warn)' : '';
     const eSt  = effectiveStatus(w);
     const agentDown = w.farm_id && !isAgentOnline(w.farm_id) && !w.disabled;
-    const st   = w.disabled ? 'REPAIR' : agentDown ? 'AGENT OFFLINE' : eSt.toUpperCase();
-    const sb   = w.disabled ? 'bor' : eSt === 'online' ? 'bgn' : 'brn';
-    // Disabled machines are greyed out via the .wdis class rather than
-    // an inline style, so the row banding in CSS can be overridden
-    // cleanly instead of the two fighting each other.
-    const rowClass = w.disabled ? ' class="wdis"' : '';
+    const running = isRunning(w);
+    const hh   = running ? hashHealth(w) : null;
+    const low  = !!(hh && hh.low);
+    const st   = w.disabled ? 'REPAIR' : agentDown ? 'AGENT OFFLINE' : low ? 'LOW HASH' : eSt.toUpperCase();
+    const sb   = w.disabled ? 'bor' : low ? 'bwn' : eSt === 'online' ? 'bgn' : eSt === 'warn' ? 'bwn'
+               : eSt === 'sleeping' ? 'bpp' : eSt === 'rebooting' ? 'bc' : 'brn';
+    // The whole row is coloured by state so it can be picked out at a
+    // glance: green = online, yellow = low hashing, red = offline,
+    // purple = sleeping, orange stripes = in repair. Done with classes
+    // (CSS in index.html) so the row banding doesn't fight inline styles.
+    const rowClass = ' class="' + (w.disabled ? 'wdis' : low ? 'wlow' : running ? 'won'
+                   : eSt === 'sleeping' ? 'wslp' : 'woff') + '"';
+    const hrTitle = hh ? Math.round(hh.pct) + '% of the median for this model (' + (Math.round(hh.median * 1000) / 1000) + ' TH/s)'
+                       : 'Not enough running machines of this model to compare';
     return '<tr' + rowClass + '>'
       + '<td><input type="checkbox" class="worker-check" data-wid="' + w.id + '" style="accent-color:var(--cyan)"></td>'
       + '<td><div style="font-family:Share Tech Mono,monospace;font-weight:700;font-size:12px;color:' + (w.disabled ? 'var(--mute)' : 'var(--cyan)') + '">' + (w.name || '—') + '</div>'
@@ -226,9 +235,10 @@ function renderWorkers() {
       + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (w.ip || '—') + '</td>'
       + '<td style="font-size:11px">' + (w.farm || (ag ? ag.name : '—')) + '</td>'
       + '<td style="font-size:11px">' + (cust ? cust.name : '<span style="color:var(--mute)">—</span>') + '</td>'
-      + '<td style="color:var(--green);font-family:Share Tech Mono,monospace;font-size:11px">' + (eSt === 'online' ? hrDisplay(w) : '<span style="color:var(--mute)">—</span>') + '</td>'
-      + '<td style="' + tc + ';font-family:Share Tech Mono,monospace;font-size:11px">' + (eSt === 'online' && w.temp > 0 ? w.temp + '\u00b0C' : '—') + '</td>'
-      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (eSt === 'online' && w.fan > 0 ? w.fan : '—') + '</td>'
+      + '<td title="' + (running ? hrTitle : '') + '" style="color:' + (low ? 'var(--warn)' : 'var(--green)') + ';font-family:Share Tech Mono,monospace;font-size:11px">'
+      +   (running ? hrDisplay(w) + (low ? '<div style="font-size:9px">' + Math.round(hh.pct) + '% of model</div>' : '') : '<span style="color:var(--mute)">—</span>') + '</td>'
+      + '<td style="' + tc + ';font-family:Share Tech Mono,monospace;font-size:11px">' + (running && w.temp > 0 ? w.temp + '\u00b0C' : '—') + '</td>'
+      + '<td style="font-family:Share Tech Mono,monospace;font-size:11px">' + (running && w.fan > 0 ? w.fan : '—') + '</td>'
       + '<td style="font-size:10px;color:var(--mute)">' + (w.pool || '—') + '</td>'
       + '<td><span class="badge ' + sb + '">' + st + '</span></td>'
       + '<td><button class="abtn open-ctrl-btn" data-wid="' + w.id + '">Manage</button></td>'
@@ -253,10 +263,14 @@ function renderWorkers() {
   const scope = workerAgentFilter === 'all'
     ? workers
     : workers.filter(function(w){ return w.farm_id === workerAgentFilter; });
-  const on  = scope.filter(function(w){ return effectiveStatus(w) === 'online'; }).length;
-  const off = scope.filter(function(w){ return effectiveStatus(w) !== 'online' && !w.disabled; }).length;
+  // Same definitions as the filters the chips open, so a chip's number
+  // always equals the rows it shows.
+  const on  = scope.filter(function(w){ return matchesWorkerFilter(w, 'online'); }).length;
+  const lo  = scope.filter(function(w){ return matchesWorkerFilter(w, 'low'); }).length;
+  const off = scope.filter(function(w){ return matchesWorkerFilter(w, 'offline'); }).length;
   const dis = scope.filter(function(w){ return w.disabled; }).length;
   const eOn = document.getElementById('wOnlineBadge');  if (eOn) eOn.textContent = on;
+  const eLo = document.getElementById('wLowBadge');     if (eLo) { eLo.textContent = lo; eLo.style.display = lo ? '' : 'none'; }
   const eOf = document.getElementById('wOfflineBadge'); if (eOf) eOf.textContent = off;
   const eDs = document.getElementById('wDisBadge');     if (eDs) { eDs.textContent = dis; eDs.style.display = dis ? '' : 'none'; }
 }
@@ -4236,8 +4250,62 @@ function setWF(val, btnEl){
   renderWorkers();
 }
 
+// ── Low hashing ──────────────────────────────────────────────────
+// Same rule as the backend's underperformer report (insights.js), so the
+// two never disagree: a running machine is "low" when it hashes 15% or
+// more below the MEDIAN of the same model across the fleet right now.
+// Compared only within a model with at least 3 machines running — below
+// that there's no trustworthy benchmark, so nothing is flagged.
+const LOW_HASH_PCT = 15, LOW_HASH_MIN_COHORT = 3;
+let _hashBench = new Map();
+
+function hashModelKey(w) {
+  const raw = ((w.brand || '') + ' ' + (w.model || '')).toLowerCase();
+  return raw.replace(/antminer|bitmain|whatsminer|microbt|avalon|canaan|sealminer|bitdeer/g, ' ')
+            .replace(/[^a-z0-9]+/g, ' ').trim() || null;
+}
+function hashToTh(w) {
+  const v = Number(w.hashrate) || 0;
+  if (v <= 0) return 0;
+  const u = String(w.hr_unit || 'TH/s').toUpperCase();
+  return v * (u.indexOf('PH') === 0 ? 1e3 : u.indexOf('GH') === 0 ? 1e-3 : u.indexOf('MH') === 0 ? 1e-6 : 1);
+}
+function isRunning(w) {
+  if (w.disabled) return false;
+  const e = effectiveStatus(w);
+  return e === 'online' || e === 'warn';
+}
+function computeHashBench() {
+  const byModel = new Map();
+  workers.forEach(function(w){
+    if (!isRunning(w)) return;
+    const k = hashModelKey(w), th = hashToTh(w);
+    if (!k || th <= 0) return;
+    if (!byModel.has(k)) byModel.set(k, []);
+    byModel.get(k).push(th);
+  });
+  const bench = new Map();
+  byModel.forEach(function(list, k){
+    if (list.length < LOW_HASH_MIN_COHORT) return;
+    list.sort(function(a, b){ return a - b; });
+    const mid = Math.floor(list.length / 2);
+    bench.set(k, list.length % 2 ? list[mid] : (list[mid - 1] + list[mid]) / 2);
+  });
+  _hashBench = bench;
+}
+// { low, pct, median } for a running machine with a benchmark, else null
+function hashHealth(w) {
+  if (!isRunning(w)) return null;
+  const med = _hashBench.get(hashModelKey(w));
+  if (!med) return null;
+  const pct = hashToTh(w) / med * 100;
+  return { low: pct < 100 - LOW_HASH_PCT, pct: pct, median: med };
+}
+function isLowHash(w) { const h = hashHealth(w); return !!(h && h.low); }
+
 function matchesWorkerFilter(w, filter){
   if (filter === 'all') return true;
+  if (filter === 'low') return isLowHash(w);
   if (filter === 'disabled') return !!w.disabled;
   if (filter === 'sleeping') return w.status === 'sleeping';
   if (filter === 'warn')     return !w.disabled && w.status === 'warn';
@@ -4248,9 +4316,11 @@ function matchesWorkerFilter(w, filter){
   if (filter === 'noHwId')   return typeof w.id === 'string' && w.id.indexOf('w-ip-') === 0;
   // online/offline go through effectiveStatus so a machine whose agent
   // is down, or whose hashrate is 0, is correctly counted as offline here too
-  const eff = effectiveStatus(w);
-  if (filter === 'online')  return eff === 'online';
-  if (filter === 'offline') return eff !== 'online' && !w.disabled && w.status !== 'sleeping';
+  // "Online" means running and hashing normally (green); running but
+  // low has its own filter (yellow). A machine in 'warn' (hot, still
+  // mining) is running, so it is no longer counted as offline.
+  if (filter === 'online')  return isRunning(w) && !isLowHash(w);
+  if (filter === 'offline') return !isRunning(w) && !w.disabled && w.status !== 'sleeping';
   return true;
 }
 
