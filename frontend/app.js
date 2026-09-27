@@ -2467,6 +2467,7 @@ function loadFleetFromBackend(cb) {
       .then(d => {
         if (d?.ok && d.workers?.length > 0) {
           let added = 0, updated = 0;
+          const serverIds = new Set(d.workers.map(w => w.id));
           d.workers.forEach(bw => {
             // Match by id first, IP only as a fallback. Matching by IP
             // alone broke once the server started merging duplicates on
@@ -2475,7 +2476,14 @@ function loadFleetFromBackend(cb) {
             // local copy of the record that was just deleted, while the
             // local copy of the survivor kept the old ip forever — and
             // the next load then added the survivor a second time.
-            const existing = workers.find(lw => lw.id === bw.id) || workers.find(lw => lw.ip === bw.ip);
+            //
+            // The IP fallback is now only for a local copy the server
+            // doesn't know under its own id, and only when the hardware
+            // agrees. Otherwise a NEW machine that took an old machine's
+            // IP was merged into that old machine's local record — and
+            // showed its name.
+            const existing = workers.find(lw => lw.id === bw.id)
+              || workers.find(lw => lw.ip === bw.ip && !serverIds.has(lw.id) && !identityConflict(lw, bw, true));
             if (!existing) {
               workers.push(bw); added++;
             } else if (!existing.disabled) {
@@ -2554,7 +2562,13 @@ function loadFleetFromBackend(cb) {
               // showing it forever even after the server was fixed —
               // exactly why the phone (which loaded fresh) was right
               // while the PC (which loaded before the fix) stayed blank.
-              if (!existing.name && bw.name) { existing.name = bw.name; changedThis = true; }
+              //
+              // Names can't be typed in anywhere (they come from the pool
+              // worker on the miner), so the server's name is authoritative.
+              // Only filling in blanks meant a device that had cached a
+              // wrong name — e.g. the previous machine's, after an IP swap —
+              // kept showing it forever, even after the server corrected it.
+              if (bw.name && bw.name !== '—' && existing.name !== bw.name) { existing.name = bw.name; changedThis = true; }
               if (changedThis) updated++;
             }
           });
@@ -2795,6 +2809,22 @@ function stableWorkerId(m) {
   return 'w-ip-' + String(m.ip).replace(/\./g, '-');
 }
 
+// Do these two describe different machines? Same rule as the server
+// (db.js identityConflict): different MAC, different serial, or — when
+// only an IP matched — a different pool worker. Used so a machine that
+// took over another's old IP isn't merged into that machine's record,
+// which is what made the previous machine's name show on the new one.
+function idMac(v){ if(!v) return null; var h=String(v).toUpperCase().replace(/[^0-9A-F]/g,''); return (h.length===12 && !/^0+$/.test(h) && !/^F+$/.test(h)) ? h : null; }
+function idSerial(v){ if(!v) return null; var s=String(v).trim(); return (s.length>=4 && !/^(—|-|0+|unknown|none|null|n\/a)$/i.test(s)) ? s : null; }
+function idWorker(o){ var v=o && (o.worker_id || o.worker); var s=v ? String(v).trim() : ''; return (s && s!=='—') ? s : null; }
+function identityConflict(a, b, checkWorker){
+  if(!a || !b) return false;
+  var ma=idMac(a.mac), mb=idMac(b.mac); if(ma && mb && ma!==mb) return true;
+  var sa=idSerial(a.serial), sb=idSerial(b.serial); if(sa && sb && sa!==sb) return true;
+  if(checkWorker){ var wa=idWorker(a), wb=idWorker(b); if(wa && wb && wa!==wb) return true; }
+  return false;
+}
+
 function mergePollResults(farmId, minersFoundNow){
   if(!farmId || !Array.isArray(minersFoundNow)) return;
   const nowIps = new Set(minersFoundNow.map(function(m){ return m.ip; }));
@@ -2815,12 +2845,18 @@ function mergePollResults(farmId, minersFoundNow){
       const bySerial = workers.find(function(w){ return w.serial && w.serial === m.serial; });
       if (bySerial) return bySerial;
     }
-    return workers.find(function(w){ return w.ip === m.ip && w.farm_id === farmId; }) || null;
+    const byIp = workers.find(function(w){ return w.ip === m.ip && w.farm_id === farmId; }) || null;
+    // A different machine now has this IP: don't touch that record, and
+    // don't create one here either — the server creates the new record
+    // and the next fleet load brings it in with the server's id.
+    if (byIp && identityConflict(m, byIp, true)) return 'skip';
+    return byIp;
   }
 
   // Update or add every miner this poll found
   minersFoundNow.forEach(function(m){
     const existing = findExistingWorker(m);
+    if (existing === 'skip') return;
     if(existing){
       if(!existing.disabled){
         const moved = existing.ip !== m.ip || existing.farm_id !== farmId;
@@ -2854,6 +2890,11 @@ function mergePollResults(farmId, minersFoundNow){
         // an already-known value, and never overwrite a manual edit
         if (!existing.mac_manual && !existing.mac && m.mac) existing.mac = m.mac;
         if (!existing.serial_manual && !existing.serial && m.serial) existing.serial = m.serial;
+
+        // The name follows the pool worker the miner reports (there is no
+        // manual rename; "Set Worker ID" changes it on the miner too).
+        if (m.worker && m.worker !== '—' && existing.name !== m.worker) existing.name = m.worker;
+        if (m.worker_id && m.worker_id !== '—') existing.worker_id = m.worker_id;
 
         changed = true;
       }
