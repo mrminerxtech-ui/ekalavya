@@ -2483,6 +2483,20 @@ function loadFleetFromBackend(cb) {
             // showed its name.
             const existing = workers.find(lw => lw.id === bw.id)
               || workers.find(lw => lw.ip === bw.ip && !serverIds.has(lw.id) && !identityConflict(lw, bw, true));
+            // In or out of service is decided on the server (Disable /
+            // Enable), so it's taken from there every time — whichever
+            // device did it. This used to be skipped entirely, and the
+            // rest of the sync below was skipped for a disabled machine,
+            // so a machine disabled or re-enabled elsewhere never changed
+            // on this device.
+            if (existing && !!existing.disabled !== !!bw.disabled) {
+              existing.disabled = !!bw.disabled;
+              existing.disabled_reason = bw.disabled_reason || null;
+              existing.disabled_at = bw.disabled_at || null;
+              if (bw.disabled) { existing.status = 'disabled'; existing.hashrate = 0; existing.hr_display = '—'; }
+              else if (existing.status === 'disabled') existing.status = bw.status || 'offline';
+              updated++;
+            }
             if (!existing) {
               workers.push(bw); added++;
             } else if (!existing.disabled) {
@@ -5012,6 +5026,23 @@ function doAction(action, wid){
     if(d.ok) {
       toast('✓ ' + (d.message || (action + ' sent to ' + w.name)), 'var(--green)');
       if (action === 'delete') { workers = workers.filter(function(x){ return x.id !== w.id; }); saveFleet(); closeCtrl(); renderWorkers(); }
+      // The server has saved it; this device's copy must match straight
+      // away. Only the toast used to happen, so the machine never showed
+      // as disabled here (not under the Disabled filter, not in the
+      // dashboard's repair count, drawn red like an offline machine) —
+      // and this device's stale copy could later push it back to enabled.
+      if (action === 'disable') {
+        w.disabled = true; w.disabled_reason = body.reason; w.disabled_at = new Date().toISOString();
+        w.status = 'disabled'; w.hashrate = 0; w.hr_display = '—';
+      }
+      if (action === 'enable') {
+        w.disabled = false; w.disabled_reason = null; w.disabled_at = null; w.status = 'offline';
+      }
+      if (action === 'disable' || action === 'enable') {
+        saveFleet(); _workersHash = '';
+        try { refreshCtrl(); } catch(e) {}
+        try { renderAll(); } catch(e) {}
+      }
     } else {
       toast('✗ ' + (d.error || 'Failed'), 'var(--red)');
     }
