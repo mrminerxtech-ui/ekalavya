@@ -427,11 +427,35 @@ function countPhysicalMachines(workers) {
     groups[fid].get(root).push(w);
   });
 
+  // A stale copy with no MAC/serial can't be grouped above. If it sits at
+  // the same site and IP as a live machine and nothing says it's a
+  // different machine, it's that machine (the dedupe service merges it
+  // within ~30 minutes) — not a machine that's down.
+  const wid = r => { const v = r && (r.worker_id || r.worker); const s = v ? String(v).trim() : ''; return s && s !== '—' ? s : null; };
+  const differs = (a, b) => {
+    const ma = normHw('mac', a.mac), mb = normHw('mac', b.mac); if (ma && mb && ma !== mb) return true;
+    const sa = normHw('sn', a.serial), sb = normHw('sn', b.serial); if (sa && sb && sa !== sb) return true;
+    const wa = wid(a), wb = wid(b); return !!(wa && wb && wa !== wb);
+  };
+  const liveAt = new Map();   // "farm|ip" -> live records there
+  active.forEach(w => {
+    if (!(w.status === 'online' || w.status === 'warn') || !w.ip) return;
+    const k = (w.farm_id || 'unassigned') + '|' + w.ip;
+    if (!liveAt.has(k)) liveAt.set(k, []);
+    liveAt.get(k).push(w);
+  });
+  const copyOfLive = recs => recs.every(r => {
+    const live = liveAt.get((r.farm_id || 'unassigned') + '|' + r.ip) || [];
+    return live.some(l => l !== r && !differs(r, l));
+  });
+
   for (const [fid, m] of Object.entries(groups)) {
     const c = { offline: 0, total: 0, offlineList: [], records: 0 };
     for (const recs of m.values()) {
-      c.total++; c.records += recs.length;
-      if (recs.some(r => r.status === 'online' || r.status === 'warn')) continue;
+      c.records += recs.length;
+      if (recs.some(r => r.status === 'online' || r.status === 'warn')) { c.total++; continue; }
+      if (copyOfLive(recs)) continue;   // a stale copy — not another machine at all
+      c.total++;
       if (recs.some(r => r.status === 'sleeping')) continue;
       c.offline++;
       const r = recs.find(x => x.name && x.name !== x.ip) || recs[0];
