@@ -273,15 +273,21 @@ tr:last-child td{border-bottom:none;}
 #workersTbody tr.wdis:hover td{background:rgba(138,155,172,.06);}
 /* Row colour by state: a coloured bar on the left edge plus a light tint,
    so online / low hashing / offline can be told apart while scrolling. */
-#workersTbody tr.won td:first-child{box-shadow:inset 3px 0 0 var(--green);}
-#workersTbody tr.wlow td{background:rgba(251,191,36,.07);}
-#workersTbody tr.wlow td:first-child{box-shadow:inset 3px 0 0 var(--warn);}
-#workersTbody tr.woff td{background:rgba(247,89,108,.07);}
-#workersTbody tr.woff td:first-child{box-shadow:inset 3px 0 0 var(--red);}
-#workersTbody tr.wslp td{background:rgba(167,139,250,.06);}
-#workersTbody tr.wslp td:first-child{box-shadow:inset 3px 0 0 var(--purple);}
-#workersTbody tr.wlow:hover td{background:rgba(251,191,36,.12);}
-#workersTbody tr.woff:hover td{background:rgba(247,89,108,.12);}
+#workersTbody tr.won td:first-child{box-shadow:inset 4px 0 0 var(--green);}
+#workersTbody tr.wlow td{background:rgba(251,191,36,.11);}
+#workersTbody tr.wlow td:first-child{box-shadow:inset 4px 0 0 var(--warn);}
+#workersTbody tr.woff td{background:rgba(247,89,108,.13);}
+#workersTbody tr.woff td:first-child{box-shadow:inset 4px 0 0 var(--red);}
+#workersTbody tr.woff td:nth-child(2) > div:first-child{color:#ff97a4!important;}
+#workersTbody tr.wslp td{background:rgba(167,139,250,.09);}
+#workersTbody tr.wslp td:first-child{box-shadow:inset 4px 0 0 var(--purple);}
+#workersTbody tr.wlow:hover td{background:rgba(251,191,36,.17);}
+#workersTbody tr.woff:hover td{background:rgba(247,89,108,.19);}
+/* Bigger status dot next to the name, with a glow, since the Status
+   column is often scrolled off the right edge on smaller screens. */
+#workersTbody td:nth-child(2) .sdot{width:10px;height:10px;}
+#workersTbody td:nth-child(2) .sdot.on{box-shadow:0 0 6px var(--green);}
+#workersTbody td:nth-child(2) .sdot.off{box-shadow:0 0 6px var(--red);}
 .sortable-th{cursor:pointer;user-select:none;white-space:nowrap;transition:color .15s;}
 .sortable-th:hover{color:var(--txt);}
 .sort-arrow{font-size:9px;color:var(--cyan);display:inline-block;width:8px;}
@@ -626,10 +632,10 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
   #workersTbody tr.won td:first-child,#workersTbody tr.wlow td:first-child,
   #workersTbody tr.woff td:first-child,#workersTbody tr.wslp td:first-child{box-shadow:none;}
   #workersTbody tr.wlow td,#workersTbody tr.woff td,#workersTbody tr.wslp td{background:transparent;}
-  #workersTbody tr.won{box-shadow:inset 3px 0 0 var(--green);}
-  #workersTbody tr.wlow{box-shadow:inset 3px 0 0 var(--warn);background:rgba(251,191,36,.07);}
-  #workersTbody tr.woff{box-shadow:inset 3px 0 0 var(--red);background:rgba(247,89,108,.07);}
-  #workersTbody tr.wslp{box-shadow:inset 3px 0 0 var(--purple);background:rgba(167,139,250,.06);}
+  #workersTbody tr.won{box-shadow:inset 4px 0 0 var(--green);}
+  #workersTbody tr.wlow{box-shadow:inset 4px 0 0 var(--warn);background:rgba(251,191,36,.11);}
+  #workersTbody tr.woff{box-shadow:inset 4px 0 0 var(--red);background:rgba(247,89,108,.13);}
+  #workersTbody tr.wslp{box-shadow:inset 4px 0 0 var(--purple);background:rgba(167,139,250,.09);}
 }
 @media (max-width:380px){.more-grid{grid-template-columns:repeat(2,1fr);}.bi-lbl{font-size:9.5px;}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important;}}
