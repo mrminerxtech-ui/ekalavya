@@ -73,6 +73,19 @@ router.post('/save', authMiddleware, async (req, res) => {
     if (workers.length < before) {
       console.log(`[FLEET] Ignored ${before - workers.length} copy/copies of machines already on the server under another id`);
     }
+
+    // In or out of service is only ever changed by the Disable / Enable
+    // actions (routes/actions.js), which write straight to the server. A
+    // device's pushed copy may predate that change, so the server's
+    // value is kept — otherwise one stale device silently re-enabled a
+    // machine someone had just taken out for repair (or vice versa).
+    const serverById = new Map(serverWorkers.map(w => [w && w.id, w]));
+    workers = workers.map(w => {
+      const s = w && serverById.get(w.id);
+      if (!s || !!s.disabled === !!w.disabled) return w;
+      return { ...w, disabled: !!s.disabled, disabled_reason: s.disabled_reason || null,
+               disabled_at: s.disabled_at || null, status: s.disabled ? 'disabled' : (w.status === 'disabled' ? 'offline' : w.status) };
+    });
   }
   let processedCustomers = (customers || []).filter(c => !c || !deadCustomers.has(c.id));
   const blocked = (incomingWorkers.length - workers.length) + ((customers || []).length - processedCustomers.length);
