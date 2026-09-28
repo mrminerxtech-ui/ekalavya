@@ -275,11 +275,24 @@ router.use('/:farmId/:ip', async (req, res) => {
     }
   }
 
+  // The miner's OWN login session. Braiins OS logs in over /graphql and
+  // keeps the session in a cookie (and some firmware sends its own
+  // Authorization header instead). Only Content-Type used to be passed
+  // on, so the miner accepted the password and then saw the very next
+  // request arrive logged out — the login page just came back. Cookies
+  // the miner set are now sent back to it (our own tunnel cookie is kept
+  // out), and so is any Authorization header the miner's page adds. The
+  // agent only falls back to its root/root login when there isn't one.
+  const minerCookie = (req.headers.cookie || '').split(';')
+    .map(c => c.trim()).filter(c => c && !c.startsWith(cookieName + '=')).join('; ');
+  const fwdHeaders = { 'content-type': req.headers['content-type'] || '' };
+  if (minerCookie) fwdHeaders.cookie = minerCookie;
+  if (req.headers.authorization) fwdHeaders.authorization = req.headers.authorization;
+  if (req.headers.accept) fwdHeaders.accept = req.headers.accept;
+
   try {
     const result = await agentMgr.sendWebuiRequest(
-      farmId, ip, req.method, minerPath,
-      { 'content-type': req.headers['content-type'] || '' },
-      bodyToSend
+      farmId, ip, req.method, minerPath, fwdHeaders, bodyToSend
     );
 
     // result: { status, headers, body, encoding }
@@ -375,9 +388,18 @@ router.use('/:farmId/:ip', async (req, res) => {
       // so two miners open side by side never get mixed up.
       //
       // Detected by an ES-module <script>, which is how Vite-built apps
-      // like MaraFW load. Stock Antminer, Avalon and Braiins OS+ pages
-      // don't use one, so they keep working exactly as before.
-      const isSpa = /<script[^>]+type=["']?module/i.test(html);
+      // like MaraFW load (and see Braiins OS below). Stock Antminer and
+      // Avalon pages match none of these, so they keep working as before.
+      //
+      // Braiins OS 26.x is also a single-page app that routes by the
+      // address bar (React Router) but is built with webpack, so it has no
+      // module script — through the tunnel it showed its own "We couldn't
+      // find the page or file you're looking for", and "Go to Homepage"
+      // then jumped to /login on our own domain. It's recognised by name,
+      // or by the standard create-react-app <noscript> line.
+      const isSpa = /<script[^>]+type=["']?module/i.test(html)
+        || /braiins/i.test(html)
+        || /You need to enable JavaScript to run this app/i.test(html);
       const spaShim = !isSpa ? '' :
         `<base href="${tunnelBase}">` +
         '<script>(function(){' +
@@ -561,6 +583,25 @@ router.use('/:farmId/:ip', async (req, res) => {
 
     res.status(result.status || 200);
     res.set('Content-Type', contentType);
+
+    // Cookies the miner sets (its login session) are handed to the
+    // browser scoped to THIS miner's tunnel folder: the miner's own
+    // Domain is dropped (it names the miner's IP, which the browser would
+    // reject) and Path is pinned to /api/webui/<farm>/<ip>/, so two
+    // miners open side by side never share or overwrite each other's
+    // session, and none of it is sent to the rest of the app.
+    const setCookies = result.headers && result.headers['set-cookie'];
+    if (setCookies) {
+      const cookiePath = '/api/webui/' + encodeURIComponent(farmId) + '/' + ip + '/';
+      [].concat(setCookies).filter(Boolean).forEach(c => {
+        const parts = String(c).split(';').map(x => x.trim()).filter(Boolean);
+        const nameVal = parts.shift();
+        if (!nameVal || nameVal.startsWith(cookieName + '=')) return;
+        const keep = parts.filter(a => !/^(domain|path)=/i.test(a));
+        keep.push('Path=' + cookiePath);
+        res.append('Set-Cookie', [nameVal].concat(keep).join('; '));
+      });
+    }
 
     // Redirects (e.g. after submitting the miner's own login form)
     // need the same leading-slash strip so the browser follows them
