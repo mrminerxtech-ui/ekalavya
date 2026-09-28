@@ -240,6 +240,16 @@ async function createTables() {
       last_alerted_at     TIMESTAMPTZ DEFAULT NOW()
     );
 
+    -- Small app-wide settings changed from the Settings page (e.g. how
+    -- many machines offline at one site raise the alarm). One row per
+    -- setting, value stored as JSON.
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key         TEXT PRIMARY KEY,
+      value       JSONB NOT NULL,
+      updated_by  TEXT,
+      updated_at  TIMESTAMPTZ DEFAULT NOW()
+    );
+
     -- Cumulative customer earnings, accrued in short slots by the
     -- backend rather than calculated on the fly when someone opens a
     -- page. Accruing on view would double-count with two viewers and
@@ -1061,6 +1071,35 @@ async function setSiteAlertState(farmId, count) {
     );
   } catch(e) { console.error('[DB] setSiteAlertState error:', e.message); }
 }
+// ── App-wide settings (app_settings) ────────────────────────────────
+async function getSetting(key) {
+  if (useFallback || !pool) {
+    const all = loadFallback('settings');
+    const row = (Array.isArray(all) ? all : []).find(s => s && s.key === key);
+    return row ? row.value : null;
+  }
+  try {
+    const r = await pool.query('SELECT value FROM app_settings WHERE key=$1', [key]);
+    return r.rows[0] ? r.rows[0].value : null;
+  } catch(e) { console.error('[DB] getSetting error:', e.message); return null; }
+}
+async function setSetting(key, value, by) {
+  if (useFallback || !pool) {
+    const all = (loadFallback('settings') || []).filter(s => s && s.key !== key);
+    all.push({ key, value, updated_by: by || null, updated_at: new Date().toISOString() });
+    saveFallback('settings', all);
+    return true;
+  }
+  try {
+    await pool.query(
+      `INSERT INTO app_settings(key, value, updated_by, updated_at) VALUES($1,$2,$3,NOW())
+       ON CONFLICT (key) DO UPDATE SET value=$2, updated_by=$3, updated_at=NOW()`,
+      [key, JSON.stringify(value), by || null]
+    );
+    return true;
+  } catch(e) { console.error('[DB] setSetting error:', e.message); return false; }
+}
+
 async function clearSiteAlertState(farmId) {
   if (useFallback || !pool) return;
   try { await pool.query('DELETE FROM site_alerts WHERE farm_id=$1', [farmId]); }
@@ -1703,4 +1742,4 @@ async function getUptimeReport(days, farmId) {
   }
 }
 
-module.exports = { identityConflict, connect, loadModelPower, saveModelPower, deleteModelPower, normalizeModelKeyDb, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, clearFarmReadings, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, addTombstone, clearTombstone, loadTombstones, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport, getSiteAlertState, setSiteAlertState, clearSiteAlertState, getWorkerActivityMeta, countOnlineOverlap, applyAutoMerge };
+module.exports = { identityConflict, getSetting, setSetting, connect, loadModelPower, saveModelPower, deleteModelPower, normalizeModelKeyDb, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, clearFarmReadings, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, addTombstone, clearTombstone, loadTombstones, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport, getSiteAlertState, setSiteAlertState, clearSiteAlertState, getWorkerActivityMeta, countOnlineOverlap, applyAutoMerge };
