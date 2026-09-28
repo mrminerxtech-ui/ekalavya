@@ -1015,6 +1015,7 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
       <div class="panel">
         <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-cpu"/></svg>All Machines</div><div class="pa" style="display:flex;gap:8px">
           <button class="btn btn-sm" id="mergeSelBtn" onclick="openMergePicker()" style="display:none">&#x1F517; Merge Selected (2)</button>
+          <button class="btn btn-sm" onclick="openBulkAutoRestart()" title="Auto-restart setting for the ticked machines"><svg class="ic sm"><use href="#i-refresh"/></svg>Auto-Restart</button>
           <button class="btn btn-sm btn-r" onclick="bulkReboot()"><svg class="ic sm"><use href="#i-refresh"/></svg>Bulk Reboot</button>
         </div></div>
         <div class="toolbar">
@@ -1247,7 +1248,7 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
             nothing is restarted and Telegram is told instead.
           </div>
           <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;margin-bottom:12px;cursor:pointer">
-            <input type="checkbox" id="arEnabled" style="accent-color:var(--cyan);width:16px;height:16px"> Restart machines automatically
+            <input type="checkbox" id="arEnabled" style="accent-color:var(--cyan);width:16px;height:16px"> Restart machines automatically (default for all machines)
           </label>
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
             <label for="arMinutes" style="font-size:12.5px;color:var(--mute)">Restart after</label>
@@ -1261,6 +1262,11 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
             <button class="btn btn-sm" id="arSave" onclick="saveAutoRestart()">Save</button>
           </div>
           <div id="arStatus" style="margin-top:10px;font-size:11.5px;color:var(--mute)">Loading…</div>
+          <div style="margin-top:10px;font-size:11.5px;color:var(--mute);line-height:1.5">
+            This is the default for every machine. A machine can have its own setting — off (e.g. hydro machines) or its own minutes and limit —
+            on its page (Workers → machine), or tick several on the Workers page and use <b>Auto-Restart</b>.
+          </div>
+          <div id="arMachines" style="margin-top:10px"></div>
           <div id="arLog" style="margin-top:10px"></div>
         </div>
       </div>
@@ -1518,6 +1524,37 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
   </div>
 </div>
 
+<!-- Auto-restart for the ticked machines (Workers page) -->
+<div class="overlay" id="arBulkSheet">
+  <div class="sheet" style="max-width:520px">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title">Auto-restart for <span id="bulkArCount">0</span> machine(s)</div>
+    <div class="sheet-body">
+<div class="seg" id="bulkArMode" style="flex-wrap:wrap">
+  <button class="fbtn" type="button" data-mode="default" onclick="arPickMode('bulkAr','default')">Follow default</button>
+  <button class="fbtn" type="button" data-mode="off" onclick="arPickMode('bulkAr','off')">Off</button>
+  <button class="fbtn" type="button" data-mode="on" onclick="arPickMode('bulkAr','on')">Own setting</button>
+</div>
+<div id="bulkArOwn" style="display:none;margin-top:12px">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+    <label for="bulkArMinutes" style="font-size:12.5px;color:var(--mute)">Restart after</label>
+    <input class="si" id="bulkArMinutes" type="number" min="5" max="1440" step="1" style="width:80px;text-align:center" inputmode="numeric">
+    <span style="font-size:12.5px;color:var(--mute)">minutes at 0 hashrate</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <label for="bulkArMax" style="font-size:12.5px;color:var(--mute)">At most</label>
+    <input class="si" id="bulkArMax" type="number" min="1" max="20" step="1" style="width:80px;text-align:center" inputmode="numeric">
+    <span style="font-size:12.5px;color:var(--mute)">restarts per day</span>
+  </div>
+</div>
+<div id="bulkArHint" style="margin-top:10px;font-size:11.5px;color:var(--mute);line-height:1.5"></div>
+    </div>
+    <div class="sheet-foot">
+      <button class="btn btn-ghost" onclick="closeSheet('arBulkSheet')">Cancel</button>
+      <button class="btn btn-g" id="bulkArSave" onclick="saveBulkAutoRestart()">Apply</button>
+    </div>
+  </div>
+</div>
 <!-- MINER CONTROL PANEL -->
 <div id="ctrlPanel">
   <div class="ctrl-topbar">
@@ -1613,6 +1650,32 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
         <div class="action-btn act-purple" onclick="doAction('chiptest')"><div class="action-icon"><svg class="ic lg"><use href="#i-flask"/></svg></div><div class="action-label">Chip Test</div><div class="action-desc">Run chip-level diagnostic scan</div></div>
       </div>
       <div class="log-viewer" id="logViewer" style="display:none;margin-top:12px"></div>
+    </div>
+
+    <!-- AUTO-RESTART for this machine — overrides the default on the
+         Settings page (e.g. off for hydro machines). -->
+    <div class="ctrl-sec" id="ctrlArSec" style="--sec-c:var(--cyan)">
+      <div class="ctrl-sec-title"><svg class="ic sm"><use href="#i-refresh"/></svg>Auto-restart at 0 hashrate <span class="badge" id="ctrlArBadge" style="margin-left:auto">…</span></div>
+      <div class="seg" id="ctrlArMode" style="flex-wrap:wrap">
+        <button class="fbtn" type="button" data-mode="default" onclick="arPickMode('ctrlAr','default')">Follow default</button>
+        <button class="fbtn" type="button" data-mode="off" onclick="arPickMode('ctrlAr','off')">Off</button>
+        <button class="fbtn" type="button" data-mode="on" onclick="arPickMode('ctrlAr','on')">Own setting</button>
+      </div>
+      <div id="ctrlArOwn" style="display:none;margin-top:12px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+          <label for="ctrlArMinutes" style="font-size:12.5px;color:var(--mute)">Restart after</label>
+          <input class="si" id="ctrlArMinutes" type="number" min="5" max="1440" step="1" style="width:80px;text-align:center" inputmode="numeric">
+          <span style="font-size:12.5px;color:var(--mute)">minutes at 0 hashrate</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <label for="ctrlArMax" style="font-size:12.5px;color:var(--mute)">At most</label>
+          <input class="si" id="ctrlArMax" type="number" min="1" max="20" step="1" style="width:80px;text-align:center" inputmode="numeric">
+          <span style="font-size:12.5px;color:var(--mute)">restarts per day</span>
+        </div>
+      </div>
+      <div id="ctrlArHint" style="margin-top:10px;font-size:11.5px;color:var(--mute);line-height:1.5"></div>
+      <div id="ctrlArInfo" style="margin-top:6px;font-size:11.5px;color:var(--mute)"></div>
+      <button class="btn btn-sm" type="button" id="ctrlArSave" style="margin-top:12px" onclick="saveMachineAutoRestart()">Save for this machine</button>
     </div>
 
     <div class="ctrl-sec" id="ctrlMaintSec" style="--sec-c:var(--warn)">
