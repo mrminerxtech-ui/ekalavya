@@ -250,6 +250,10 @@ function handleAgentMessage(farmId, msg) {
       const d = decideOfflinePass(farmId, msg.miners.length, agent.connected_at);
       if (d.skip) console.log(`[POLL→DB] ${farmId}: short poll (${d.why}) — updating those, not marking the rest offline yet`);
       if (d.confirmed) console.log(`[POLL→DB] ${farmId}: drop to ${msg.miners.length} machines has persisted — applying it`);
+      // Auto-restart tracks how long each reachable machine has been at 0
+      // hashrate (services/autorestart.js). Isolated so it can never
+      // affect saving the poll.
+      try { require('./autorestart').observePoll(farmId, msg.miners); } catch (e) { console.error('[AUTO-RESTART] observe error:', e.message); }
       db.upsertWorkersByIp(farmId, msg.miners, { skipMarkOffline: !!d.skip }).then(ok => {
         if (ok) console.log(`[POLL→DB] ${farmId}: ${msg.miners.length} miners persisted`);
       }).catch(e => console.error('[POLL→DB] error:', e.message));
