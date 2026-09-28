@@ -33,10 +33,27 @@ router.post('/settings', authMiddleware, requireRole('admin', 'manager'), async 
 // ── Auto-restart (machines at 0 hashrate) ──────────────────────────
 const autorestart = require('../services/autorestart');
 
-// GET /api/alerts/auto-restart → { ok, enabled, minutes, max_per_day, defaults, log[] }
+// GET /api/alerts/auto-restart → { ok, enabled, minutes, max_per_day, defaults, log[], machines[] }
 router.get('/auto-restart', authMiddleware, staffOnly, async (req, res) => {
-  await autorestart.loadSettings();
-  res.json({ ok: true, ...autorestart.getSettings(), log: autorestart.getLog() });
+  await Promise.all([autorestart.loadSettings(), autorestart.loadOverrides()]);
+  res.json({ ok: true, ...autorestart.getSettings(), log: autorestart.getLog(), machines: autorestart.listOverrides() });
+});
+
+// One machine's setting, as shown on its page.
+// GET /api/alerts/auto-restart/machine/:id → { ok, mode, minutes, max_per_day, default{}, active, restarts_today, zero_minutes }
+router.get('/auto-restart/machine/:id', authMiddleware, staffOnly, async (req, res) => {
+  const r = await autorestart.getMachine(req.params.id);
+  res.status(r.ok ? 200 : 404).json(r);
+});
+
+// Set one or many machines (machine page, or bulk from the Workers list).
+// POST /api/alerts/auto-restart/machines  { worker_ids:[…], mode:'default'|'off'|'on', minutes, max_per_day }
+router.post('/auto-restart/machines', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+  const who = (req.user && (req.user.name || req.user.id)) || 'unknown';
+  const b = req.body || {};
+  const r = await autorestart.setMachines(b.worker_ids || b.worker_id, b, who);
+  if (!r.ok) return res.status(400).json(r);
+  res.json({ ...r, machines: autorestart.listOverrides() });
 });
 
 // POST /api/alerts/auto-restart  { enabled, minutes, max_per_day }
@@ -44,7 +61,7 @@ router.post('/auto-restart', authMiddleware, requireRole('admin', 'manager'), as
   const who = (req.user && (req.user.name || req.user.id)) || 'unknown';
   const r = await autorestart.saveSettings(req.body || {}, who);
   if (!r.ok) return res.status(400).json(r);
-  res.json({ ...r, log: autorestart.getLog() });
+  res.json({ ...r, log: autorestart.getLog(), machines: autorestart.listOverrides() });
 });
 
 module.exports = router;
