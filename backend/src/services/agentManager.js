@@ -180,6 +180,7 @@ function unregisterAgent(farmId, ws) {
   if (agent) {
     console.log(`[AGENT] Disconnected: ${agent.farm_name}`);
     connectedAgents.delete(farmId);
+    try { require('./webuiSockets').closeFarm(farmId); } catch(e) {}
     try {
       const { broadcast } = require('../websocket');
       broadcast({ type: 'agent_disconnected', farm_id: farmId });
@@ -225,6 +226,12 @@ function handleAgentMessage(farmId, msg) {
     if (msg.type === 'webui_proxy_response') {
       resolveWebuiResponse(msg);
       return; // nothing else needs this message
+    }
+
+    // Live sockets through the web UI tunnel (services/webuiSockets.js)
+    if (msg.type && msg.type.startsWith('webui_ws_')) {
+      try { require('./webuiSockets').onAgentMessage(farmId, msg); } catch(e) { console.error('[WEBUI] live socket relay:', e.message); }
+      return;
     }
 
     // Miner action tunnel — resolve the matching pending request
