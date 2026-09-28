@@ -1674,7 +1674,11 @@ function handleWebuiProxyRequestNow(msg) {
       type: 'webui_proxy_response',
       request_id,
       status: res.statusCode,
-      headers: { 'content-type': contentType || 'text/html', 'location': res.headers['location'] || null },
+      // set-cookie: the miner's own login session (Braiins OS keeps it in
+      // a cookie). It used to be dropped here, so a correct password was
+      // accepted and then immediately forgotten.
+      headers: { 'content-type': contentType || 'text/html', 'location': res.headers['location'] || null,
+                 'set-cookie': res.headers['set-cookie'] || null },
       body: isText ? buf.toString('utf8') : buf.toString('base64'),
       encoding: isText ? 'utf8' : 'base64',
     });
@@ -1712,6 +1716,10 @@ function handleWebuiProxyRequestNow(msg) {
     };
     if (body) options.headers['Content-Length'] = Buffer.byteLength(body);
     if (headers && headers['content-type']) options.headers['Content-Type'] = headers['content-type'];
+    // The miner page's own session (cookie) and accept header go through
+    // as sent — see pageAuth below for its own Authorization header.
+    if (headers && headers.cookie) options.headers['Cookie'] = headers.cookie;
+    if (headers && headers.accept) options.headers['Accept'] = headers.accept;
 
     const req = http.request(options, res => {
       if (res.statusCode === 401 && phase < 2 && res.headers['www-authenticate']) {
@@ -1761,8 +1769,17 @@ function handleWebuiProxyRequestNow(msg) {
   }
   let connRetries = 0;
 
+  // A miner page that logs in with its own token (Authorization header)
+  // must have that header reach the miner untouched. It used to be
+  // replaced by our root/root Basic login on every request, so the
+  // miner saw a different login than the one the page had just made.
+  // If the miner answers it with a Digest challenge anyway, the normal
+  // Digest retry above still takes over.
+  const pageAuth = headers && headers.authorization;
   const cached = digestCache.get(ip);
-  if (cached) {
+  if (pageAuth) {
+    attempt(pageAuth, 0);
+  } else if (cached) {
     cached.nc += 1;
     attempt(buildDigestAuth(REQUEST_USER, REQUEST_PASS, method || 'GET', reqPath || '/', cached.params, ncHex(cached.nc)), 0);
   } else {
