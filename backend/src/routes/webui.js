@@ -464,15 +464,20 @@ router.use('/:farmId/:ip', async (req, res) => {
         // pool-settings code and left its sections as raw {{…}} text.
         // A socket aimed at this host or the miner is re-pointed at the
         // tunnel over the page's own scheme (wss:// on https), so creating
-        // it no longer throws and the rest of the page renders. (The
-        // tunnel doesn't relay live sockets yet, so that one feature —
-        // e.g. Goldshell's pool-test result — still won't report back.)
+        // it no longer throws and the rest of the page renders. The socket
+        // itself is relayed to the miner through the farm agent
+        // (services/webuiSockets.js) — Braiins OS streams its whole
+        // dashboard this way.
         'var OWS=window.WebSocket;' +
         'if(OWS){var WS=function(u,p){' +
         'try{var x=new URL(String(u),window.location.href);' +
         'if(/^wss?:$/.test(x.protocol)&&(x.hostname===window.location.hostname||x.hostname===IP)){' +
         'var pth=x.pathname.indexOf("/api/webui/")===0?x.pathname:B+x.pathname.replace(/^\\//,"");' +
-        'u=(window.location.protocol==="https:"?"wss:":"ws:")+"//"+window.location.host+pth+x.search;}}catch(e){}' +
+        // a socket on another port of the miner (Goldshell uses :443) keeps
+        // that port as a hint the backend passes on to the agent
+        'var own=x.hostname===window.location.hostname&&x.port===window.location.port;' +
+        'var sr=x.search;if(!own&&x.port&&x.port!=="80"&&x.pathname.indexOf("/api/webui/")!==0){sr=(sr?sr+"&":"?")+"__eklport="+x.port;}' +
+        'u=(window.location.protocol==="https:"?"wss:":"ws:")+"//"+window.location.host+pth+sr;}}catch(e){}' +
         'return p===undefined?new OWS(u):new OWS(u,p);};' +
         'WS.prototype=OWS.prototype;WS.CONNECTING=0;WS.OPEN=1;WS.CLOSING=2;WS.CLOSED=3;' +
         'window.WebSocket=WS;}' +
