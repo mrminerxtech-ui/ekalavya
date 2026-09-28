@@ -2992,6 +2992,7 @@ function showPage(n){
   // Render the page's content when it opens
   try {
     if(n==='dashboard')     { renderDash(); }
+    if(n==='settings')      { loadSiteAlarmSetting(); }
     if(n==='workers')       { renderWorkers(); attachSortHandlers(); }
     if(n==='agents')        { renderAgents(); populateDropdowns(); }
     if(n==='customers')     { renderCustomers(); }
@@ -4423,6 +4424,45 @@ function onWorkerSearchInput(){
 // one row per 10-minute slot), so it's the same data whoever looks
 // at it and it doesn't reset when a tab closes.
 let histState = { wid: null, hours: 168, points: [], hoverX: null };
+
+// ── Site alarm setting (Settings page) ─────────────────────────────
+// How many machines offline at one site trigger the alarm (phone call +
+// Telegram). Stored on the server; the alarm picks a change up within
+// one check (~3 min).
+function siteAlarmStatusText(d) {
+  return 'Alarm at ' + d.alarm_at + '+ offline at one site. After an alarm, the next one comes if 5 more go down, '
+    + 'or after the site recovers to ' + d.rearm_at + ' or fewer and then fails again.'
+    + (d.alarm_at === d.default_alarm_at ? ' (default)' : '');
+}
+function loadSiteAlarmSetting() {
+  const st = document.getElementById('siteAlarmStatus');
+  authFetch('/api/alerts/settings').then(function(d){
+    if (!d || !d.ok) { if (st) st.textContent = 'Could not load the current setting.'; return; }
+    const inp = document.getElementById('siteAlarmAt');
+    if (inp && document.activeElement !== inp) inp.value = d.alarm_at;
+    if (st) { st.style.color = 'var(--mute)'; st.textContent = siteAlarmStatusText(d); }
+  });
+}
+function saveSiteAlarmSetting() {
+  const inp = document.getElementById('siteAlarmAt');
+  const st  = document.getElementById('siteAlarmStatus');
+  const n   = parseInt(inp && inp.value, 10);
+  if (!(n >= 1 && n <= 1000)) { toast('Enter a whole number of machines between 1 and 1000', 'var(--warn)'); return; }
+  const token = localStorage.getItem('ekl_token') || '';
+  fetch(API_BASE + '/api/alerts/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+    body: JSON.stringify({ alarm_at: n })
+  })
+  .then(function(r){ return r.json().catch(function(){ return { ok: false, error: 'HTTP ' + r.status }; })
+    .then(function(d){ if (r.status === 403) d = { ok: false, error: 'Only an admin or manager can change this' }; return d; }); })
+  .then(function(d){
+    if (!d || !d.ok) { toast('✗ ' + ((d && d.error) || 'Could not save'), 'var(--red)'); return; }
+    if (st) { st.style.color = 'var(--green)'; st.textContent = '✓ Saved. ' + siteAlarmStatusText(d); }
+    toast('✓ Site alarm set to ' + d.alarm_at + ' machines', 'var(--green)');
+  })
+  .catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
+}
 
 function authFetch(path) {
   const base = (typeof API_BASE !== 'undefined') ? API_BASE : '';
