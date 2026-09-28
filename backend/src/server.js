@@ -173,10 +173,15 @@ server.on('upgrade', (request, socket, head) => {
   // platform logs). The base only exists to satisfy the URL parser —
   // we just want the path.
   const pathname = new URL(request.url, 'http://localhost').pathname;
-  // Miner web UIs opened through the tunnel may try a live socket (e.g.
-  // Goldshell's pool-test results) and retry it; those aren't relayed yet,
-  // so they're refused quietly rather than logged on every retry.
-  if (pathname.startsWith('/api/webui/')) { socket.destroy(); return; }
+  // Live sockets from a miner's web UI opened through the tunnel (Braiins
+  // OS dashboard data, Goldshell pool test) are relayed to the miner via
+  // its farm agent — see services/webuiSockets.js. Not logged here: a page
+  // can open and re-open these often.
+  if (pathname.startsWith('/api/webui/')) {
+    require('./services/webuiSockets').handleUpgrade(request, socket, head)
+      .catch(e => { console.error('[WEBUI] live socket error:', e.message); try { socket.destroy(); } catch (x) {} });
+    return;
+  }
   console.log(`[WS] Upgrade: ${pathname}`);
 
   if (pathname === '/ws') {
