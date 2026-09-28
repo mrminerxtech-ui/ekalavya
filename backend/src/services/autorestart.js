@@ -24,11 +24,22 @@
 //     hour.
 //   • At most PER_SITE_PER_TICK reboots per site per minute, so a batch
 //     is staggered rather than all at once.
+//
+// PER MACHINE: each machine can override the default from its own page
+// (Workers → machine → Auto-restart) or in bulk from the Workers list:
+//   • default — follows the switch/minutes/cap above
+//   • off     — never restarted automatically (e.g. hydro machines)
+//   • on      — restarted with its OWN minutes and daily cap, even while
+//               the default is off
+// Stored in app_settings key `auto_restart_machines`, keyed by MAC (or the
+// record id when there's no MAC) so it survives IP changes. All the safety
+// rules above apply to every machine whatever its setting.
 // ============================================================
 const agentMgr = require('./agentManager');
 const db       = require('./db');
 
 const SETTING_KEY       = 'auto_restart';
+const MACHINES_KEY      = 'auto_restart_machines';
 const DEFAULTS          = { enabled: false, minutes: 10, max_per_day: 3 };
 const TICK_MS           = 60 * 1000;
 const MIN_BOOT_GRACE_MS = 15 * 60 * 1000;
@@ -39,6 +50,7 @@ const PER_SITE_PER_TICK = 5;
 const FORGET_AFTER_MS   = 3 * 60 * 1000;   // gone from polls this long → no longer tracked
 
 let settings = { ...DEFAULTS };
+let overrides = {};           // machineKey -> { mode:'on'|'off', minutes, max_per_day, worker_id, name, ip, farm_id, set_by, set_at }
 const zero     = new Map();   // "farm|key" -> { farmId, ip, key, since, lastSeen }
 const seenAt   = new Map();   // farmId -> Map(key -> { ip, zero:boolean, at }) latest poll per site
 const history  = new Map();   // "farm|key" -> [restart timestamps]
@@ -50,6 +62,27 @@ const gaveUpNotified = new Map();
 function keyOf(m) {
   const mac = m.mac ? String(m.mac).toUpperCase().replace(/[^0-9A-F]/g, '') : '';
   return mac.length === 12 ? 'mac:' + mac : 'ip:' + m.ip;
+}
+function normMac(v) {
+  const mac = v ? String(v).toUpperCase().replace(/[^0-9A-F]/g, '') : '';
+  return mac.length === 12 ? mac : '';
+}
+// Key a per-machine setting is stored under: MAC when known, else record id.
+function machineKey(rec) { const mac = normMac(rec && rec.mac); return mac ? 'mac:' + mac : 'id:' + (rec && rec.id); }
+// Key the poll tracker uses for this record (poll results carry MAC or IP).
+function pollKey(rec) { const mac = normMac(rec && rec.mac); return mac ? 'mac:' + mac : 'ip:' + (rec && rec.ip); }
+function overrideFor(rec) {
+  if (!rec) return null;
+  const mac = normMac(rec.mac);
+  return (mac && overrides['mac:' + mac]) || overrides['id:' + rec.id] || null;
+}
+// What applies to this machine right now: null = not restarted automatically.
+function effectiveFor(rec) {
+  const ov = overrideFor(rec);
+  if (ov && ov.mode === 'off') return null;
+  if (ov && ov.mode === 'on') return { minutes: ov.minutes, max_per_day: ov.max_per_day, own: true, from: Date.parse(ov.set_at) || 0 };
+  if (!settings.enabled) return null;
+  return { minutes: settings.minutes, max_per_day: settings.max_per_day, own: false, from: 0 };
 }
 function isZero(m) { return !(Number(m.hashrate) > 0); }
 function note(entry) {
@@ -85,6 +118,13 @@ async function loadSettings() {
   } catch (e) { /* keep current */ }
   return settings;
 }
+async function loadOverrides() {
+  try {
+    const v = await db.getSetting(MACHINES_KEY);
+    if (v && typeof v === 'object' && !Array.isArray(v)) overrides = v;
+  } catch (e) { /* keep current */ }
+  return overrides;
+}
 function sanitize(v) {
   const minutes = parseInt(v.minutes, 10), max = parseInt(v.max_per_day, 10);
   return {
@@ -116,30 +156,114 @@ async function saveSettings(v, by) {
   }
   return { ok: true, ...getSettings() };
 }
+// ── Per-machine settings ──────────────────────────────────────────
+function listOverrides() {
+  return Object.entries(overrides).map(([key, o]) => ({ key, ...o }))
+    .sort((a, b) => String(a.farm_id).localeCompare(String(b.farm_id)) || String(a.name).localeCompare(String(b.name)));
+}
+async function getMachine(workerId) {
+  await Promise.all([loadSettings(), loadOverrides()]);
+  const rec = (await db.loadWorkers()).find(w => w && w.id === workerId);
+  if (!rec) return { ok: false, error: 'Machine not found' };
+  const ov = overrideFor(rec), eff = effectiveFor(rec), now = Date.now();
+  const pk = rec.farm_id + '|' + pollKey(rec);
+  const z = zero.get(pk);
+  return {
+    ok: true,
+    mode: ov ? ov.mode : 'default',
+    minutes: ov && ov.mode === 'on' ? ov.minutes : settings.minutes,
+    max_per_day: ov && ov.mode === 'on' ? ov.max_per_day : settings.max_per_day,
+    set_by: ov ? ov.set_by : null, set_at: ov ? ov.set_at : null,
+    default: { enabled: settings.enabled, minutes: settings.minutes, max_per_day: settings.max_per_day },
+    active: !!eff,
+    restarts_today: (history.get(pk) || []).filter(t => now - t < DAY_MS).length,
+    zero_minutes: z ? Math.floor((now - z.since) / 60000) : null,
+  };
+}
+// Set one or many machines: mode 'default' (remove own setting), 'off', or
+// 'on' with minutes + max_per_day.
+let writing = Promise.resolve();
+function setMachines(workerIds, v, by) {
+  const run = async () => {
+    const ids = [...new Set((Array.isArray(workerIds) ? workerIds : [workerIds]).filter(Boolean).map(String))];
+    if (!ids.length) return { ok: false, error: 'No machines selected' };
+    if (ids.length > 2000) return { ok: false, error: 'Too many machines in one go' };
+    const mode = String((v && v.mode) || '');
+    if (!['default', 'off', 'on'].includes(mode)) return { ok: false, error: 'Choose default, off or on' };
+    if (mode === 'on') { const err = validate(v); if (err) return { ok: false, error: err }; }
+    await loadOverrides();
+    const all = await db.loadWorkers();
+    const byId = new Map(all.filter(Boolean).map(w => [w.id, w]));
+    const next = { ...overrides }, changed = [], missing = [];
+    const at = new Date().toISOString();
+    for (const id of ids) {
+      const rec = byId.get(id);
+      if (!rec) {
+        // record gone (deleted/merged) — still let its own setting be cleared
+        const stale = mode === 'default' ? Object.keys(next).filter(k => next[k] && next[k].worker_id === id) : [];
+        if (stale.length) { stale.forEach(k => { changed.push(next[k].name || id); delete next[k]; }); continue; }
+        missing.push(id); continue;
+      }
+      // drop any older entry for this machine under its other key
+      const mac = normMac(rec.mac);
+      if (mac) delete next['id:' + rec.id];
+      delete next[machineKey(rec)];
+      if (mode !== 'default') {
+        next[machineKey(rec)] = {
+          mode, worker_id: rec.id, name: rec.name || rec.ip, ip: rec.ip, farm_id: rec.farm_id,
+          ...(mode === 'on' ? { minutes: parseInt(v.minutes, 10), max_per_day: parseInt(v.max_per_day, 10) } : {}),
+          set_by: by || null, set_at: at,
+        };
+      }
+      changed.push(rec.name || rec.ip);
+    }
+    if (!changed.length) return { ok: false, error: 'Machine not found' };
+    if (!(await db.setSetting(MACHINES_KEY, next, by))) return { ok: false, error: 'Could not save the setting' };
+    overrides = next;
+    const what = mode === 'default' ? 'back to the default' : mode === 'off' ? 'OFF' : `ON (${v.minutes} min, max ${v.max_per_day}/day)`;
+    console.log(`[AUTO-RESTART] ${changed.length} machine(s) set ${what}${by ? ' by ' + by : ''}: ` +
+                changed.slice(0, 20).join(', ') + (changed.length > 20 ? ` +${changed.length - 20} more` : ''));
+    return { ok: true, updated: changed.length, missing: missing.length, mode };
+  };
+  const p = writing.then(run, run);
+  writing = p.catch(() => {});
+  return p;
+}
 function getLog() { return log.slice(0, 50); }
 
 let telegram = null;   // set in start() — alerts.js requires agentManager too, so resolved lazily
 function tell(text) { try { telegram && telegram(text, 'warn'); } catch (e) {} }
 
 async function tick() {
-  await loadSettings();
+  await Promise.all([loadSettings(), loadOverrides()]);
   const now = Date.now();
   // forget machines that stopped appearing in polls (unreachable, moved)
   zero.forEach((e, k) => { if (now - e.lastSeen > FORGET_AFTER_MS) zero.delete(k); });
-  if (!settings.enabled) return;
+
+  // Anything switched on at all? The default, or at least one machine's own setting.
+  const ownOn = Object.values(overrides).filter(o => o && o.mode === 'on');
+  if (!settings.enabled && !ownOn.length) return;
+  const shortest = Math.min(settings.enabled ? settings.minutes : Infinity, ...ownOn.map(o => o.minutes));
+  const candidates = [...zero.entries()].filter(([, e]) => now - e.since >= shortest * 60 * 1000);
+  if (!candidates.length) return;
 
   const agents = new Map(agentMgr.getAgents().map(a => [a.farm_id, a]));
-  const waitMs = settings.minutes * 60 * 1000;
-  const due = [...zero.entries()].filter(([, e]) => now - e.since >= waitMs);
-  if (!due.length) return;
-
   const workers = await db.loadWorkers();
   const recFor = (farmId, e) => workers.find(w => w && w.farm_id === farmId &&
-    (e.key.startsWith('mac:') ? String(w.mac || '').toUpperCase().replace(/[^0-9A-F]/g, '') === e.key.slice(4) : w.ip === e.ip))
+    (e.key.startsWith('mac:') ? normMac(w.mac) === e.key.slice(4) : w.ip === e.ip))
     || workers.find(w => w && w.farm_id === farmId && w.ip === e.ip);
 
+  // Which of them are due under the setting that applies to that machine?
   const bySite = new Map();
-  due.forEach(([k, e]) => { if (!bySite.has(e.farmId)) bySite.set(e.farmId, []); bySite.get(e.farmId).push([k, e]); });
+  for (const [k, e] of candidates) {
+    const w = recFor(e.farmId, e);
+    const cfg = effectiveFor(w);
+    if (!cfg) continue;                                     // off for this machine (or default off)
+    const since = Math.max(e.since, cfg.from);              // own setting counts from when it was set
+    if (now - since < cfg.minutes * 60 * 1000) continue;
+    if (!bySite.has(e.farmId)) bySite.set(e.farmId, []);
+    bySite.get(e.farmId).push({ k, e, w, cfg, since });
+  }
 
   for (const [farmId, list] of bySite) {
     const agent = agents.get(farmId);
@@ -163,34 +287,34 @@ async function tick() {
 
     let sent = 0;
     const restarted = [], gaveUp = [];
-    for (const [k, e] of list) {
+    for (const { k, e, w, cfg, since } of list) {
       if (sent >= PER_SITE_PER_TICK) break;
       if ((graceTil.get(k) || 0) > now) continue;
-      const w = recFor(farmId, e);
       const label = w ? `${w.name || w.ip} (${e.ip})` : e.ip;
       if (w && w.disabled) continue;                         // in repair
       if (w && w.last_action === 'sleep') continue;          // put to sleep on purpose
       const recent = (history.get(k) || []).filter(t => now - t < DAY_MS);
       history.set(k, recent);
-      if (recent.length >= settings.max_per_day) {
+      if (recent.length >= cfg.max_per_day) {
         if (!gaveUpNotified.get(k) || now - gaveUpNotified.get(k) > DAY_MS) {
           gaveUpNotified.set(k, now);
-          gaveUp.push(label);
+          gaveUp.push(`${label} (${recent.length}×)`);
           note({ site: siteName, machine: label, action: 'gave-up', detail: `${recent.length} automatic restarts in 24h` });
         }
         continue;
       }
       sent++;
-      const mins = Math.round((now - e.since) / 60000);
+      const mins = Math.round((now - since) / 60000);
+      const own = cfg.own ? ' · own setting' : '';
       let result;
       try { result = await agentMgr.sendActionRequest(farmId, e.ip, 'reboot', { brand: w && w.brand, model: w && w.model }); }
       catch (err) { result = { ok: false, error: err.message }; }
       recent.push(now); history.set(k, recent);
-      graceTil.set(k, now + Math.max(waitMs, MIN_BOOT_GRACE_MS));
+      graceTil.set(k, now + Math.max(cfg.minutes * 60 * 1000, MIN_BOOT_GRACE_MS));
       e.since = now;                                          // needs another full wait before counting again
       if (result && result.ok) {
-        console.log(`[AUTO-RESTART] ✓ ${siteName}: rebooted ${label} — 0 hashrate for ${mins} min (restart ${recent.length}/${settings.max_per_day} today)`);
-        note({ site: siteName, machine: label, action: 'restarted', detail: `0 hashrate for ${mins} min · ${recent.length}/${settings.max_per_day} today` });
+        console.log(`[AUTO-RESTART] ✓ ${siteName}: rebooted ${label} — 0 hashrate for ${mins} min (restart ${recent.length}/${cfg.max_per_day} today${own})`);
+        note({ site: siteName, machine: label, action: 'restarted', detail: `0 hashrate for ${mins} min · ${recent.length}/${cfg.max_per_day} today${own}` });
         restarted.push(`${label} (${mins} min at 0)`);
       } else {
         const why = (result && result.error) || 'no reply';
@@ -198,8 +322,8 @@ async function tick() {
         note({ site: siteName, machine: label, action: 'failed', detail: why });
       }
     }
-    if (restarted.length) tell(`Auto-restart at ${siteName}: rebooted ${restarted.length} machine(s) at 0 hashrate for ${settings.minutes}+ min: ${restarted.join(', ')}`);
-    if (gaveUp.length) tell(`Auto-restart at ${siteName}: still at 0 hashrate after ${settings.max_per_day} automatic restarts today — needs a person: ${gaveUp.join(', ')}`);
+    if (restarted.length) tell(`Auto-restart at ${siteName}: rebooted ${restarted.length} machine(s) at 0 hashrate: ${restarted.join(', ')}`);
+    if (gaveUp.length) tell(`Auto-restart at ${siteName}: still at 0 hashrate after the daily limit of automatic restarts — needs a person: ${gaveUp.join(', ')}`);
   }
 }
 
@@ -207,7 +331,11 @@ let timer = null, running = false;
 function start() {
   if (timer) return;
   try { telegram = require('./alerts').sendTelegramAlert; } catch (e) {}
-  loadSettings().then(s => console.log(`[AUTO-RESTART] ${s.enabled ? 'ON' : 'off'} — ${s.minutes} min at 0 hashrate, max ${s.max_per_day}/machine/day (change in Settings)`));
+  Promise.all([loadSettings(), loadOverrides()]).then(([s, o]) => {
+    const vals = Object.values(o), on = vals.filter(x => x.mode === 'on').length, off = vals.filter(x => x.mode === 'off').length;
+    console.log(`[AUTO-RESTART] default ${s.enabled ? 'ON' : 'off'} — ${s.minutes} min at 0 hashrate, max ${s.max_per_day}/machine/day` +
+                (vals.length ? `; own setting on ${vals.length} machine(s): ${on} on, ${off} off` : '') + ' (change in Settings or on a machine\'s page)');
+  });
   timer = setInterval(() => {
     if (running) return;
     running = true;
@@ -216,4 +344,5 @@ function start() {
 }
 
 module.exports = { start, tick, observePoll, getSettings, saveSettings, loadSettings, getLog,
+                   loadOverrides, listOverrides, getMachine, setMachines,
                    _state: { zero, history, graceTil, seenAt } };
