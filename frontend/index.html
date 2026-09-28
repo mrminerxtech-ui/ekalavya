@@ -1219,6 +1219,23 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
           <button class="btn btn-g btn-sm" onclick="testConn()"><svg class="ic sm"><use href="#i-check"/></svg>Test Connection</button>
         </div>
       </div>
+      <!-- Site alarm: phone call + Telegram when N machines are offline at one site -->
+      <div class="panel" id="siteAlarmPanel">
+        <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-bell"/></svg>Site Alarm</div></div>
+        <div style="padding:16px 18px">
+          <div style="font-size:12.5px;color:var(--txt);margin-bottom:12px;line-height:1.6">
+            Phones the on-call numbers and posts to Telegram when this many machines are offline at <b>one site</b>,
+            confirmed on two checks in a row (about 6&nbsp;minutes). Machines in repair or asleep don&rsquo;t count.
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <label for="siteAlarmAt" style="font-size:12.5px;color:var(--mute)">Alarm when at least</label>
+            <input class="si" id="siteAlarmAt" type="number" min="1" max="1000" step="1" style="width:90px;text-align:center" inputmode="numeric">
+            <span style="font-size:12.5px;color:var(--mute)">machines are offline at one site</span>
+            <button class="btn btn-sm" id="siteAlarmSave" onclick="saveSiteAlarmSetting()">Save</button>
+          </div>
+          <div id="siteAlarmStatus" style="margin-top:10px;font-size:11.5px;color:var(--mute)">Loading…</div>
+        </div>
+      </div>
       <!-- eWeLink Cloud Connection -->
       <div class="panel">
         <div class="ph">
