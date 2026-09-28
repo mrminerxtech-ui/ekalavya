@@ -1505,6 +1505,11 @@ function openCtrl(wid) {
     }
   }
 
+  // Auto-restart for this machine (staff only)
+  const arSec = document.getElementById('ctrlArSec');
+  if (arSec) arSec.style.display = isCustomer ? 'none' : '';
+  if (!isCustomer) loadMachineAutoRestart(wid);
+
   // Default to 7 days — enough to see a real trend without waiting on
   // a slow 30-day fetch every time the panel opens.
   loadMinerHistory(wid, 168);
@@ -4479,6 +4484,8 @@ function renderAutoRestart(d) {
       ? 'On — a machine at 0 hashrate for ' + d.minutes + ' min is rebooted, at most ' + d.max_per_day + '× a day.'
       : 'Off — nothing is restarted automatically.';
   }
+  arDefault = { enabled: !!d.enabled, minutes: d.minutes, max_per_day: d.max_per_day };
+  renderArMachines(d.machines);
   const lg = document.getElementById('arLog');
   if (lg) {
     const rows = (d.log || []).slice(0, 10);
@@ -4520,6 +4527,145 @@ function saveAutoRestart() {
     toast('✓ Auto-restart ' + (d.enabled ? 'on — ' + d.minutes + ' min at 0 hashrate' : 'off'), 'var(--green)');
   })
   .catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
+}
+
+// ── Auto-restart per machine (machine page + bulk on the Workers page) ──
+// Each machine can follow the default above, be off (e.g. hydro machines),
+// or have its own minutes / daily limit. Stored on the server by MAC.
+let arDefault = null;          // { enabled, minutes, max_per_day } — last seen default
+let arMachineWid = null;       // machine the panel section was loaded for
+function arDefaultText() {
+  if (!arDefault) return 'the default on the Settings page';
+  return arDefault.enabled
+    ? 'the default: ON — restart after ' + arDefault.minutes + ' min at 0 hashrate, at most ' + arDefault.max_per_day + '× a day'
+    : 'the default: OFF — not restarted automatically';
+}
+function arPickMode(p, mode) {
+  const seg = document.getElementById(p + 'Mode');
+  if (seg) seg.querySelectorAll('.fbtn').forEach(function(b){ b.classList.toggle('active', b.getAttribute('data-mode') === mode); });
+  if (seg) seg.setAttribute('data-value', mode);
+  const own = document.getElementById(p + 'Own'); if (own) own.style.display = mode === 'on' ? '' : 'none';
+  const mi = document.getElementById(p + 'Minutes'), mx = document.getElementById(p + 'Max');
+  if (mode === 'on' && arDefault) {
+    if (mi && !mi.value) mi.value = arDefault.minutes;
+    if (mx && !mx.value) mx.value = arDefault.max_per_day;
+  }
+  const h = document.getElementById(p + 'Hint');
+  if (h) h.textContent = mode === 'default' ? 'Follows ' + arDefaultText() + '.'
+    : mode === 'off' ? 'Never restarted automatically, whatever the default is. Use this for hydro machines or any machine that must not reboot on its own.'
+    : mode === 'on' ? 'Restarted after the minutes below at 0 hashrate, even while the default is off. Machines in repair or asleep are still never touched.'
+    : 'Choose a setting.';
+}
+function arReadForm(p) {
+  const seg = document.getElementById(p + 'Mode');
+  const mode = seg && seg.getAttribute('data-value');
+  if (!mode) { toast('Choose Follow default, Off or Own setting', 'var(--warn)'); return null; }
+  const body = { mode: mode };
+  if (mode === 'on') {
+    body.minutes = parseInt((document.getElementById(p + 'Minutes') || {}).value, 10);
+    body.max_per_day = parseInt((document.getElementById(p + 'Max') || {}).value, 10);
+    if (!(body.minutes >= 5 && body.minutes <= 1440)) { toast('Minutes must be between 5 and 1440', 'var(--warn)'); return null; }
+    if (!(body.max_per_day >= 1 && body.max_per_day <= 20)) { toast('Restarts per day must be between 1 and 20', 'var(--warn)'); return null; }
+  }
+  return body;
+}
+function postAutoRestartMachines(ids, body) {
+  const token = localStorage.getItem('ekl_token') || '';
+  return fetch(API_BASE + '/api/alerts/auto-restart/machines', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+    body: JSON.stringify(Object.assign({ worker_ids: ids }, body))
+  })
+  .then(function(r){ return r.json().catch(function(){ return { ok: false, error: 'HTTP ' + r.status }; })
+    .then(function(d){ if (r.status === 403) d = { ok: false, error: 'Only an admin or manager can change this' }; return d; }); });
+}
+function arModeWords(b) {
+  return b.mode === 'default' ? 'follows the default' : b.mode === 'off' ? 'auto-restart OFF'
+    : 'own setting: ' + b.minutes + ' min, max ' + b.max_per_day + '/day';
+}
+
+function loadMachineAutoRestart(wid) {
+  arMachineWid = wid;
+  const badge = document.getElementById('ctrlArBadge'), info = document.getElementById('ctrlArInfo');
+  if (badge) { badge.textContent = '…'; badge.className = 'badge'; }
+  if (info) info.textContent = '';
+  ['ctrlArMinutes', 'ctrlArMax'].forEach(function(id){ const el = document.getElementById(id); if (el) el.value = ''; });
+  authFetch('/api/alerts/auto-restart/machine/' + encodeURIComponent(wid)).then(function(d){
+    if (arMachineWid !== wid) return;                 // another machine opened meanwhile
+    if (!d || !d.ok) { arPickMode('ctrlAr', ''); if (info) info.textContent = 'Could not load this machine\'s auto-restart setting.'; return; }
+    arDefault = d.default;
+    const mi = document.getElementById('ctrlArMinutes'), mx = document.getElementById('ctrlArMax');
+    if (mi) mi.value = d.minutes; if (mx) mx.value = d.max_per_day;
+    arPickMode('ctrlAr', d.mode);
+    if (badge) {
+      badge.textContent = d.mode === 'off' ? 'Off' : d.mode === 'on' ? 'On · own' : (d.active ? 'On · default' : 'Off · default');
+      badge.className = 'badge ' + (d.active ? 'bgn' : '');
+    }
+    const bits = [];
+    if (d.zero_minutes !== null && d.zero_minutes !== undefined) bits.push('At 0 hashrate for ' + d.zero_minutes + ' min now');
+    bits.push(d.restarts_today + ' automatic restart' + (d.restarts_today === 1 ? '' : 's') + ' in the last 24 h');
+    if (d.mode !== 'default' && d.set_at) bits.push('set by ' + (d.set_by || '?') + ' on ' + new Date(d.set_at).toLocaleString());
+    if (info) info.textContent = bits.join(' · ');
+  });
+}
+function saveMachineAutoRestart() {
+  const w = workers.find(function(x){ return x.id === activeWid; });
+  if (!w) { toast('No miner selected', 'var(--warn)'); return; }
+  const body = arReadForm('ctrlAr'); if (!body) return;
+  postAutoRestartMachines([w.id], body).then(function(d){
+    if (!d || !d.ok) { toast('✗ ' + ((d && d.error) || 'Could not save'), 'var(--red)'); return; }
+    toast('✓ ' + w.name + ': ' + arModeWords(body), 'var(--green)');
+    loadMachineAutoRestart(w.id);
+  }).catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
+}
+
+let arBulkIds = [];
+function openBulkAutoRestart() {
+  arBulkIds = Array.from(document.querySelectorAll('.worker-check:checked')).map(function(c){ return c.dataset.wid; });
+  if (!arBulkIds.length) { toast('Tick the machines first (e.g. filter to one site, then tick all)', 'var(--warn)'); return; }
+  const n = document.getElementById('bulkArCount'); if (n) n.textContent = arBulkIds.length;
+  ['bulkArMinutes', 'bulkArMax'].forEach(function(id){ const el = document.getElementById(id); if (el) el.value = ''; });
+  arPickMode('bulkAr', '');
+  openSheet('arBulkSheet');
+  authFetch('/api/alerts/auto-restart').then(function(d){
+    if (d && d.ok) { arDefault = { enabled: !!d.enabled, minutes: d.minutes, max_per_day: d.max_per_day }; }
+  });
+}
+function saveBulkAutoRestart() {
+  const body = arReadForm('bulkAr'); if (!body) return;
+  if (!arBulkIds.length) return;
+  if (!confirm('Set ' + arBulkIds.length + ' machine(s) to: ' + arModeWords(body) + '?')) return;
+  postAutoRestartMachines(arBulkIds, body).then(function(d){
+    if (!d || !d.ok) { toast('✗ ' + ((d && d.error) || 'Could not save'), 'var(--red)'); return; }
+    closeSheet('arBulkSheet');
+    toast('✓ ' + d.updated + ' machine(s): ' + arModeWords(body) + (d.missing ? ' (' + d.missing + ' not found on the server)' : ''), 'var(--green)');
+    renderArMachines(d.machines);
+  }).catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
+}
+
+// Settings card: machines that don't follow the default
+function renderArMachines(list) {
+  const el = document.getElementById('arMachines');
+  if (!el || !Array.isArray(list)) return;
+  if (!list.length) { el.innerHTML = ''; return; }
+  const site = function(fid){ const a = (agents || []).find(function(x){ return x.id === fid; }); return a ? a.name : (fid || ''); };
+  el.innerHTML = '<div style="font-size:11px;color:var(--mute);margin-bottom:6px">Machines with their own setting (' + list.length + ')</div>'
+    + '<div style="max-height:260px;overflow-y:auto">'
+    + list.map(function(m){
+        const on = m.mode === 'on';
+        return '<div style="display:flex;align-items:center;gap:10px;font-size:11.5px;padding:5px 0;border-top:1px solid var(--b1)">'
+          + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(m.name || m.ip || '')
+          + ' <span style="color:var(--mute)">' + escHtml([site(m.farm_id), m.ip].filter(Boolean).join(' · ')) + '</span></span>'
+          + '<span style="white-space:nowrap;color:' + (on ? 'var(--green)' : 'var(--warn)') + '">' + (on ? 'On · ' + m.minutes + ' min · ' + m.max_per_day + '/day' : 'Off') + '</span>'
+          + '<button class="abtn" type="button" title="Follow the default again" onclick="arResetMachine(\'' + escAttr(m.worker_id) + '\')">Use default</button>'
+          + '</div>';
+      }).join('') + '</div>';
+}
+function arResetMachine(wid) {
+  postAutoRestartMachines([wid], { mode: 'default' }).then(function(d){
+    if (!d || !d.ok) { toast('✗ ' + ((d && d.error) || 'Could not save'), 'var(--red)'); return; }
+    toast('✓ Back to the default', 'var(--green)');
+    renderArMachines(d.machines);
+  }).catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
 }
 
 function authFetch(path) {
