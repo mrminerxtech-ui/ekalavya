@@ -1236,6 +1236,34 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
           <div id="siteAlarmStatus" style="margin-top:10px;font-size:11.5px;color:var(--mute)">Loading…</div>
         </div>
       </div>
+      <!-- Auto-restart machines stuck at 0 hashrate -->
+      <div class="panel" id="autoRestartPanel">
+        <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-refresh"/></svg>Auto-Restart</div>
+          <span class="badge" id="arBadge" style="margin-left:auto">Off</span></div>
+        <div style="padding:16px 18px">
+          <div style="font-size:12.5px;color:var(--txt);margin-bottom:12px;line-height:1.6">
+            Reboots a machine that is still reachable but has been at <b>0 hashrate</b> for the time below.
+            Never touches machines in repair or asleep. If a big part of a site drops to 0 at once (pool, network or power),
+            nothing is restarted and Telegram is told instead.
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;margin-bottom:12px;cursor:pointer">
+            <input type="checkbox" id="arEnabled" style="accent-color:var(--cyan);width:16px;height:16px"> Restart machines automatically
+          </label>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+            <label for="arMinutes" style="font-size:12.5px;color:var(--mute)">Restart after</label>
+            <input class="si" id="arMinutes" type="number" min="5" max="1440" step="1" style="width:80px;text-align:center" inputmode="numeric">
+            <span style="font-size:12.5px;color:var(--mute)">minutes at 0 hashrate</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <label for="arMax" style="font-size:12.5px;color:var(--mute)">At most</label>
+            <input class="si" id="arMax" type="number" min="1" max="20" step="1" style="width:80px;text-align:center" inputmode="numeric">
+            <span style="font-size:12.5px;color:var(--mute)">restarts per machine per day, then leave it for a person</span>
+            <button class="btn btn-sm" id="arSave" onclick="saveAutoRestart()">Save</button>
+          </div>
+          <div id="arStatus" style="margin-top:10px;font-size:11.5px;color:var(--mute)">Loading…</div>
+          <div id="arLog" style="margin-top:10px"></div>
+        </div>
+      </div>
       <!-- eWeLink Cloud Connection -->
       <div class="panel">
         <div class="ph">
