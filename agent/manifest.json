@@ -1,8 +1,9 @@
 {
-  "version": "1.1.37",
-  "released_at": "2026-09-28T04:19:03Z",
+  "version": "1.1.38",
+  "released_at": "2026-09-28T14:04:29Z",
   "min_node_version": "16.0.0",
   "changelog": [
+    "Fix Braiins OS 26.x miners not staying logged in through the web UI tunnel: the password was accepted, then the login page came straight back. The agent passed only Content-Type to the miner and returned only Content-Type/Location, so the miner's session cookie (set on /graphql login) never reached the browser and was never sent back, and any Authorization header the miner's own page added was overwritten by the agent's root/root login. The page's Cookie, Accept and Authorization headers are now forwarded to the miner (root/root is only used when the page sends none), and the miner's Set-Cookie is returned to the backend, which scopes it to that miner's tunnel folder.",
     "Fix the ElphaPEX at 19.3.19.46 (and any HTTP-only miner) showing offline with no hashrate while every other field was filled in: its web server answers only one connection at a time, but each poll fired summary.cgi (hashrate), stats.cgi, pools.cgi and the hardware-ID cascade (up to 8 more requests, mostly other brands' endpoints) at it simultaneously. Model, worker, pool, MAC and serial are kept from any cycle that got through, so they filled in over time, but hashrate must arrive in the current cycle and summary.cgi kept losing the race - hashrate 0, status offline. HTTP-only units are now read one request at a time: hashrate first (with one retry), then temp/fan, then pools; hardware IDs only until found, then re-checked every 30 minutes. Machines with the cgminer port (Antminer, Avalon, etc.) are polled exactly as before.",
     "Avalon (Canaan) support for machine locate and control, using the exact commands from Canaan's own management tool (Canaan Mine Master 2.0): LED on/off to find a machine on the rack (ascset|0,led,1-1 / 1-0, sent as plain text to port 4028 the way Canaan does it — the old LED action only knew Antminer's blink.cgi, so it silently did nothing on an Avalon), a real Avalon reboot (ascset|0,reboot,1 — cgminer 'restart' only restarts the mining software), work mode Normal/High Performance (0,workmode,N, optionally rebooting to apply) and fan speed (0,fan-spd,N, 30-100% or -1 for automatic; anything lower is refused so a machine can't be cooked by a typo). An LED switched on to locate a machine now turns itself off again after a set time (default 10 minutes) so forgotten LEDs don't stay lit.",
     "Fix the ElphaPEX at 19.3.19.46 showing hashrate in the wrong unit (0.13 TH/s instead of ~130 GH/s-scale — actually its true ~10-14 GH/s displayed 1000x too small) and the wrong algo badge (SHA-256 instead of Scrypt): getAlgo() never recognized ElphaPEX's own 'DG1+' naming at all (only matched 'l' immediately followed by a digit, which 'dg1+' doesn't contain), so it silently fell through to the SHA-256 default — and that wrong algo is exactly what decides whether hashrate is displayed in GH/s or TH/s. Also now reads temp and fan from this unit's own /cgi-bin/stats.cgi (confirmed: chain[].temp_chip in millidegrees, fan[] in RPM with one slot known to report a bogus value that's now sanity-range-checked out), since — same as hashrate before this — the cgminer TCP path those were read from is never answered by this firmware at all.",
@@ -21,8 +22,8 @@
   "files": [
     {
       "name": "agent.js",
-      "sha256": "253340faa02c1f53271ee2a651fd9b677a3cfbb582c5c6ed20115ac15ab07e2e",
-      "size": 100901
+      "sha256": "78904605899dc5e67c289bf16526ba863e68e1540be217288526a9bcc2bdce77",
+      "size": 101967
     },
     {
       "name": "sonoff-th.js",
