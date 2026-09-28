@@ -30,4 +30,21 @@ router.post('/settings', authMiddleware, requireRole('admin', 'manager'), async 
   res.json(r);
 });
 
+// ── Auto-restart (machines at 0 hashrate) ──────────────────────────
+const autorestart = require('../services/autorestart');
+
+// GET /api/alerts/auto-restart → { ok, enabled, minutes, max_per_day, defaults, log[] }
+router.get('/auto-restart', authMiddleware, staffOnly, async (req, res) => {
+  await autorestart.loadSettings();
+  res.json({ ok: true, ...autorestart.getSettings(), log: autorestart.getLog() });
+});
+
+// POST /api/alerts/auto-restart  { enabled, minutes, max_per_day }
+router.post('/auto-restart', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+  const who = (req.user && (req.user.name || req.user.id)) || 'unknown';
+  const r = await autorestart.saveSettings(req.body || {}, who);
+  if (!r.ok) return res.status(400).json(r);
+  res.json({ ...r, log: autorestart.getLog() });
+});
+
 module.exports = router;
