@@ -1788,6 +1788,74 @@ function handleWebuiProxyRequestNow(msg) {
   });
 }
 
+// ── Live sockets through the web UI tunnel ─────────────────────────
+// Braiins OS 26.x streams everything on its dashboard (hashrate, chip
+// temperatures, fans, hashboards, pools) over a GraphQL WebSocket at
+// /graphql. The tunnel only carried ordinary requests, so the page
+// logged in and drew its layout but every panel spun forever. The
+// backend now asks for a socket to the miner (webui_ws_open), and
+// frames are relayed both ways over this agent's own connection.
+const MAX_MINER_SOCKETS = 30;
+const minerSockets = new Map();   // id -> WebSocket to the miner
+
+function handleWebuiWsOpen(msg) {
+  const { id, ip, path: wsPath, protocols, headers, port } = msg;
+  let failed = false;
+  const fail = (why) => { if (failed) return; failed = true; send({ type: 'webui_ws_error', id, error: why }); };
+  if (!id || !ip || !/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return fail('bad request');
+  if (minerSockets.size >= MAX_MINER_SOCKETS) return fail('too many live sockets open on this agent');
+  const p = Number(port) > 0 && Number(port) < 65536 ? Number(port) : 80;
+  const url = 'ws://' + ip + (p === 80 ? '' : ':' + p) + (wsPath && wsPath.startsWith('/') ? wsPath : '/' + (wsPath || ''));
+  const h = { Origin: 'http://' + ip };
+  if (headers && headers.cookie) h.Cookie = headers.cookie;
+  if (headers && headers.authorization) h.Authorization = headers.authorization;
+  let sock;
+  try {
+    sock = new WebSocket(url, Array.isArray(protocols) && protocols.length ? protocols : undefined,
+                         { headers: h, handshakeTimeout: 8000, perMessageDeflate: false });
+  } catch (e) { return fail(e.message); }
+  minerSockets.set(id, sock);
+  let opened = false;
+  sock.on('open', () => {
+    opened = true;
+    console.log('[WEBUI] live socket open → ' + url);
+    send({ type: 'webui_ws_opened', id, protocol: sock.protocol || '' });
+  });
+  sock.on('message', (data, isBinary) => {
+    const binary = typeof data !== 'string' && isBinary !== false;
+    send({ type: 'webui_ws_data', id, binary,
+           data: typeof data === 'string' ? data : (binary ? Buffer.from(data).toString('base64') : Buffer.from(data).toString('utf8')) });
+  });
+  sock.on('close', (code, reason) => {
+    minerSockets.delete(id);
+    if (opened) send({ type: 'webui_ws_closed', id, code, reason: reason ? String(reason).slice(0, 120) : '' });
+  });
+  sock.on('error', e => {
+    if (!opened) { minerSockets.delete(id); console.log('[WEBUI] live socket to ' + url + ' failed: ' + e.message); fail(e.message); }
+  });
+  sock.on('unexpected-response', (req, res) => {
+    minerSockets.delete(id);
+    console.log('[WEBUI] live socket to ' + url + ' refused: HTTP ' + res.statusCode);
+    fail('miner answered HTTP ' + res.statusCode);
+    try { req.destroy(); } catch (e) {}
+  });
+}
+function handleWebuiWsData(msg) {
+  const sock = minerSockets.get(msg.id);
+  if (!sock || sock.readyState !== 1) return;
+  try { sock.send(msg.binary ? Buffer.from(msg.data || '', 'base64') : String(msg.data || ''), { binary: !!msg.binary }); } catch (e) {}
+}
+function handleWebuiWsClose(msg) {
+  const sock = minerSockets.get(msg.id);
+  minerSockets.delete(msg.id);
+  if (!sock) return;
+  try { sock.readyState === 1 ? sock.close(1000) : sock.terminate(); } catch (e) {}
+}
+function closeAllMinerSockets() {
+  minerSockets.forEach(sock => { try { sock.terminate(); } catch (e) {} });
+  minerSockets.clear();
+}
+
 async function pollLanli() {
   if (!lanli) return;
   try {
@@ -1907,6 +1975,12 @@ function connect() {
         th16.startLivePolling(th16.getDiscovered().length > 0 ? th16.getDiscovered() : parseTHEnv(), 30000, onSensorReading);
       } else if (msg.type === 'webui_proxy_request') {
         handleWebuiProxyRequest(msg);
+      } else if (msg.type === 'webui_ws_open') {
+        handleWebuiWsOpen(msg);
+      } else if (msg.type === 'webui_ws_data') {
+        handleWebuiWsData(msg);
+      } else if (msg.type === 'webui_ws_close') {
+        handleWebuiWsClose(msg);
       } else if (msg.type === 'action_request') {
         handleActionRequest(msg);
       } else if (msg.type === 'sensor_discover') {
@@ -1981,6 +2055,7 @@ function connect() {
       return;
     }
     clearInterval(pollTimer);
+    closeAllMinerSockets();   // the browsers on the other end are gone with this connection
 
     // 4003: the backend already has an agent connected for this FARM_ID.
     // Reconnecting straight away just resumes the tug-of-war that made
