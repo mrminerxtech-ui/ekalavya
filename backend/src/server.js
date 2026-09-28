@@ -101,6 +101,7 @@ app.use('/api/earnings',  require('./routes/earnings'));
 app.use('/api/insights',  require('./routes/insights'));
 app.use('/api/team',      require('./routes/team'));
 app.use('/api/power',     require('./routes/power'));
+app.use('/api/alerts',    require('./routes/alerts'));   // site alarm setting (Settings page)
 
 // Twilio fetches an alert call's spoken message from here when the call
 // is answered. No login (Twilio can't send one) — each link carries a
