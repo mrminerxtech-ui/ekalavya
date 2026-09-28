@@ -2992,7 +2992,7 @@ function showPage(n){
   // Render the page's content when it opens
   try {
     if(n==='dashboard')     { renderDash(); }
-    if(n==='settings')      { loadSiteAlarmSetting(); }
+    if(n==='settings')      { loadSiteAlarmSetting(); loadAutoRestart(); }
     if(n==='workers')       { renderWorkers(); attachSortHandlers(); }
     if(n==='agents')        { renderAgents(); populateDropdowns(); }
     if(n==='customers')     { renderCustomers(); }
@@ -4460,6 +4460,64 @@ function saveSiteAlarmSetting() {
     if (!d || !d.ok) { toast('✗ ' + ((d && d.error) || 'Could not save'), 'var(--red)'); return; }
     if (st) { st.style.color = 'var(--green)'; st.textContent = '✓ Saved. ' + siteAlarmStatusText(d); }
     toast('✓ Site alarm set to ' + d.alarm_at + ' machines', 'var(--green)');
+  })
+  .catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
+}
+
+// ── Auto-restart (Settings page) ────────────────────────────────────
+function renderAutoRestart(d) {
+  const en = document.getElementById('arEnabled'), mi = document.getElementById('arMinutes'), mx = document.getElementById('arMax');
+  if (en) en.checked = !!d.enabled;
+  if (mi && document.activeElement !== mi) mi.value = d.minutes;
+  if (mx && document.activeElement !== mx) mx.value = d.max_per_day;
+  const b = document.getElementById('arBadge');
+  if (b) { b.textContent = d.enabled ? 'On' : 'Off'; b.className = 'badge ' + (d.enabled ? 'bgn' : ''); }
+  const st = document.getElementById('arStatus');
+  if (st) {
+    st.style.color = 'var(--mute)';
+    st.textContent = d.enabled
+      ? 'On — a machine at 0 hashrate for ' + d.minutes + ' min is rebooted, at most ' + d.max_per_day + '× a day.'
+      : 'Off — nothing is restarted automatically.';
+  }
+  const lg = document.getElementById('arLog');
+  if (lg) {
+    const rows = (d.log || []).slice(0, 10);
+    const col = { restarted: 'var(--green)', failed: 'var(--red)', 'gave-up': 'var(--warn)', 'skipped-site': 'var(--orange)' };
+    const word = { restarted: 'Restarted', failed: 'Failed', 'gave-up': 'Left for a person', 'skipped-site': 'Site-wide — not restarted' };
+    lg.innerHTML = rows.length
+      ? '<div style="font-size:11px;color:var(--mute);margin-bottom:6px">Recent automatic actions</div>'
+        + rows.map(function(r){
+            return '<div style="display:flex;gap:10px;font-size:11.5px;padding:5px 0;border-top:1px solid var(--b1)">'
+              + '<span style="color:var(--mute);white-space:nowrap">' + escHtml(new Date(r.at).toLocaleString()) + '</span>'
+              + '<span style="color:' + (col[r.action] || 'var(--txt)') + ';white-space:nowrap">' + escHtml(word[r.action] || r.action) + '</span>'
+              + '<span>' + escHtml([r.site, r.machine].filter(Boolean).join(' · ')) + ' <span style="color:var(--mute)">' + escHtml(r.detail || '') + '</span></span></div>';
+          }).join('')
+      : '';
+  }
+}
+function loadAutoRestart() {
+  authFetch('/api/alerts/auto-restart').then(function(d){
+    if (!d || !d.ok) { const st = document.getElementById('arStatus'); if (st) st.textContent = 'Could not load the current setting.'; return; }
+    renderAutoRestart(d);
+  });
+}
+function saveAutoRestart() {
+  const en = document.getElementById('arEnabled'), mi = document.getElementById('arMinutes'), mx = document.getElementById('arMax');
+  const body = { enabled: !!(en && en.checked), minutes: parseInt(mi && mi.value, 10), max_per_day: parseInt(mx && mx.value, 10) };
+  if (!(body.minutes >= 5 && body.minutes <= 1440)) { toast('Minutes must be between 5 and 1440', 'var(--warn)'); return; }
+  if (!(body.max_per_day >= 1 && body.max_per_day <= 20)) { toast('Restarts per day must be between 1 and 20', 'var(--warn)'); return; }
+  if (body.enabled && !confirm('Machines at 0 hashrate for ' + body.minutes + ' minutes will be rebooted automatically (at most '
+      + body.max_per_day + '× a day each). Switch this on?')) return;
+  const token = localStorage.getItem('ekl_token') || '';
+  fetch(API_BASE + '/api/alerts/auto-restart', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token }, body: JSON.stringify(body)
+  })
+  .then(function(r){ return r.json().catch(function(){ return { ok: false, error: 'HTTP ' + r.status }; })
+    .then(function(d){ if (r.status === 403) d = { ok: false, error: 'Only an admin or manager can change this' }; return d; }); })
+  .then(function(d){
+    if (!d || !d.ok) { toast('✗ ' + ((d && d.error) || 'Could not save'), 'var(--red)'); return; }
+    renderAutoRestart(d);
+    toast('✓ Auto-restart ' + (d.enabled ? 'on — ' + d.minutes + ' min at 0 hashrate' : 'off'), 'var(--green)');
   })
   .catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
 }
