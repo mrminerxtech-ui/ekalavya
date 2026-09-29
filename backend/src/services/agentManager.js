@@ -156,8 +156,10 @@ function registerAgent(ws, info) {
         farm_id:   info.farm_id,
         farm_name: info.farm_name,
         // IP ranges set in the app for this farm; empty = the agent uses
-        // its .env LOCAL_SUBNET, or else the networks it detects itself
+        // its .env LOCAL_SUBNET plus the networks of the farm's machines,
+        // or else the networks it detects itself
         subnets:   info.subnets || [],
+        known_subnets: info.known_subnets || [],
       }));
     }
   } catch(e) {}
@@ -226,6 +228,14 @@ function handleAgentMessage(farmId, msg) {
     // Heartbeat — reply to agent
     if (msg.type === 'heartbeat' && agent.ws.readyState === 1) {
       try { agent.ws.send(JSON.stringify({ type: 'heartbeat_ack' })); } catch(e) {}
+    }
+
+    // What the agent actually polls (ranges, where they came from, how
+    // many addresses, how long a cycle takes) — shown per farm in the app.
+    if (msg.type === 'poll_stats') {
+      agent.poll_stats = { subnets: (msg.subnets || []).slice(0, 64), from: String(msg.from || ''), addresses: msg.addresses | 0,
+                           found: msg.found | 0, cycle_ms: msg.cycle_ms | 0, detected: (msg.detected || []).slice(0, 16), at: msg.at || new Date().toISOString() };
+      return;
     }
 
     // Web UI tunnel — resolve the matching pending request
