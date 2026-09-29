@@ -48,9 +48,11 @@ function readEnv(dir) {
 
 function identity(role, dir) {
   const env = readEnv(dir);
+  // the farm chosen in the app (kept by the agent in .farm.json)
+  try { const f = JSON.parse(fs.readFileSync(path.join(dir, '.farm.json'), 'utf8')); if (f && f.farm_id) { env.FARM_ID = f.farm_id; env.FARM_NAME = f.farm_name || env.FARM_NAME; } } catch (e) {}
   return {
     app: APP, role, pid: process.pid, ppid: process.ppid,
-    farm_id: process.env.FARM_ID || env.FARM_ID || '', farm_name: process.env.FARM_NAME || env.FARM_NAME || '',
+    farm_id: env.FARM_ID || process.env.FARM_ID || '', farm_name: env.FARM_NAME || process.env.FARM_NAME || '',
     dir, host: os.hostname(), started_at: new Date().toISOString(),
     via: process.env.pm_id !== undefined ? 'pm2' : (process.env.EKL_SUPERVISED === '1' ? 'updater' : 'window'),
   };
