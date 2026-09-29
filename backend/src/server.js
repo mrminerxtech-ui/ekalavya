@@ -139,6 +139,7 @@ require('./services/alerts').start();
 // Reboots machines that are reachable but at 0 hashrate for N minutes —
 // OFF until switched on in Settings. See services/autorestart.js.
 require('./services/autorestart').start();
+require('./services/farms').startKnownSubnetSync(agentMgr);
 require('./services/farms').load().then(r => console.log(`[FARMS] ${Object.keys(r.farms).length} farm(s), ${Object.keys(r.agents).length} agent PC(s) known`)).catch(e => console.error('[FARMS] load failed:', e.message));
 
 // Finds and merges duplicate machine records (same machine recorded twice
@@ -275,10 +276,12 @@ agentWss.on('connection', (ws, req) => {
     console.log(`[AGENT] ✓ Connected — ${r.farm_name} (${r.farm_id}) from ${hostname}${pcId ? '' : ' [older agent]'}`);
     // Refused as a duplicate: the socket is already closed, and wiring up
     // handlers for it would let a rejected agent keep feeding the fleet.
+    const known = farms.knownSubnetsFor(r.farm_id, await db.loadWorkers().catch(() => []));
     const accepted = agentMgr.registerAgent(ws, {
       farm_id: r.farm_id, farm_name: r.farm_name, subnet: subnet || '(auto)', hostname, agent_version: version,
-      pc_id: pcId, ips, subnets: farms.subnetsFor(r.farm_id),
+      pc_id: pcId, ips, subnets: farms.subnetsFor(r.farm_id), known_subnets: known,
     });
+    farms.noteKnownSent(r.farm_id, known);
     if (accepted === false) return;
     farmId = r.farm_id;
     // Pass the socket itself — unregisterAgent needs to know whether the
