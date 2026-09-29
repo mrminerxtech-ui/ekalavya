@@ -311,7 +311,16 @@ function renderAgents() {
       + '</div></div>';
     }).join('');
   el.querySelectorAll('.scan-btn').forEach(function(b){ b.addEventListener('click',function(){ triggerScan(this.dataset.aid); }); });
-  el.querySelectorAll('.cfg-btn').forEach(function(b){ b.addEventListener('click',function(){ openAgentConfig(this.dataset.aid,this.dataset.name,this.dataset.subnet); }); });
+  // IP ranges = what the agent polls continuously: the same editor as Farms
+  el.querySelectorAll('.cfg-btn').forEach(function(b){ b.addEventListener('click',function(){
+    const aid = this.dataset.aid;
+    if (farmById(aid)) return openRanges(aid);
+    const self = this;
+    authFetch('/api/farms').then(function(d){
+      if (d && d.ok) { farmsState = { farms: d.farms || [], pending: d.pending || [] }; if (farmById(aid)) return openRanges(aid); }
+      openAgentConfig(aid, self.dataset.name, self.dataset.subnet);
+    });
+  }); });
   el.querySelectorAll('.rm-btn').forEach(function(b){ b.addEventListener('click',function(){ removeAgent(this.dataset.aid); }); });
 }
 
@@ -4741,13 +4750,101 @@ function renderFarmsPanel() {
       + (dup || f.name !== f.farm_id ? '<span style="font-family:Share Tech Mono,monospace;font-size:10.5px;color:' + (dup ? 'var(--warn)' : 'var(--mute)') + '">' + escHtml(f.farm_id) + (dup ? ' &middot; same name as another farm' : '') + '</span>' : '')
       + '<span style="font-size:11.5px;color:var(--mute)">' + f.machines + ' machine' + (f.machines === 1 ? '' : 's') + '</span>'
       + '<span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">'
+      + '<button class="abtn" type="button" onclick="openRanges(\'' + escAttr(f.farm_id) + '\')">&#x1F310; IP ranges</button>'
       + '<button class="abtn" type="button" onclick="renameFarmUi(\'' + escAttr(f.farm_id) + '\')">&#x270E; Rename</button>'
       + (farmsState.farms.length > 1 ? '<button class="abtn" type="button" onclick="mergeFarmUi(\'' + escAttr(f.farm_id) + '\')">Merge into&hellip;</button>' : '')
       + (canDelete ? '<button class="abtn" type="button" style="color:var(--red)" onclick="deleteFarmUi(\'' + escAttr(f.farm_id) + '\')">Delete</button>' : '')
       + '</span></div>'
       + (pcs || '<div style="font-size:11.5px;color:var(--mute);margin-top:4px">No agent PC on this farm</div>')
+      + pollingLine(f)
       + '</div>';
   }).join('');
+}
+
+// "Polling: … (from …) · N addresses · cycle Ns" under each farm
+function pollingLine(f) {
+  const p = f.polling;
+  const set = (f.subnets || []).length;
+  let txt, col = 'var(--mute)';
+  if (p) {
+    txt = 'Polling ' + (p.subnets || []).join(', ') + ' <span style="color:var(--mute)">&middot; ' + escHtml(p.from || '') + ' &middot; '
+        + p.addresses + ' addresses &middot; cycle ' + Math.round((p.cycle_ms || 0) / 1000) + ' s &middot; ' + p.found + ' found</span>';
+    col = 'var(--txt)';
+    // machines on a network the agent doesn't poll → they can only show offline
+    const polled = (p.subnets || []).join(' ');
+    const missing = (f.known_subnets || []).filter(function(n){ const pre = n.split('.').slice(0, 3).join('.') + '.'; return polled.indexOf(pre) === -1 && !rangeCovers(p.subnets || [], pre + '1'); });
+    if (missing.length) txt += '<br><span style="color:var(--warn)">&#9888; Machines are also on ' + escHtml(missing.join(', ')) + ', which is not polled &mdash; they show offline. Add it in IP ranges.</span>';
+  } else if (f.online) {
+    txt = 'Waiting for the first poll report' + (set ? ' &middot; ranges set: ' + escHtml(f.subnets.join(', ')) : '') + ' <span style="color:var(--mute)">(agents older than v1.1.43 don’t report it)</span>';
+  } else {
+    txt = set ? 'Ranges set: ' + escHtml(f.subnets.join(', ')) : 'Automatic ranges';
+  }
+  return '<div style="font-size:11.5px;margin-top:6px;font-family:Share Tech Mono,monospace;color:' + col + ';line-height:1.5">' + txt + '</div>';
+}
+
+// Same range formats as the agent (agent.js subnetToIPs), for the count
+// shown while typing and for the "not polled" warning.
+function rangeToBounds(r) {
+  r = String(r || '').trim().replace(/\s+/g, '');
+  const ip = function(x){ const p = x.split('.'); if (p.length !== 4) return null; const n = p.map(Number); if (n.some(function(v){ return !/^\d{1,3}$/.test(String(v)) || v > 255; })) return null; return ((n[0] << 24) >>> 0) + (n[1] << 16) + (n[2] << 8) + n[3]; };
+  let m;
+  if ((m = r.match(/^(\d+\.\d+\.\d+\.\d+)\/(\d{1,2})$/))) { const b = ip(m[1]), bits = +m[2]; if (b === null || bits < 8 || bits > 32) return null; const size = Math.pow(2, 32 - bits); const net = b - (b % size); return bits >= 31 ? [net, net + size - 1, size] : [net + 1, net + size - 2, size - 2]; }
+  if ((m = r.match(/^(\d+\.\d+\.\d+\.\d+)-(\d+\.\d+\.\d+\.\d+)$/))) { const a = ip(m[1]), b = ip(m[2]); return a === null || b === null || b < a ? null : [a, b, b - a + 1]; }
+  if ((m = r.match(/^(\d+\.\d+\.\d+)\.(\d+)-(\d+)$/))) { const a = ip(m[1] + '.' + m[2]), b = ip(m[1] + '.' + m[3]); return a === null || b === null || b < a ? null : [a, b, b - a + 1]; }
+  if ((m = r.match(/^(\d+\.\d+)\.(\d+)-(\d+)(?:\.\*)?$/))) { const a = ip(m[1] + '.' + m[2] + '.1'), b = ip(m[1] + '.' + m[3] + '.254'); return a === null || b === null || b < a ? null : [a, b, (+m[3] - +m[2] + 1) * 254]; }
+  if ((m = r.match(/^(\d+\.\d+\.\d+)(?:\.\*)?$/))) { const a = ip(m[1] + '.1'); return a === null ? null : [a, a + 253, 254]; }
+  const one = ip(r); return one === null ? null : [one, one, 1];
+}
+function rangeCovers(list, addr) {
+  const p = addr.split('.').map(Number); const n = ((p[0] << 24) >>> 0) + (p[1] << 16) + (p[2] << 8) + p[3];
+  return (list || []).some(function(r){ const b = rangeToBounds(r); return b && n >= b[0] && n <= b[1]; });
+}
+let rangesFarm = null;
+function openRanges(fid) {
+  const f = farmById(fid); if (!f) return;
+  rangesFarm = fid;
+  const t = document.getElementById('rangesTitle'); if (t) t.textContent = 'IP ranges — ' + f.name;
+  const ta = document.getElementById('rangesText'); if (ta) ta.value = (f.subnets || []).join('\n');
+  rangesPreview();
+  openSheet('rangesSheet');
+}
+function rangesPreview() {
+  const f = farmById(rangesFarm); const el = document.getElementById('rangesInfo'); if (!el || !f) return;
+  const lines = (document.getElementById('rangesText').value || '').split(/[\n,]+/).map(function(x){ return x.trim(); }).filter(Boolean);
+  const bad = [], big = []; let total = 0;
+  lines.forEach(function(l){ const b = rangeToBounds(l); if (!b) bad.push(l); else { total += Math.min(b[2], 4096); if (b[2] > 4096) big.push(l); } });
+  let html = '';
+  if (!lines.length) {
+    html = '<b>Automatic:</b> LOCAL_SUBNET from the PC’s .env, plus every network this farm’s machines are on'
+      + ((f.known_subnets || []).length ? ' (' + escHtml(f.known_subnets.join(', ')) + ')' : '') + '. With neither, the PC’s own networks.';
+  } else {
+    html = lines.length + ' range' + (lines.length === 1 ? '' : 's') + ', ' + total.toLocaleString() + ' addresses polled every cycle.';
+    const missing = (f.known_subnets || []).filter(function(n){ return !rangeCovers(lines, n.split('.').slice(0, 3).join('.') + '.1'); });
+    if (missing.length) html += '<br><span style="color:var(--warn)">&#9888; This farm has machines on ' + escHtml(missing.join(', ')) + ' — not in these ranges, so they would show offline.</span>';
+  }
+  if (big.length) html += '<br><span style="color:var(--warn)">&#9888; Over 4,096 addresses, only the first 4,096 are polled: ' + escHtml(big.join(', ')) + '</span>';
+  if (bad.length) html += '<br><span style="color:var(--red)">&#10007; Not an IP range: ' + escHtml(bad.join(', ')) + '</span>';
+  el.innerHTML = html;
+  const sv = document.getElementById('rangesSave'); if (sv) sv.disabled = !!bad.length;
+}
+function saveRanges(auto) {
+  const f = farmById(rangesFarm); if (!f) return;
+  const lines = auto ? [] : (document.getElementById('rangesText').value || '').split(/[\n,]+/).map(function(x){ return x.trim(); }).filter(Boolean);
+  if (!auto && !lines.length) { if (!confirm('No ranges typed — use automatic ranges?')) return; }
+  const token = localStorage.getItem('ekl_token') || '';
+  fetch(API_BASE + '/api/fleet/agent-config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+    body: JSON.stringify({ farm_id: f.farm_id, subnets: lines, name: f.name })
+  })
+  .then(function(r){ return r.json().catch(function(){ return { ok: false, error: 'HTTP ' + r.status }; }); })
+  .then(function(d){
+    if (!d || !d.ok) { toast('✗ ' + ((d && d.error) || 'Could not save'), 'var(--red)'); return; }
+    closeSheet('rangesSheet');
+    try { localStorage.setItem('agent_subnets_' + f.farm_id, JSON.stringify(lines)); } catch (e) {}
+    toast('✓ ' + f.name + ': ' + (lines.length ? lines.length + ' range(s) saved' : 'automatic ranges') + (d.sent_to_agent ? ' — agent updated' : ' — sent when its agent connects'), 'var(--green)');
+    setTimeout(loadFarms, 400);
+  })
+  .catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
 }
 
 function openFarmPicker(opts) {
