@@ -33,7 +33,8 @@ async function sendSlackAlert(message, level = 'warn') {
 /**
  * Send Telegram alert
  */
-async function sendTelegramAlert(message, level = 'warn') {
+// title: the bold first line (default "Ekalavya Alert")
+async function sendTelegramAlert(message, level = 'warn', title) {
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT) return;
   try {
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
@@ -41,7 +42,7 @@ async function sendTelegramAlert(message, level = 'warn') {
       // The message body is escaped: machine names like "T21_015" contain
       // Markdown characters, and an unbalanced "_" makes Telegram reject
       // the whole message — an alert that silently never arrives.
-      text: `${LEVEL_EMOJI[level]} *Ekalavya Alert*\n${String(message).replace(/([_*`\[])/g, '\\$1')}`,
+      text: `${LEVEL_EMOJI[level] ? LEVEL_EMOJI[level] + ' ' : ''}*${String(title || 'Ekalavya Alert').replace(/([_*`\[])/g, '\\$1')}*\n${String(message).replace(/([_*`\[])/g, '\\$1')}`,
       parse_mode: 'Markdown',
     }, { timeout: 5000 });
   } catch (e) {
