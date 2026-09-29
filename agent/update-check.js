@@ -28,6 +28,15 @@ const LOCAL_MANIFEST = path.join(AGENT_DIR, '.manifest-installed.json');
 const CRASH_WINDOW_MS   = 5 * 60 * 1000;    // crash-loop detection window
 const CRASH_LIMIT       = 5;                // max crashes in that window before backing off hard
 
+// ── One updater per PC (agent-guard.js) ────────────────────
+// A second updater — START.bat opened while PM2 already runs one, or a
+// copy in another folder — used to start its own agent (refused), then
+// restart it every few seconds forever, and both updaters rewrote the
+// agent files at every update. Now a second updater stops at the door.
+let guard = null;
+try { guard = require('./agent-guard'); } catch (e) { guard = null; }
+let dupNoticeShown = false;
+
 // ── Local state ─────────────────────────────────────────────
 let agentProcess   = null;
 let startedAt      = Date.now();
@@ -165,10 +174,21 @@ function startAgent() {
   startedAt = Date.now();
   agentProcess = spawn(process.execPath, [path.join(AGENT_DIR, 'agent.js')], {
     stdio: 'inherit',
-    env: process.env,
+    cwd: AGENT_DIR,   // agent.js reads .env from its working folder
+    // EKL_SUPERVISED: a refused agent exits with code 3 instead of waiting
+    env: Object.assign({}, process.env, { EKL_SUPERVISED: '1' }, dupNoticeShown ? { EKL_DUP_QUIET: '1' } : {}),
   });
 
   agentProcess.on('exit', code => {
+    // 3 = another agent already runs on this PC (not started by us).
+    // Not a crash: wait and look again, quietly, instead of looping.
+    if (code === 3) {
+      if (!dupNoticeShown) console.log('[SUPERVISOR] Another agent already runs on this PC — not starting a second one. Checking again every minute.');
+      dupNoticeShown = true;
+      setTimeout(startAgent, 60 * 1000);
+      return;
+    }
+    if (dupNoticeShown) { dupNoticeShown = false; }
     const crashCount = recordCrash();
     console.log(`[SUPERVISOR] Agent exited (code ${code}) — ${crashCount} crash(es) in the last ${CRASH_WINDOW_MS/60000} min`);
 
@@ -248,6 +268,23 @@ async function main() {
   console.log('║  EKALAVYA AGENT — Update & Supervisor    ║');
   console.log('╚══════════════════════════════════════════╝');
   console.log(`[INIT] Repo: ${GITHUB_REPO} (${GITHUB_BRANCH})`);
+  if (guard) {
+    const r = await guard.claim('supervisor', AGENT_DIR);
+    if (!r.ok && !r.foreign) {
+      guard.printRefusal('updater', r.other);
+      if (process.env.pm_id === undefined) process.exit(0);
+      // Under PM2 an exit is restarted at once, so stand by instead and
+      // take over only if the other one stops.
+      console.log('[INIT] Standing by — will take over only if that agent stops (checked every minute).');
+      await new Promise(resolve => {
+        const t = setInterval(() => guard.claim('supervisor', AGENT_DIR, { waitMs: 0 }).then(r2 => {
+          if (r2.ok) { clearInterval(t); console.log('[INIT] The other agent has stopped — starting now.'); resolve(); }
+        }), 60 * 1000);
+      });
+    } else if (r.foreign) {
+      console.log(`[INIT] Port ${guard.PORTS.supervisor} is used by another program — one-per-PC check skipped (set EKL_SUPERVISOR_LOCK_PORT to change it)`);
+    }
+  }
   const local = readLocalVersion();
   console.log(`[INIT] Installed version: ${local ? local.version : '(none — first run)'}`);
   console.log(`[INIT] Update check every ${CHECK_EVERY_MS/60000}m · Check-in every ${CHECKIN_MS/1000}s\n`);
