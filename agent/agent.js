@@ -28,9 +28,9 @@ async function resolveEnvMACs() {
 
 // Called on every live reading — push to backend immediately
 function onSensorReading(ip, reading) {
-  if (!instanceHeld) return;   // another agent on this PC owns the readings
+  if (!instanceHeld || !FARM_ID) return;   // another agent owns the readings / farm not chosen yet
   const farmId   = FARM_ID;
-  const farmName = process.env.FARM_NAME || FARM_ID;
+  const farmName = FARM_NAME || FARM_ID;
   console.log(`[TH16] ${ip} → ${reading.temp}°C ${reading.humidity}% (${reading.source||'http'})`);
   // Push via WebSocket to backend
   send({ type: 'sensor_reading', farm_id: farmId, ip, ...reading });
@@ -72,12 +72,99 @@ const HMI_INTERVAL = parseInt(process.env.LANLI_HMI_INTERVAL || '10') * 1000;
 
 const SERVER    = process.env.MMX_SERVER   || 'wss://ekalavya-backend-production.up.railway.app/agent';
 const AGENT_KEY = process.env.AGENT_KEY    || 'ekalavya123';
-const FARM_NAME = process.env.FARM_NAME    || 'My Farm';
-const FARM_ID   = process.env.FARM_ID      || 'farm-' + os.hostname().toLowerCase().replace(/[^a-z0-9]/g,'-');
-const SUBNET_RAW = process.env.LOCAL_SUBNET || '192.168.1.0/24';
+// ── Which farm, which networks — set in the app, not in .env ─────────
+// The farm this PC runs, and the IP ranges it polls, come from the app
+// (Remote Access). A PC the app hasn't seen waits there as "new" until
+// someone picks its farm; the answer is kept in .farm.json so a restart
+// knows it straight away. FARM_ID / LOCAL_SUBNET in .env still work for
+// PCs set up the old way, but nothing needs to be typed any more:
+//   IP ranges: set in the app  >  LOCAL_SUBNET in .env  >  detected from this PC's own network cards
+const FARM_FILE = require('path').join(__dirname, '.farm.json');
+function readFarmFile() { try { return JSON.parse(require('fs').readFileSync(FARM_FILE, 'utf8')); } catch (e) { return null; } }
+function writeFarmFile() {
+  // written to a temp file and renamed, so a power cut mid-write can't leave it half-written
+  try {
+    const fsx = require('fs'), tmp = FARM_FILE + '.tmp';
+    fsx.writeFileSync(tmp, JSON.stringify({ farm_id: FARM_ID, farm_name: FARM_NAME, subnets: APP_SUBNETS, saved_at: new Date().toISOString() }, null, 2));
+    fsx.renameSync(tmp, FARM_FILE);
+  } catch (e) {}
+}
+// This PC's own IPv4 networks. A network card's range wider than /24
+// (e.g. a /16) is narrowed to the /24 this PC sits in — a /16 is 65,000
+// addresses to poll every 30 seconds. Virtual/VPN adapters are skipped.
+function detectLocalNetworks() {
+  const skip = /virtual|vmware|vbox|virtualbox|hyper-v|vethernet|loopback|tailscale|zerotier|wsl|docker|bluetooth|hamachi|radmin|openvpn|wireguard|tap-|tun/i;
+  const ips = [], subnets = [];
+  const ifs = os.networkInterfaces();
+  Object.keys(ifs).forEach(name => {
+    if (skip.test(name)) return;
+    (ifs[name] || []).forEach(a => {
+      const fam = a.family === 4 ? 'IPv4' : a.family;
+      if (fam !== 'IPv4' || a.internal || !a.address || /^169\.254\./.test(a.address)) return;
+      ips.push(a.address);
+      const p = a.address.split('.').map(Number);
+      let bits = 24;
+      const m = String(a.cidr || '').split('/')[1];
+      if (m) bits = Math.max(24, Math.min(30, parseInt(m, 10) || 24));
+      const mask = bits === 32 ? 0xffffffff : (~((1 << (32 - bits)) - 1)) >>> 0;
+      const n = (((p[0] << 24) >>> 0) + (p[1] << 16) + (p[2] << 8) + p[3]) & mask;
+      const net = [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.') + '/' + bits;
+      if (!subnets.includes(net)) subnets.push(net);
+    });
+  });
+  return { ips, subnets };
+}
+const LOCAL_NET  = detectLocalNetworks();
+const ENV_FARM_ID = (process.env.FARM_ID || '').trim();
+const DEFAULT_FARM_ID = 'farm-' + os.hostname().toLowerCase().replace(/[^a-z0-9]/g,'-');
 // Support comma-separated subnets: "192.168.70.1-255,192.168.44.1-255"
-const SUBNETS   = SUBNET_RAW.split(',').map(function(s){ return s.trim(); }).filter(Boolean);
-const SUBNET    = SUBNETS[0];  // first one for display/registration
+const ENV_SUBNETS = (process.env.LOCAL_SUBNET || '').split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+const SAVED_FARM = readFarmFile() || {};
+let FARM_ID   = ENV_FARM_ID || SAVED_FARM.farm_id || '';
+let FARM_NAME = SAVED_FARM.farm_name || process.env.FARM_NAME || FARM_ID || '';
+let APP_SUBNETS = Array.isArray(SAVED_FARM.subnets) ? SAVED_FARM.subnets.filter(Boolean) : [];
+function pickSubnets() {
+  if (APP_SUBNETS.length) return { list: APP_SUBNETS.slice(), from: 'set in the app' };
+  if (ENV_SUBNETS.length) return { list: ENV_SUBNETS.slice(), from: 'LOCAL_SUBNET in .env' };
+  if (LOCAL_NET.subnets.length) return { list: LOCAL_NET.subnets.slice(), from: 'detected on this PC' };
+  return { list: ['192.168.1.0/24'], from: 'default — no network card found' };
+}
+let SUBNETS   = pickSubnets().list;
+let SUBNET    = SUBNETS[0];  // first one for display/registration
+function applySubnets(fromServer) {
+  if (Array.isArray(fromServer)) APP_SUBNETS = fromServer.map(String).map(s => s.trim()).filter(Boolean);
+  const pick = pickSubnets();
+  const changed = pick.list.join(',') !== SUBNETS.join(',');
+  SUBNETS = pick.list; SUBNET = SUBNETS[0];
+  if (changed) console.log(`[CONFIG] Polling ${SUBNETS.join(', ')} (${pick.from})`);
+}
+
+// Permanent id of THIS PC: Windows MachineGuid (or /etc/machine-id),
+// hashed with the PC name so cloned Windows images don't collide. The
+// same PC keeps it through reinstalls and folder moves, so the app
+// remembers which farm it runs.
+function pcIdentity() {
+  let raw = '';
+  try {
+    if (process.platform === 'win32') {
+      const out = require('child_process').execSync('reg query "HKLM\\SOFTWARE\\Microsoft\\Cryptography" /v MachineGuid /reg:64',
+        { stdio: ['ignore', 'pipe', 'ignore'], timeout: 8000 }).toString();
+      const m = out.match(/MachineGuid\s+REG_SZ\s+([0-9a-f-]{36})/i); if (m) raw = m[1];
+    } else {
+      raw = require('fs').readFileSync('/etc/machine-id', 'utf8').trim();
+    }
+  } catch (e) {}
+  const idFile = require('path').join(__dirname, '.agent-id');
+  if (!raw) {
+    try { raw = require('fs').readFileSync(idFile, 'utf8').trim(); } catch (e) {}
+    if (!raw) { raw = crypto.randomBytes(16).toString('hex'); try { require('fs').writeFileSync(idFile, raw); } catch (e) {} }
+  }
+  return 'pc-' + crypto.createHash('sha256').update('ekalavya|' + raw + '|' + os.hostname().toLowerCase()).digest('hex').slice(0, 20);
+}
+const PC_ID = process.env.EKL_PC_ID || pcIdentity();
+function installedVersion() {
+  try { return JSON.parse(require('fs').readFileSync(require('path').join(__dirname, '.manifest-installed.json'), 'utf8')).version || '1.0.0'; } catch (e) { return '1.0.0'; }
+}
 const POLL_MS   = parseInt(process.env.POLL_MS || '30000');
 const CGPORT    = parseInt(process.env.CGMINER_PORT || '4028');
 
@@ -1948,17 +2035,21 @@ function connect() {
   console.log('\n╔══════════════════════════════════════════╗');
   console.log('║     EKALAVYA — FARM AGENT v1.0.0        ║');
   console.log('╠══════════════════════════════════════════╣');
-  console.log(`║  Farm   : ${FARM_NAME.padEnd(30)}║`);
-  console.log(`║  ID     : ${FARM_ID.padEnd(30)}║`);
+  console.log(`║  Farm   : ${(FARM_NAME || '(chosen in the app)').slice(0,30).padEnd(30)}║`);
+  console.log(`║  PC     : ${(os.hostname() + ' ' + PC_ID.slice(0, 11)).slice(0,30).padEnd(30)}║`);
   console.log(`║  Subnet : ${SUBNETS.join(',').slice(0,30).padEnd(30)}║`);
   console.log('╚══════════════════════════════════════════╝\n');
   console.log(`[INFO] Connecting to ${SERVER}...`);
 
   ws = new WebSocket(SERVER, {
     headers: {
-      'x-agent-key': AGENT_KEY, 'x-farm-id': FARM_ID,
-      'x-farm-name': FARM_NAME, 'x-subnet': SUBNETS.join(','),
-      'x-hostname': os.hostname(), 'x-agent-version': '1.0.0',
+      'x-agent-key': AGENT_KEY, 'x-agent-pc-id': PC_ID,
+      // A farm named in .env (PCs set up the old way) is used to link
+      // this PC the first time; otherwise the farm is chosen in the app.
+      'x-farm-id': ENV_FARM_ID || DEFAULT_FARM_ID, 'x-farm-id-source': ENV_FARM_ID ? 'env' : 'default',
+      'x-farm-name': process.env.FARM_NAME || '', 'x-subnet': SUBNETS.join(','),
+      'x-local-ips': LOCAL_NET.ips.join(','),
+      'x-hostname': os.hostname(), 'x-agent-version': installedVersion(),
     }
   });
 
@@ -1991,7 +2082,7 @@ function connect() {
   ws.on('open', () => {
     reconnectMs = 3000;
     lastServerMsgAt = Date.now(); // start the ack window fresh
-    console.log(`[INFO] ✓ Connected | Farm: ${FARM_NAME}`);
+    console.log(`[INFO] ✓ Connected to the server`);
 
     // The real health check: we send a heartbeat every 8s and the
     // backend acks every one of them while we're registered. If acks
@@ -2006,17 +2097,25 @@ function connect() {
         try { ws.terminate(); } catch(e) {}
       }
     }, 10000);
-    pollTimer = setInterval(pollMiners, POLL_MS);
     heartbeatMsgInterval = setInterval(() => send({ type:'heartbeat', farm_id:FARM_ID }), 8000);
     // Ping every 8s; only reconnect if truly unresponsive for 32s
     pingInterval = setInterval(heartbeatPing, 8000);
+    // Polling starts once the server says which farm this is ('welcome');
+    // a PC still waiting for its farm ('pending') polls nothing.
+  });
+
+  let farmWorkStarted = false;
+  function startFarmWork() {
+    if (farmWorkStarted) return;
+    farmWorkStarted = true;
+    pollTimer = setInterval(pollMiners, POLL_MS);
     setTimeout(pollMiners, 5000);
     // Start Lanli RS485 polling if enabled
     if (LANLI_ENABLED && lanli) {
       lanliInterval = setInterval(pollLanli, 30000);
       setTimeout(pollLanli, 8000);
     }
-  });
+  }
 
   ws.on('message', raw => {
     // Any message from the backend proves it's still talking to us at
@@ -2027,6 +2126,32 @@ function connect() {
       const msg = JSON.parse(raw.toString());
       if (msg.type === 'welcome') {
         console.log(`[INFO] ${msg.message}`);
+        if (msg.farm_id) FARM_ID = msg.farm_id;
+        if (msg.farm_name) FARM_NAME = msg.farm_name;
+        applySubnets(Array.isArray(msg.subnets) ? msg.subnets : undefined);
+        console.log(`[INFO] This PC runs farm "${FARM_NAME || FARM_ID}" — polling ${SUBNETS.join(', ')}`);
+        writeFarmFile();
+        startFarmWork();
+      } else if (msg.type === 'pending') {
+        console.log('');
+        console.log('  ════════════════════════════════════════════════════════════');
+        console.log('  This PC is connected and waiting for its farm.');
+        console.log(`  In the app: Remote Access → New agents → "${os.hostname()}"`);
+        console.log('  → pick its farm (or type a new farm name) → Assign.');
+        console.log(`  This PC's networks: ${LOCAL_NET.subnets.join(', ') || 'none found'}`);
+        console.log('  ════════════════════════════════════════════════════════════');
+        console.log('');
+      } else if (msg.type === 'assigned') {
+        console.log(`[INFO] ✓ This PC is now on farm "${msg.farm_name || msg.farm_id}" — reconnecting`);
+        FARM_ID = msg.farm_id || FARM_ID; FARM_NAME = msg.farm_name || FARM_NAME;
+        writeFarmFile();
+      } else if (msg.type === 'farm_renamed') {
+        FARM_NAME = msg.farm_name || FARM_NAME;
+        console.log(`[INFO] Farm renamed in the app: "${FARM_NAME}"`);
+        writeFarmFile();
+      } else if (msg.type === 'set_subnets') {
+        applySubnets(Array.isArray(msg.subnets) ? msg.subnets : []);
+        writeFarmFile();
       } else if (msg.type === 'sensor_read_now') {
         console.log('[TH16] Manual read triggered');
         // Re-poll all known sensors immediately
@@ -2114,6 +2239,10 @@ function connect() {
     }
     clearInterval(pollTimer);
     closeAllMinerSockets();   // the browsers on the other end are gone with this connection
+
+    // 4010: the farm of this PC was set or changed in the app — come
+    // straight back so the new farm takes effect.
+    if (code === 4010) { reconnectMs = 1000; scheduleReconnect('Farm changed in the app'); return; }
 
     // 4003: the backend already has an agent connected for this FARM_ID.
     // Reconnecting straight away just resumes the tug-of-war that made
