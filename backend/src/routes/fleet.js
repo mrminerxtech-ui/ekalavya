@@ -80,6 +80,14 @@ router.post('/save', authMiddleware, async (req, res) => {
     // value is kept — otherwise one stale device silently re-enabled a
     // machine someone had just taken out for repair (or vice versa).
     const serverById = new Map(serverWorkers.map(w => [w && w.id, w]));
+    // Same for which farm a machine is on and that farm's name: only an
+    // agent's poll or a farm rename/merge (services/farms.js) changes
+    // them, so a device's older copy can't move machines back.
+    workers = workers.map(w => {
+      const s = w && serverById.get(w.id);
+      if (!s || (s.farm_id === w.farm_id && (s.farm || '') === (w.farm || ''))) return w;
+      return { ...w, farm_id: s.farm_id, farm: s.farm };
+    });
     workers = workers.map(w => {
       const s = w && serverById.get(w.id);
       if (!s || !!s.disabled === !!w.disabled) return w;
@@ -223,7 +231,12 @@ router.post('/agent-config', authMiddleware, async (req, res) => {
   const { farm_id, subnets, name } = req.body;
   if (!farm_id) return res.status(400).json({ error: 'farm_id required' });
   await db.saveAgentConfig(farm_id, subnets || [], name);
-  res.json({ ok: true });
+  // The IP ranges now actually drive the agent's polling: kept with the
+  // farm and sent to its agent straight away (and on every connect).
+  const farms = require('../services/farms');
+  const list = await farms.setSubnets(farm_id, subnets || [], (req.user && (req.user.name || req.user.id)) || null);
+  const sent = require('../services/agentManager').sendToAgent(farm_id, { type: 'set_subnets', subnets: list });
+  res.json({ ok: true, subnets: list, sent_to_agent: sent });
 });
 
 // GET /api/fleet/agent-configs — load all agent configs
