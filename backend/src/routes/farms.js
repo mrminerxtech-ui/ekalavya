@@ -23,6 +23,20 @@ function staffOnly(req, res, next) {
 const who = req => (req.user && (req.user.name || req.user.id)) || 'unknown';
 const canChange = requireRole('admin', 'manager');
 
+// This farm's machines per network (/24), in service only: how many and
+// how many online. A whole network at 0 online = most likely not polled.
+function networksOf(fid, workers) {
+  const m = new Map();
+  workers.forEach(w => {
+    if (!w || w.farm_id !== fid || !w.ip || w.disabled) return;
+    const net = String(w.ip).split('.').slice(0, 3).join('.');
+    const e = m.get(net) || { net, total: 0, online: 0 };
+    e.total++; if (w.status === 'online') e.online++;
+    m.set(net, e);
+  });
+  return [...m.values()].sort((a, b) => a.net.localeCompare(b.net, undefined, { numeric: true }));
+}
+
 async function overview() {
   await farms.load();
   const reg = farms.snapshot();
@@ -46,7 +60,8 @@ async function overview() {
     return { farm_id: id, name: farms.farmName(id), machines: count.get(id) || 0, online: !!agentNow, pcs,
              subnets: (reg.farms[id] && reg.farms[id].subnets) || [],          // typed in the app ([] = automatic)
              known_subnets: farms.knownSubnetsFor(id, workers),               // networks its machines are on
-             polling: (agentNow && agentNow.poll_stats) || null };             // what its agent polls right now
+             polling: (agentNow && agentNow.poll_stats) || null,              // what its agent polls right now
+             networks: networksOf(id, workers) };                              // machines per /24: total / online
   }).sort((a, b) => String(a.name).localeCompare(String(b.name)));
   return { ok: true, farms: list, pending: farms.listPending() };
 }
