@@ -58,6 +58,12 @@ const graceTil = new Map();   // "farm|key" -> timestamp; no restart before this
 const log      = [];          // recent actions, newest first (for the Settings page)
 const siteWarnedAt = new Map();
 const gaveUpNotified = new Map();
+// After a machine's LAST allowed automatic restart of the day, its log is
+// fetched LOG_AFTER_MS later and posted to the Telegram group as a .txt
+// file, so someone can see why it keeps failing without logging in.
+const LOG_AFTER_MS      = 10 * 60 * 1000;
+const LOG_GIVE_UP_MS    = 30 * 60 * 1000;     // agent offline this long past due → post without the log
+const logJobs = new Map();                    // "farm|key" -> { farmId, siteName, workerId, ip, due, restarts, lastAt }
 
 function keyOf(m) {
   const mac = m.mac ? String(m.mac).toUpperCase().replace(/[^0-9A-F]/g, '') : '';
@@ -233,6 +239,76 @@ function getLog() { return log.slice(0, 50); }
 
 let telegram = null;   // set in start() — alerts.js requires agentManager too, so resolved lazily
 // A message with its own title carries its own icon, so no level emoji in front
+let telegramDoc = null;   // alerts.sendTelegramDocument, set in start()
+
+function modelOf(w) {
+  if (!w) return null;
+  const brand = String(w.brand || '').trim(), model = String(w.model || '').trim();
+  if (!model) return brand || null;
+  return brand && !model.toLowerCase().includes(brand.toLowerCase()) ? brand + ' ' + model : model;
+}
+// Farm : / Customer: / Model: / Worker: / IP:  — the layout for the log post
+function logCard(siteName, w, ip, customers) {
+  const card = machineCard(siteName, w, ip, customers).split('\n');   // Farm, Customer, Worker, Sl.no, IP
+  const clean = v => (v === undefined || v === null || String(v).trim() === '' || String(v).trim() === '—') ? '—' : String(v).trim();
+  return [card[0], card[1], 'Model: ' + clean(modelOf(w)), card[2], card[4]].join('\n');
+}
+function stamp(d) {
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + '_' + p(d.getHours()) + p(d.getMinutes());
+}
+
+// Post due logs. Runs every tick, whatever the on/off setting — a job
+// only exists because a restart already happened.
+async function runLogJobs(now) {
+  if (!logJobs.size) return;
+  const due = [...logJobs.entries()].filter(([, j]) => now >= j.due);
+  if (!due.length) return;
+  const workers = await db.loadWorkers().catch(() => []);
+  let customers = null;
+  for (const [k, j] of due) {
+    const w = workers.find(x => x && x.id === j.workerId) || null;
+    const ip = (w && w.ip) || j.ip;                       // the IP may have changed after the reboot
+    const agentUp = agentMgr.getAgents().some(a => a.farm_id === j.farmId);
+    if (!agentUp && now - j.due < LOG_GIVE_UP_MS) continue;   // try again next minute
+    logJobs.delete(k);
+    if (!customers) customers = await db.loadCustomers().catch(() => []);
+    const status = zero.has(k) ? 'still at 0 hashrate'
+                 : (w && w.status === 'offline') ? 'offline since the restart'
+                 : (w && Number(w.hashrate) > 0) ? 'hashing again' : 'still at 0 hashrate';
+    const title = `📄 Log after ${j.restarts} automatic restarts today — ${status}`;
+    const card = logCard(j.siteName, w, ip, customers);
+    let result;
+    if (!agentUp) result = { ok: false, error: 'farm agent offline' };
+    else {
+      try { result = await agentMgr.sendActionRequest(j.farmId, ip, 'downloadlogs', { brand: w && w.brand, model: w && w.model }); }
+      catch (e) { result = { ok: false, error: e.message }; }
+    }
+    const label = w ? `${w.name || ip} (${ip})` : ip;
+    if (result && result.ok && result.logs) {
+      const header = [
+        'Ekalavya — miner log', card, '',
+        'Serial: ' + ((w && w.serial) || '—'),
+        'Automatic restarts today: ' + j.restarts + ' (last at ' + new Date(j.lastAt).toISOString().replace('T', ' ').slice(0, 16) + ' UTC)',
+        'Status when fetched: ' + status,
+        'Fetched: ' + new Date(now).toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
+        '', '─'.repeat(60), '',
+      ].join('\n');
+      const text = header + String(result.logs).slice(-4 * 1024 * 1024);   // last 4 MB is plenty
+      const fname = `${j.siteName}_${(w && (w.worker_id && w.worker_id !== '—' ? w.worker_id : w.name)) || ip}_${stamp(new Date(now))}.txt`;
+      const sent = telegramDoc ? await telegramDoc(card, title, fname, text) : { ok: false, error: 'Telegram not ready' };
+      console.log(`[AUTO-RESTART] ${sent.ok ? '✓' : '✗'} ${j.siteName}: log of ${label} ${sent.ok ? 'posted to Telegram' : 'not posted — ' + sent.error} (${String(result.logs).length} chars)`);
+      note({ site: j.siteName, machine: label, action: sent.ok ? 'log-sent' : 'failed', detail: sent.ok ? 'log posted to Telegram' : 'log not posted: ' + sent.error });
+      if (!sent.ok && sent.error !== 'Telegram not configured') tell(card + '\n\nLog could not be sent: ' + sent.error, title);
+    } else {
+      const why = (result && result.error) || 'the miner sent no log';
+      console.log(`[AUTO-RESTART] ✗ ${j.siteName}: log of ${label} could not be fetched — ${why}`);
+      note({ site: j.siteName, machine: label, action: 'failed', detail: 'log not fetched: ' + why });
+      tell(card + '\n\nLog could not be fetched: ' + why, title);
+    }
+  }
+}
+
 function tell(text, title) { try { telegram && telegram(text, title ? 'plain' : 'warn', title); } catch (e) {} }
 
 // One Telegram message per machine, in the layout the team uses:
@@ -257,6 +333,7 @@ function machineCard(siteName, w, ip, customers) {
 async function tick() {
   await Promise.all([loadSettings(), loadOverrides()]);
   const now = Date.now();
+  try { await runLogJobs(now); } catch (e) { console.error('[AUTO-RESTART] log job error:', e.message); }
   // forget machines that stopped appearing in polls (unreachable, moved)
   zero.forEach((e, k) => { if (now - e.lastSeen > FORGET_AFTER_MS) zero.delete(k); });
 
@@ -336,6 +413,10 @@ async function tick() {
         console.log(`[AUTO-RESTART] ✓ ${siteName}: rebooted ${label} — 0 hashrate for ${mins} min (restart ${recent.length}/${cfg.max_per_day} today${own})`);
         note({ site: siteName, machine: label, action: 'restarted', detail: `0 hashrate for ${mins} min · ${recent.length}/${cfg.max_per_day} today${own}` });
         restarted.push({ w, ip: e.ip, mins, n: recent.length, max: cfg.max_per_day });
+        if (recent.length >= cfg.max_per_day && w) {
+          logJobs.set(k, { farmId, siteName, workerId: w.id, ip: e.ip, due: now + LOG_AFTER_MS, restarts: recent.length, lastAt: now });
+          console.log(`[AUTO-RESTART] ${siteName}: ${label} used its last restart for today — its log goes to Telegram in ${LOG_AFTER_MS / 60000} min`);
+        }
       } else {
         const why = (result && result.error) || 'no reply';
         console.log(`[AUTO-RESTART] ✗ ${siteName}: reboot of ${label} failed — ${why}`);
@@ -356,7 +437,7 @@ async function tick() {
 let timer = null, running = false;
 function start() {
   if (timer) return;
-  try { telegram = require('./alerts').sendTelegramAlert; } catch (e) {}
+  try { telegram = require('./alerts').sendTelegramAlert; telegramDoc = require('./alerts').sendTelegramDocument; } catch (e) {}
   Promise.all([loadSettings(), loadOverrides()]).then(([s, o]) => {
     const vals = Object.values(o), on = vals.filter(x => x.mode === 'on').length, off = vals.filter(x => x.mode === 'off').length;
     console.log(`[AUTO-RESTART] default ${s.enabled ? 'ON' : 'off'} — ${s.minutes} min at 0 hashrate, max ${s.max_per_day}/machine/day` +
@@ -371,4 +452,4 @@ function start() {
 
 module.exports = { start, tick, observePoll, getSettings, saveSettings, loadSettings, getLog,
                    loadOverrides, listOverrides, getMachine, setMachines,
-                   _state: { zero, history, graceTil, seenAt } };
+                   _state: { zero, history, graceTil, seenAt, logJobs } };
