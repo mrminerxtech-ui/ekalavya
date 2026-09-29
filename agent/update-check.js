@@ -244,11 +244,19 @@ function restUrl(pathSuffix) {
   return server.replace('wss://', 'https://').replace('ws://', 'http://').replace(/\/agent$/, '') + pathSuffix;
 }
 
+// The farm is chosen in the app now; the agent keeps it in .farm.json.
+function currentFarm() {
+  try { const f = JSON.parse(fs.readFileSync(path.join(AGENT_DIR, '.farm.json'), 'utf8')); if (f && f.farm_id) return f; } catch (e) {}
+  return { farm_id: process.env.FARM_ID || '', farm_name: process.env.FARM_NAME || process.env.FARM_ID || '' };
+}
+
 async function checkIn() {
   const local = readLocalVersion();
+  const farm = currentFarm();
+  if (!farm.farm_id) return;   // PC still waiting for its farm in the app
   const payload = {
-    farm_id:        process.env.FARM_ID || os.hostname(),
-    farm_name:      process.env.FARM_NAME || process.env.FARM_ID || os.hostname(),
+    farm_id:        farm.farm_id,
+    farm_name:      farm.farm_name || farm.farm_id,
     updater_uptime: Math.floor((Date.now() - startedAt) / 1000),
     version:        local?.version || 'unknown',
     last_update_at: lastUpdateAt,
