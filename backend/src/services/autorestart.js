@@ -12,16 +12,17 @@
 //   • Never touches: machines in repair (disabled), machines put to sleep
 //     (last action = sleep), machines whose farm agent is disconnected.
 //   • At most `max_per_day` automatic restarts per machine per 24h
-//     (default 3). After that it's left alone and Telegram says it needs a
-//     person — this also stops a loop on a machine whose hashrate simply
-//     can't be read.
+//     (default 3). After that it's left alone — this also stops a loop on
+//     a machine whose hashrate simply can't be read. Individual restarts
+//     are NOT posted to Telegram (the group was flooded); the group hears
+//     about a machine once: its log, 10 min after its last restart.
 //   • After a restart the machine gets `minutes` again (min 15) to boot
 //     and start hashing before it can be restarted again.
 //   • Site-wide problem: if more than SITE_WIDE_PCT of a site's reachable
 //     machines (and at least SITE_WIDE_MIN) are at 0 at once, it's the
 //     pool, network or power — rebooting won't help and a mass reboot is
-//     a power surge. Nothing is restarted there; Telegram is told once an
-//     hour.
+//     a power surge. Nothing is restarted there; Telegram is told once,
+//     then every 6 h while it lasts.
 //   • At most PER_SITE_PER_TICK reboots per site per minute, so a batch
 //     is staggered rather than all at once.
 //
@@ -371,7 +372,7 @@ async function tick() {
     const site = seenAt.get(farmId) || new Map();
     const reachable = site.size, zeroNow = [...site.values()].filter(s => s.zero).length;
     if (zeroNow >= SITE_WIDE_MIN && zeroNow > reachable * SITE_WIDE_PCT) {
-      if (!siteWarnedAt.get(farmId) || now - siteWarnedAt.get(farmId) > 60 * 60 * 1000) {
+      if (!siteWarnedAt.get(farmId) || now - siteWarnedAt.get(farmId) > 6 * 60 * 60 * 1000) {   // group: once, then every 6 h while it lasts
         siteWarnedAt.set(farmId, now);
         const msg = `${siteName}: ${zeroNow} of ${reachable} reachable machines are at 0 hashrate at once — ` +
                     `this looks like a pool, network or power problem, so they are NOT being restarted automatically.`;
@@ -383,7 +384,6 @@ async function tick() {
     }
 
     let sent = 0;
-    const restarted = [], gaveUp = [];
     for (const { k, e, w, cfg, since } of list) {
       if (sent >= PER_SITE_PER_TICK) break;
       if ((graceTil.get(k) || 0) > now) continue;
@@ -395,7 +395,6 @@ async function tick() {
       if (recent.length >= cfg.max_per_day) {
         if (!gaveUpNotified.get(k) || now - gaveUpNotified.get(k) > DAY_MS) {
           gaveUpNotified.set(k, now);
-          gaveUp.push({ w, ip: e.ip, count: recent.length });
           note({ site: siteName, machine: label, action: 'gave-up', detail: `${recent.length} automatic restarts in 24h` });
         }
         continue;
@@ -412,25 +411,21 @@ async function tick() {
       if (result && result.ok) {
         console.log(`[AUTO-RESTART] ✓ ${siteName}: rebooted ${label} — 0 hashrate for ${mins} min (restart ${recent.length}/${cfg.max_per_day} today${own})`);
         note({ site: siteName, machine: label, action: 'restarted', detail: `0 hashrate for ${mins} min · ${recent.length}/${cfg.max_per_day} today${own}` });
-        restarted.push({ w, ip: e.ip, mins, n: recent.length, max: cfg.max_per_day });
-        if (recent.length >= cfg.max_per_day && w) {
-          logJobs.set(k, { farmId, siteName, workerId: w.id, ip: e.ip, due: now + LOG_AFTER_MS, restarts: recent.length, lastAt: now });
-          console.log(`[AUTO-RESTART] ${siteName}: ${label} used its last restart for today — its log goes to Telegram in ${LOG_AFTER_MS / 60000} min`);
-        }
       } else {
         const why = (result && result.error) || 'no reply';
         console.log(`[AUTO-RESTART] ✗ ${siteName}: reboot of ${label} failed — ${why}`);
         note({ site: siteName, machine: label, action: 'failed', detail: why });
       }
+      // Its last restart for today (even one that failed) → the one group
+      // message about this machine: its log, 10 minutes from now.
+      if (recent.length >= cfg.max_per_day && w) {
+        logJobs.set(k, { farmId, siteName, workerId: w.id, ip: e.ip, due: now + LOG_AFTER_MS, restarts: recent.length, lastAt: now });
+        console.log(`[AUTO-RESTART] ${siteName}: ${label} used its last restart for today — its log goes to Telegram in ${LOG_AFTER_MS / 60000} min`);
+      }
     }
-    if (restarted.length || gaveUp.length) {
-      let customers = [];
-      try { customers = await db.loadCustomers(); } catch (e) {}
-      restarted.forEach(r => tell(machineCard(siteName, r.w, r.ip, customers),
-        `🔄 Machine rebooted — 0 hashrate for ${r.mins} min (restart ${r.n}/${r.max} today)`));
-      gaveUp.forEach(g => tell(machineCard(siteName, g.w, g.ip, customers),
-        `🛠 Needs a person — still at 0 hashrate after ${g.count} restarts today`));
-    }
+    // No Telegram message per restart: the group only hears about a machine
+    // once, when it has used its last restart (the log post, 10 min later).
+    // Every restart is still listed under Settings › Auto-restart › recent actions.
   }
 }
 
