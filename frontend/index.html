@@ -1567,6 +1567,29 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
     </div>
   </div>
 </div>
+<!-- IP ranges a farm's agent polls continuously -->
+<div class="overlay" id="rangesSheet">
+  <div class="sheet" style="max-width:560px">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title" id="rangesTitle">IP ranges</div>
+    <div class="sheet-body">
+      <div style="font-size:12.5px;color:var(--mute);line-height:1.55;margin-bottom:10px">
+        The farm's agent polls these every cycle. One range per line &mdash; for example:<br>
+        <code>192.168.70.0/24</code> &middot; <code>10.0.0.0/22</code> (up to 4,096 addresses) &middot;
+        <code>192.168.70.1-192.168.73.254</code> (continuous, across networks) &middot;
+        <code>192.168.70-73.*</code> (whole networks 70 to 73) &middot; <code>192.168.70.1-200</code> &middot; <code>19.3.19.46</code>
+      </div>
+      <textarea class="si" id="rangesText" rows="7" style="width:100%;font-family:'Share Tech Mono',monospace;resize:vertical" oninput="rangesPreview()" placeholder="Leave empty for automatic"></textarea>
+      <div id="rangesInfo" style="margin-top:8px;font-size:11.5px;line-height:1.5;color:var(--mute)"></div>
+    </div>
+    <div class="sheet-foot">
+      <button class="btn btn-ghost" onclick="closeSheet('rangesSheet')">Cancel</button>
+      <button class="btn btn-ghost" id="rangesAuto" onclick="saveRanges(true)" title="Poll LOCAL_SUBNET (.env) plus every network this farm's machines are on">Use automatic</button>
+      <button class="btn btn-g" id="rangesSave" onclick="saveRanges(false)">Save ranges</button>
+    </div>
+  </div>
+</div>
+
 <!-- Choose a farm: for a new PC, moving a PC, or merging a farm -->
 <div class="overlay" id="farmPickSheet">
   <div class="sheet" style="max-width:480px">
