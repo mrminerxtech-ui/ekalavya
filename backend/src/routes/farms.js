@@ -44,7 +44,9 @@ async function overview() {
     // an older agent (no PC id) connected under this farm
     if (agentNow && !agentNow.pc_id) pcs.push({ pc_id: null, hostname: agentNow.hostname, ips: agentNow.ips || [], online: true, older_agent: true });
     return { farm_id: id, name: farms.farmName(id), machines: count.get(id) || 0, online: !!agentNow, pcs,
-             subnets: (reg.farms[id] && reg.farms[id].subnets) || [] };
+             subnets: (reg.farms[id] && reg.farms[id].subnets) || [],          // typed in the app ([] = automatic)
+             known_subnets: farms.knownSubnetsFor(id, workers),               // networks its machines are on
+             polling: (agentNow && agentNow.poll_stats) || null };             // what its agent polls right now
   }).sort((a, b) => String(a.name).localeCompare(String(b.name)));
   return { ok: true, farms: list, pending: farms.listPending() };
 }
