@@ -62,9 +62,34 @@ const gaveUpNotified = new Map();
 // After a machine's LAST allowed automatic restart of the day, its log is
 // fetched LOG_AFTER_MS later and posted to the Telegram group as a .txt
 // file, so someone can see why it keeps failing without logging in.
+// Never earlier: the miner's log restarts with the reboot, so a log taken
+// right after it has none of the boot errors (hashboards not found, chip
+// or temperature faults). At 10 min the boot has run and logged them.
 const LOG_AFTER_MS      = 10 * 60 * 1000;
+const LOG_RETRY_MS      = 20 * 60 * 1000;     // miner still booting / not answering → keep trying this long past due
+const LOG_RETRY_EVERY   = 2 * 60 * 1000;
 const LOG_GIVE_UP_MS    = 30 * 60 * 1000;     // agent offline this long past due → post without the log
+const LOG_STALE_MS      = 6 * 60 * 60 * 1000; // a job this old (backend was down) is dropped
+const LOG_JOBS_KEY      = 'auto_restart_log_jobs';   // kept on the server so a redeploy doesn't lose a pending log
 const logJobs = new Map();                    // "farm|key" -> { farmId, siteName, workerId, ip, due, restarts, lastAt }
+let logJobsLoaded = false;
+async function loadLogJobs() {
+  if (logJobsLoaded) return;
+  try {
+    const v = await db.getSetting(LOG_JOBS_KEY);
+    const now = Date.now();
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      Object.entries(v).forEach(([k, j]) => {
+        if (j && j.due && j.farmId && now - j.due < LOG_STALE_MS && !logJobs.has(k)) logJobs.set(k, j);
+      });
+      if (logJobs.size) console.log(`[AUTO-RESTART] ${logJobs.size} log post(s) still pending from before the restart of the server`);
+    }
+    logJobsLoaded = true;
+  } catch (e) { /* try again next tick */ }
+}
+function saveLogJobs() {
+  try { Promise.resolve(db.setSetting(LOG_JOBS_KEY, Object.fromEntries(logJobs), 'auto-restart')).catch(() => {}); } catch (e) {}
+}
 
 function keyOf(m) {
   const mac = m.mac ? String(m.mac).toUpperCase().replace(/[^0-9A-F]/g, '') : '';
@@ -260,54 +285,66 @@ function stamp(d) {
 }
 
 // Post due logs. Runs every tick, whatever the on/off setting — a job
-// only exists because a restart already happened.
+// only exists because a restart already happened. A log is fetched no
+// sooner than LOG_AFTER_MS after the last restart; if the miner is still
+// booting (doesn't answer, or has no log yet) it is tried again every
+// 2 min for up to 20 min before the group is told it couldn't be fetched.
 async function runLogJobs(now) {
   if (!logJobs.size) return;
-  const due = [...logJobs.entries()].filter(([, j]) => now >= j.due);
+  const due = [...logJobs.entries()].filter(([, j]) => now >= j.due && now >= (j.next || 0));
   if (!due.length) return;
   const workers = await db.loadWorkers().catch(() => []);
-  let customers = null;
+  let customers = null, changed = false;
   for (const [k, j] of due) {
     const w = workers.find(x => x && x.id === j.workerId) || null;
     const ip = (w && w.ip) || j.ip;                       // the IP may have changed after the reboot
     const agentUp = agentMgr.getAgents().some(a => a.farm_id === j.farmId);
     if (!agentUp && now - j.due < LOG_GIVE_UP_MS) continue;   // try again next minute
-    logJobs.delete(k);
-    if (!customers) customers = await db.loadCustomers().catch(() => []);
-    const status = zero.has(k) ? 'still at 0 hashrate'
-                 : (w && w.status === 'offline') ? 'offline since the restart'
-                 : (w && Number(w.hashrate) > 0) ? 'hashing again' : 'still at 0 hashrate';
-    const title = `📄 Log after ${j.restarts} automatic restarts today — ${status}`;
-    const card = logCard(j.siteName, w, ip, customers);
+    const label = w ? `${w.name || ip} (${ip})` : ip;
     let result;
     if (!agentUp) result = { ok: false, error: 'farm agent offline' };
     else {
       try { result = await agentMgr.sendActionRequest(j.farmId, ip, 'downloadlogs', { brand: w && w.brand, model: w && w.model }); }
       catch (e) { result = { ok: false, error: e.message }; }
     }
-    const label = w ? `${w.name || ip} (${ip})` : ip;
-    if (result && result.ok && result.logs) {
+    const got = result && result.ok && result.logs;
+    if (!got && agentUp && now - j.due < LOG_RETRY_MS) {
+      // most likely still booting — try again shortly, don't post anything yet
+      j.next = now + LOG_RETRY_EVERY; j.tries = (j.tries || 0) + 1; changed = true;
+      if (j.tries === 1) console.log(`[AUTO-RESTART] ${j.siteName}: log of ${label} not available yet (${(result && result.error) || 'no log'}) — trying again for up to ${LOG_RETRY_MS / 60000} min`);
+      continue;
+    }
+    logJobs.delete(k); changed = true;
+    if (!customers) customers = await db.loadCustomers().catch(() => []);
+    const status = zero.has(k) ? 'still at 0 hashrate'
+                 : (w && w.status === 'offline') ? 'offline since the restart'
+                 : (w && Number(w.hashrate) > 0) ? 'hashing again' : 'still at 0 hashrate';
+    const title = `📄 Log after ${j.restarts} automatic restarts today — ${status}`;
+    const card = logCard(j.siteName, w, ip, customers);
+    const after = Math.round((now - j.lastAt) / 60000);
+    if (got) {
       const header = [
         'Ekalavya — miner log', card, '',
         'Serial: ' + ((w && w.serial) || '—'),
         'Automatic restarts today: ' + j.restarts + ' (last at ' + new Date(j.lastAt).toISOString().replace('T', ' ').slice(0, 16) + ' UTC)',
+        'Fetched: ' + new Date(now).toISOString().replace('T', ' ').slice(0, 16) + ' UTC — ' + after + ' min after the last restart',
         'Status when fetched: ' + status,
-        'Fetched: ' + new Date(now).toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
         '', '─'.repeat(60), '',
       ].join('\n');
       const text = header + String(result.logs).slice(-4 * 1024 * 1024);   // last 4 MB is plenty
       const fname = `${j.siteName}_${(w && (w.worker_id && w.worker_id !== '—' ? w.worker_id : w.name)) || ip}_${stamp(new Date(now))}.txt`;
       const sent = telegramDoc ? await telegramDoc(card, title, fname, text) : { ok: false, error: 'Telegram not ready' };
-      console.log(`[AUTO-RESTART] ${sent.ok ? '✓' : '✗'} ${j.siteName}: log of ${label} ${sent.ok ? 'posted to Telegram' : 'not posted — ' + sent.error} (${String(result.logs).length} chars)`);
-      note({ site: j.siteName, machine: label, action: sent.ok ? 'log-sent' : 'failed', detail: sent.ok ? 'log posted to Telegram' : 'log not posted: ' + sent.error });
+      console.log(`[AUTO-RESTART] ${sent.ok ? '✓' : '✗'} ${j.siteName}: log of ${label} ${sent.ok ? 'posted to Telegram' : 'not posted — ' + sent.error} (${after} min after the last restart, ${String(result.logs).length} chars)`);
+      note({ site: j.siteName, machine: label, action: sent.ok ? 'log-sent' : 'failed', detail: sent.ok ? `log posted to Telegram (${after} min after the last restart)` : 'log not posted: ' + sent.error });
       if (!sent.ok && sent.error !== 'Telegram not configured') tell(card + '\n\nLog could not be sent: ' + sent.error, title);
     } else {
       const why = (result && result.error) || 'the miner sent no log';
       console.log(`[AUTO-RESTART] ✗ ${j.siteName}: log of ${label} could not be fetched — ${why}`);
       note({ site: j.siteName, machine: label, action: 'failed', detail: 'log not fetched: ' + why });
-      tell(card + '\n\nLog could not be fetched: ' + why, title);
+      tell(card + `\n\nLog could not be fetched (tried from ${Math.round((j.due - j.lastAt) / 60000)} to ${after} min after the last restart): ` + why, title);
     }
   }
+  if (changed) saveLogJobs();
 }
 
 function tell(text, title) { try { telegram && telegram(text, title ? 'plain' : 'warn', title); } catch (e) {} }
@@ -334,6 +371,7 @@ function machineCard(siteName, w, ip, customers) {
 async function tick() {
   await Promise.all([loadSettings(), loadOverrides()]);
   const now = Date.now();
+  await loadLogJobs();
   try { await runLogJobs(now); } catch (e) { console.error('[AUTO-RESTART] log job error:', e.message); }
   // forget machines that stopped appearing in polls (unreachable, moved)
   zero.forEach((e, k) => { if (now - e.lastSeen > FORGET_AFTER_MS) zero.delete(k); });
@@ -420,6 +458,7 @@ async function tick() {
       // message about this machine: its log, 10 minutes from now.
       if (recent.length >= cfg.max_per_day && w) {
         logJobs.set(k, { farmId, siteName, workerId: w.id, ip: e.ip, due: now + LOG_AFTER_MS, restarts: recent.length, lastAt: now });
+        saveLogJobs();
         console.log(`[AUTO-RESTART] ${siteName}: ${label} used its last restart for today — its log goes to Telegram in ${LOG_AFTER_MS / 60000} min`);
       }
     }
@@ -447,4 +486,4 @@ function start() {
 
 module.exports = { start, tick, observePoll, getSettings, saveSettings, loadSettings, getLog,
                    loadOverrides, listOverrides, getMachine, setMachines,
-                   _state: { zero, history, graceTil, seenAt, logJobs } };
+                   _state: { zero, history, graceTil, seenAt, logJobs, reloadLogJobs: () => { logJobsLoaded = false; } } };
