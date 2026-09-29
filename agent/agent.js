@@ -1260,6 +1260,56 @@ async function fetchBootLog(ip) {
   return null;
 }
 
+// ── Fans + chips per hashboard, for the log check ──────────
+// Taken together with the log (auto-restart log post), so the backend
+// can say "Fan 2 = 0 RPM" or "Chain 1 = 55 chips" from the miner's own
+// numbers instead of guessing from log text.
+//   /cgi-bin/stats.cgi (newer Antminer firmware): STATS[0].fan = [rpm…]
+//     (one entry per fan slot), STATS[0].chain = [{ index, asic_num,
+//     rate_real, eeprom_loaded }…]
+//   cgminer 'stats' (port 4028): fan1…fanN and chain_acn1…N. Unused slots
+//     read 0 there (an S9 uses fan3 + fan6), so a 0 from this source is
+//     not reported as a dead fan / dead board — the log rules cover those.
+// Chains are numbered like the miner's log (Chain[0], Chain[1] …).
+async function healthSnapshot(ip) {
+  const n = v => { const x = parseFloat(v); return Number.isFinite(x) ? x : null; };
+  const snap = { fans: [], chains: [], fans_all_slots: true };
+  let hs = null, st = null;
+  try { hs = await httpGet(ip, '/cgi-bin/stats.cgi', 'root:root'); } catch (e) {}
+  const b = hs && hs.STATS && hs.STATS[0];
+  if (b && typeof b === 'object') {
+    if (Array.isArray(b.fan)) snap.fans = b.fan.map(n);
+    if (Array.isArray(b.chain)) snap.chains = b.chain.map((c, i) => ({
+      index: n(c.index) !== null ? n(c.index) : i,
+      asic: n(c.asic_num),
+      rate: n(c.rate_real),
+      eeprom: typeof c.eeprom_loaded === 'boolean' ? c.eeprom_loaded : undefined,
+    }));
+    snap.source = 'stats.cgi';
+  }
+  if (!snap.fans.length || !snap.chains.some(c => c.asic !== null)) {
+    try { st = await cgCmd(ip, 'stats'); } catch (e) {}
+    const blocks = (st && Array.isArray(st.STATS)) ? st.STATS : [];
+    const fans = {}, acn = {};
+    blocks.forEach(e => Object.keys(e || {}).forEach(k => {
+      let m = k.match(/^fan(\d+)$/i); if (m) { const v = n(e[k]); if (v !== null) fans[+m[1]] = v; }
+      m = k.match(/^chain_acn(\d+)$/i); if (m) { const v = n(e[k]); if (v !== null) acn[+m[1]] = v; }
+    }));
+    if (!snap.fans.length && Object.keys(fans).length) {
+      const top = Math.max(...Object.keys(fans).map(Number));
+      snap.fans = Array.from({ length: top }, (_, i) => fans[i + 1] !== undefined ? fans[i + 1] : null);
+      snap.fans_all_slots = false;
+    }
+    if (!snap.chains.some(c => c.asic !== null) && Object.keys(acn).length) {
+      snap.chains = Object.keys(acn).map(Number).sort((a, c) => a - c)
+        .filter(k => acn[k] > 0)
+        .map(k => ({ index: k - 1, asic: acn[k] }));
+      snap.source = (snap.source ? snap.source + ' + ' : '') + 'cgminer stats';
+    }
+  }
+  return (snap.fans.length || snap.chains.length) ? snap : null;
+}
+
 // ── Scan network ───────────────────────────────────────────
 async function scanMultipleSubnets(sessionId, subnets, ports, timeout) {
   for (let i = 0; i < subnets.length; i++) {
@@ -1714,7 +1764,10 @@ async function handleActionRequest(msg) {
       case 'fetchlogs':
       case 'downloadlogs': {
         const logText = await fetchBootLog(ip);
-        if (logText) await reply(true, { logs: logText });
+        // fans + chips per board at the same moment (for the backend's log check)
+        let snapshot = null;
+        if (logText && params && params.with_snapshot) { try { snapshot = await healthSnapshot(ip); } catch (e) {} }
+        if (logText) await reply(true, { logs: logText, snapshot });
         else await reply(false, { error: 'Could not retrieve logs from this miner' });
         break;
       }
