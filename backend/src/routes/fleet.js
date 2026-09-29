@@ -234,6 +234,10 @@ router.post('/agent-config', authMiddleware, async (req, res) => {
   // The IP ranges now actually drive the agent's polling: kept with the
   // farm and sent to its agent straight away (and on every connect).
   const farms = require('../services/farms');
+  // Only well-formed ranges are kept (the agent ignores anything else anyway)
+  const RANGE = /^(\d{1,3}\.){3}\d{1,3}(\/\d{1,2}|-(\d{1,3}\.){3}\d{1,3}|-\d{1,3})?$|^(\d{1,3}\.){2}\d{1,3}(-\d{1,3})?(\.\*)?$/;
+  const bad = (subnets || []).map(x => String(x).trim()).filter(x => x && !RANGE.test(x));
+  if (bad.length) return res.status(400).json({ ok: false, error: 'Not an IP range: ' + bad.slice(0, 3).join(', ') });
   const list = await farms.setSubnets(farm_id, subnets || [], (req.user && (req.user.name || req.user.id)) || null);
   const sent = require('../services/agentManager').sendToAgent(farm_id, { type: 'set_subnets', subnets: list });
   res.json({ ok: true, subnets: list, sent_to_agent: sent });
