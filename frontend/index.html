@@ -768,6 +768,16 @@ details.setup[open] summary .chev{transform:rotate(90deg);}
 .set-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start;}
 .set-grid>.panel{margin-bottom:0;}
 .set-grid>.span2{grid-column:1/-1;}
+.lc-h{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--mute);margin-bottom:6px;}
+.lc-row{display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--b1);font-size:12.5px;}
+.lc-row .lc-msg{flex:1;min-width:0;}
+.lc-row .lc-pat{display:block;font-family:'Share Tech Mono',monospace;font-size:10.5px;color:var(--mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.lc-row.off .lc-msg{opacity:.45;}
+.lc-add{display:grid;grid-template-columns:1fr 1.3fr auto auto;gap:8px;margin-top:8px;}
+@media (max-width:640px){.lc-add{grid-template-columns:1fr;}}
+.lc-find{padding:7px 0;border-top:1px solid var(--b1);font-size:12.5px;color:var(--txt);}
+.lc-find .lc-ev{display:block;font-family:'Share Tech Mono',monospace;font-size:10.5px;color:var(--mute);margin-top:2px;word-break:break-all;}
+.lc-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;vertical-align:1px;}
 @media (max-width:1000px){.set-grid{grid-template-columns:1fr;}}
 .sb{padding:14px 18px;}
 .srow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
@@ -1333,6 +1343,27 @@ details.setup[open] summary .chev{transform:rotate(90deg);}
         </div>
       </div>
 
+      <!-- Log checks: known error lines + fan/chip numbers → messages in the Telegram log post (no AI) -->
+      <div class="panel span2" id="logCheckPanel">
+        <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-file"/></svg>Log Checks</div>
+          <span class="tip" tabindex="0" data-tip="When a machine uses its last automatic restart, its log goes to Telegram with the likely problem underneath &mdash; e.g. <i>Fan 2 = 0 RPM &mdash; change fan 2</i>, <i>Chain 1 = 55 chips detected</i>, <i>Power error &mdash; check PSU</i>.<br><br>Found from known error lines in the log and the miner&rsquo;s own fan and chip numbers. No AI. Switch rules off or add your own; try them on a machine or a pasted log &mdash; nothing is sent to Telegram.">i</span>
+          <span class="badge" id="lcBadge" style="margin-left:auto">…</span></div>
+        <div class="sb">
+          <div class="srow" style="flex-wrap:wrap">
+            <input class="si" id="lcMachine" list="lcMachineList" placeholder="Machine name or IP" style="flex:1;min-width:200px" autocomplete="off">
+            <datalist id="lcMachineList"></datalist>
+            <button class="btn btn-sm btn-g" id="lcCheckBtn" onclick="logCheckMachine()"><svg class="ic sm"><use href="#i-search"/></svg>Check machine</button>
+            <button class="btn btn-sm" onclick="toggleLogPaste()"><svg class="ic sm"><use href="#i-file"/></svg>Paste a log</button>
+            <button class="btn btn-sm" onclick="openLogRules()"><svg class="ic sm"><use href="#i-sliders"/></svg>Rules</button>
+          </div>
+          <div id="lcPasteBox" style="display:none;margin-top:10px">
+            <textarea class="si" id="lcPaste" rows="6" style="width:100%;font-family:'Share Tech Mono',monospace;font-size:11.5px;resize:vertical" placeholder="Paste a miner log here"></textarea>
+            <div class="srow" style="margin-top:6px"><button class="btn btn-sm btn-g" onclick="logCheckPaste()">Check this log</button></div>
+          </div>
+          <div id="lcResult" class="shint"></div>
+        </div>
+      </div>
+
       <!-- Sensor Readings — LAN Scan or eWeLink assignment, per farm -->
       <div class="panel span2">
         <div class="ph">
@@ -1609,6 +1640,30 @@ details.setup[open] summary .chev{transform:rotate(90deg);}
     <div class="sheet-foot">
       <button class="btn btn-ghost" onclick="closeSheet('arBulkSheet')">Cancel</button>
       <button class="btn btn-g" id="bulkArSave" onclick="saveBulkAutoRestart()">Apply</button>
+    </div>
+  </div>
+</div>
+<!-- Log check rules -->
+<div class="overlay" id="logRulesSheet">
+  <div class="sheet" style="max-width:720px">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title">Log check rules</div>
+    <div class="sheet-body">
+      <div style="font-size:12px;color:var(--mute);line-height:1.5;margin-bottom:10px">A log line containing the text (or matching a <code>/pattern/</code>) gives the message. <code>$1</code>, <code>$2</code> in a message = what the pattern&rsquo;s brackets caught. Fan speeds and chips per board come from the miner itself and are always checked.</div>
+      <div class="lc-h">Your rules</div>
+      <div id="lcCustomList"></div>
+      <div class="lc-add">
+        <input class="si" id="lcNewPattern" placeholder="Text in the log, or /regex/" autocomplete="off">
+        <input class="si" id="lcNewMessage" placeholder="Message for the group" autocomplete="off">
+        <select class="si" id="lcNewLevel" aria-label="Level"><option value="error">Problem</option><option value="warn">Warning</option></select>
+        <button class="btn btn-sm" type="button" onclick="addLogRule()"><svg class="ic sm"><use href="#i-plus"/></svg>Add</button>
+      </div>
+      <div class="lc-h" style="margin-top:16px">Built-in <span style="font-weight:400;color:var(--mute)">&mdash; Antminer stock firmware; check them against your own logs</span></div>
+      <div id="lcBuiltinList"></div>
+    </div>
+    <div class="sheet-foot">
+      <button class="btn btn-ghost" onclick="closeSheet('logRulesSheet')">Cancel</button>
+      <button class="btn btn-g" id="lcSaveBtn" onclick="saveLogRules()">Save</button>
     </div>
   </div>
 </div>
