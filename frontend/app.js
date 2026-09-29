@@ -3019,7 +3019,7 @@ function showPage(n){
   // Render the page's content when it opens
   try {
     if(n==='dashboard')     { renderDash(); }
-    if(n==='settings')      { loadSiteAlarmSetting(); loadAutoRestart(); }
+    if(n==='settings')      { loadSiteAlarmSetting(); loadAutoRestart(); loadLogRules(); }
     if(n==='workers')       { renderWorkers(); attachSortHandlers(); }
     if(n==='agents')        { renderAgents(); populateDropdowns(); loadFarms(); }
     if(n==='customers')     { renderCustomers(); }
@@ -4510,8 +4510,8 @@ function renderAutoRestart(d) {
   const lg = document.getElementById('arLog');
   if (lg) {
     const rows = (d.log || []).slice(0, 10);
-    const col = { restarted: 'var(--green)', failed: 'var(--red)', 'gave-up': 'var(--warn)', 'skipped-site': 'var(--orange)' };
-    const word = { restarted: 'Restarted', failed: 'Failed', 'gave-up': 'Left for a person', 'skipped-site': 'Site-wide — not restarted' };
+    const col = { restarted: 'var(--green)', failed: 'var(--red)', 'gave-up': 'var(--warn)', 'skipped-site': 'var(--orange)', 'log-sent': 'var(--cyan)' };
+    const word = { restarted: 'Restarted', failed: 'Failed', 'gave-up': 'Left for a person', 'skipped-site': 'Site-wide — not restarted', 'log-sent': 'Log sent' };
     lg.innerHTML = rows.length
       ? '<div style="font-size:11px;color:var(--mute);margin-bottom:6px">Recent automatic actions</div>'
         + rows.map(function(r){
@@ -4548,6 +4548,157 @@ function saveAutoRestart() {
     toast('✓ Auto-restart ' + (d.enabled ? 'on — ' + d.minutes + ' min at 0 hashrate' : 'off'), 'var(--green)');
   })
   .catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
+}
+
+// ── Log checks (Settings page) ──────────────────────────────────────
+// Known error lines in a miner's log + the miner's own fan / chip numbers
+// → short messages under the log post in Telegram. No AI. Rules can be
+// switched off or added; "Check machine" / "Paste a log" try them without
+// sending anything.
+let lcRules = null;                 // { builtin:[…], custom:[…] } as last loaded
+let lcDraft = null;                 // being edited in the rules sheet
+function lcPost(path, body) {
+  const token = localStorage.getItem('ekl_token') || '';
+  return fetch(API_BASE + path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token }, body: JSON.stringify(body) })
+    .then(function(r){ return r.json().catch(function(){ return { ok: false, error: 'HTTP ' + r.status }; })
+      .then(function(d){ if (r.status === 403) d = { ok: false, error: 'Only an admin or manager can change this' }; return d; }); });
+}
+function lcBadge() {
+  const b = document.getElementById('lcBadge'); if (!b || !lcRules) return;
+  const on = lcRules.builtin.filter(function(r){ return r.enabled; }).length + lcRules.custom.filter(function(r){ return r.enabled !== false; }).length;
+  b.textContent = on + ' rules' + (lcRules.custom.length ? ' · ' + lcRules.custom.length + ' yours' : '');
+  b.className = 'badge bgn';
+}
+function lcFillMachines() {
+  const dl = document.getElementById('lcMachineList'); if (!dl || typeof workers === 'undefined') return;
+  dl.innerHTML = workers.filter(function(w){ return w && w.ip; }).slice(0, 3000).map(function(w){
+    return '<option value="' + escHtml((w.name || w.ip) + ' — ' + w.ip + (w.farm ? ' — ' + w.farm : '')) + '"></option>';
+  }).join('');
+}
+function loadLogRules() {
+  lcFillMachines();
+  authFetch('/api/alerts/log-rules').then(function(d){
+    if (!d || !d.ok) { const b = document.getElementById('lcBadge'); if (b) b.textContent = '—'; return; }
+    lcRules = { builtin: d.builtin, custom: d.custom }; lcBadge();
+  });
+}
+function lcFindMachine(v) {
+  v = String(v || '').trim(); if (!v) return null;
+  const ipm = v.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/);
+  const byIp = ipm ? workers.filter(function(w){ return w.ip === ipm[0]; }) : [];
+  if (byIp.length === 1) return byIp[0];
+  const name = v.split(' — ')[0].toLowerCase();
+  const hits = (byIp.length ? byIp : workers).filter(function(w){ return String(w.name || '').toLowerCase() === name; });
+  return hits.length === 1 ? hits[0] : (byIp[0] || hits[0] || null);
+}
+function lcShow(d, what) {
+  const el = document.getElementById('lcResult'); if (!el) return;
+  if (!d || !d.ok) { el.style.color = 'var(--red)'; el.textContent = '✗ ' + ((d && d.error) || 'Could not check'); return; }
+  el.style.color = 'var(--txt)';
+  const f = d.findings || [];
+  const snap = d.snapshot;
+  let nums = '';
+  if (snap && ((snap.fans && snap.fans.length) || (snap.chains && snap.chains.length))) {
+    nums = '<div style="font-size:11px;color:var(--mute);margin-top:6px">'
+      + (snap.fans && snap.fans.length ? 'Fans (RPM): ' + snap.fans.map(function(v, i){ return (i + 1) + '=' + (v === null ? '—' : v); }).join('  ') : '')
+      + (snap.chains && snap.chains.length ? (snap.fans && snap.fans.length ? ' · ' : '') + 'Chips: ' + snap.chains.map(function(c){ return 'chain ' + c.index + '=' + (c.asic === null || c.asic === undefined ? '—' : c.asic); }).join('  ') : '')
+      + '</div>';
+  } else if (what === 'machine') {
+    nums = '<div style="font-size:11px;color:var(--mute);margin-top:6px">No fan / chip numbers from this machine (agent older than v1.1.45, or the miner doesn\'t report them) &mdash; log lines only.</div>';
+  }
+  el.innerHTML = '<div style="font-size:11px;color:var(--mute);margin:8px 0 4px">' + escHtml((what === 'machine' && d.machine ? (d.machine.name || d.machine.ip) + ' (' + d.machine.ip + ') · ' : '') + d.lines + ' log lines checked')
+    + (what === 'machine' && d.log_tail ? ' · <a href="#" onclick="lcDownloadLog();return false">download log</a>' : '') + '</div>'
+    + (f.length ? f.map(function(x){
+        return '<div class="lc-find"><span class="lc-dot" style="background:' + (x.level === 'error' ? 'var(--red)' : 'var(--warn)') + '"></span>'
+          + escHtml(x.text) + (x.count > 1 ? ' <span style="color:var(--mute)">×' + x.count + '</span>' : '')
+          + ' <span style="color:var(--mute);font-size:11px">' + escHtml(x.source || '') + '</span>'
+          + (x.evidence ? '<span class="lc-ev">' + escHtml(x.evidence) + '</span>' : '') + '</div>';
+      }).join('')
+      : '<div class="lc-find" style="color:var(--mute)">No known error found. If this log does show a problem, add a rule for it under Rules.</div>')
+    + nums;
+  lcLast = d;
+}
+let lcLast = null;
+function lcDownloadLog() {
+  if (!lcLast || !lcLast.log_tail) return;
+  const m = lcLast.machine || {};
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([lcLast.log_tail], { type: 'text/plain' }));
+  a.download = ((m.name || m.ip || 'miner') + '_log.txt').replace(/[^A-Za-z0-9._-]+/g, '_');
+  document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+function logCheckMachine() {
+  const inp = document.getElementById('lcMachine');
+  const w = lcFindMachine(inp && inp.value);
+  if (!w) { toast('Choose a machine from the list (name or IP)', 'var(--warn)'); return; }
+  const btn = document.getElementById('lcCheckBtn'), el = document.getElementById('lcResult');
+  if (btn) btn.disabled = true;
+  if (el) { el.style.color = 'var(--mute)'; el.textContent = 'Reading the log from ' + (w.name || w.ip) + '…'; }
+  lcPost('/api/alerts/log-rules/test', { worker_id: w.id })
+    .then(function(d){ lcShow(d, 'machine'); })
+    .catch(function(e){ lcShow({ ok: false, error: e.message }); })
+    .then(function(){ if (btn) btn.disabled = false; });
+}
+function toggleLogPaste() {
+  const b = document.getElementById('lcPasteBox'); if (!b) return;
+  b.style.display = b.style.display === 'none' ? '' : 'none';
+  if (b.style.display === '') { const t = document.getElementById('lcPaste'); if (t) t.focus(); }
+}
+function logCheckPaste() {
+  const t = document.getElementById('lcPaste');
+  if (!t || !t.value.trim()) { toast('Paste a log first', 'var(--warn)'); return; }
+  lcPost('/api/alerts/log-rules/test', { log: t.value }).then(function(d){ lcShow(d, 'paste'); })
+    .catch(function(e){ lcShow({ ok: false, error: e.message }); });
+}
+function openLogRules() {
+  const go = function(){
+    lcDraft = { builtin: lcRules.builtin.map(function(r){ return Object.assign({}, r); }), custom: lcRules.custom.map(function(r){ return Object.assign({}, r); }) };
+    renderLogRules(); openSheet('logRulesSheet');
+  };
+  if (lcRules) go();
+  else authFetch('/api/alerts/log-rules').then(function(d){ if (d && d.ok) { lcRules = { builtin: d.builtin, custom: d.custom }; lcBadge(); go(); } else toast('✗ Could not load the rules', 'var(--red)'); });
+}
+function renderLogRules() {
+  const cl = document.getElementById('lcCustomList'), bl = document.getElementById('lcBuiltinList');
+  if (!lcDraft) return;
+  const tog = function(kind, i, on){ return '<label class="toggle" title="On / off"><input type="checkbox"' + (on ? ' checked' : '') + ' onchange="lcToggle(\'' + kind + '\',' + i + ',this.checked)"><span class="tsldr"></span></label>'; };
+  if (cl) cl.innerHTML = lcDraft.custom.length ? lcDraft.custom.map(function(r, i){
+      return '<div class="lc-row' + (r.enabled === false ? ' off' : '') + '">' + tog('custom', i, r.enabled !== false)
+        + '<div class="lc-msg">' + (r.level === 'warn' ? '<span class="lc-dot" style="background:var(--warn)"></span>' : '<span class="lc-dot" style="background:var(--red)"></span>') + escHtml(r.message)
+        + '<span class="lc-pat">' + escHtml(r.pattern) + '</span></div>'
+        + '<button class="btn btn-sm btn-ghost" type="button" title="Delete" onclick="lcDelete(' + i + ')"><svg class="ic sm"><use href="#i-trash"/></svg></button></div>';
+    }).join('') : '<div style="font-size:12px;color:var(--mute);padding:4px 0 2px">None yet.</div>';
+  if (bl) bl.innerHTML = lcDraft.builtin.map(function(r, i){
+      return '<div class="lc-row' + (r.enabled ? '' : ' off') + '">' + tog('builtin', i, r.enabled)
+        + '<div class="lc-msg"><span class="lc-dot" style="background:' + (r.level === 'error' ? 'var(--red)' : 'var(--warn)') + '"></span>' + escHtml(r.message)
+        + '<span class="lc-pat" title="' + escHtml(r.pattern) + '">' + escHtml(r.pattern) + '</span></div></div>';
+    }).join('');
+}
+function lcToggle(kind, i, on) { const r = lcDraft && lcDraft[kind][i]; if (!r) return; r.enabled = !!on; renderLogRules(); }
+function lcDelete(i) { if (!lcDraft) return; lcDraft.custom.splice(i, 1); renderLogRules(); }
+function addLogRule() {
+  const p = document.getElementById('lcNewPattern'), m = document.getElementById('lcNewMessage'), l = document.getElementById('lcNewLevel');
+  const pattern = (p && p.value || '').trim(), message = (m && m.value || '').trim();
+  if (!pattern || !message) { toast('Fill in both: the text in the log and the message', 'var(--warn)'); return; }
+  const rx = pattern.match(/^\/(.+)\/[a-z]*$/i);
+  if (rx) { try { new RegExp(rx[1], 'i'); } catch (e) { toast('Not a valid pattern: ' + e.message, 'var(--warn)'); return; } }
+  lcDraft.custom.push({ pattern: pattern, message: message, level: (l && l.value) === 'warn' ? 'warn' : 'error', enabled: true });
+  p.value = ''; m.value = '';
+  renderLogRules();
+}
+function saveLogRules() {
+  if (!lcDraft) return;
+  const p = document.getElementById('lcNewPattern'), m = document.getElementById('lcNewMessage');
+  if (p && m && (p.value.trim() || m.value.trim())) { toast('Press Add for the new rule first (or clear it)', 'var(--warn)'); return; }
+  const body = { disabled: lcDraft.builtin.filter(function(r){ return !r.enabled; }).map(function(r){ return r.id; }), custom: lcDraft.custom };
+  const btn = document.getElementById('lcSaveBtn'); if (btn) btn.disabled = true;
+  lcPost('/api/alerts/log-rules', body).then(function(d){
+    if (!d || !d.ok) { toast('✗ ' + ((d && d.error) || 'Could not save'), 'var(--red)'); return; }
+    lcRules = { builtin: d.builtin, custom: d.custom }; lcBadge();
+    closeSheet('logRulesSheet');
+    toast('✓ Log check rules saved', 'var(--green)');
+  }).catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); })
+    .then(function(){ if (btn) btn.disabled = false; });
 }
 
 // ── Auto-restart per machine (machine page + bulk on the Workers page) ──
