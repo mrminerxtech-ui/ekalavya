@@ -1786,7 +1786,7 @@ function renderSensorEntryGrid() {
       + '</div>'
 
       // IP Range input
-      + '<div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">IP Range <span style="text-transform:none;color:var(--cyan)">(optional — scans this range)</span></div>'
+      + '<div style="font-size:9px;color:var(--mute);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">IP range <span style="text-transform:none;color:var(--dim)">(optional)</span></div>'
       + '<input id="iprange_' + f.id + '" placeholder="192.168.13.1-255" value="' + (getSensorIpRange(f.id)||'') + '" style="width:100%;background:var(--bg);border:1px solid var(--b1);border-radius:4px;padding:6px 8px;color:var(--txt);font-family:Share Tech Mono,monospace;font-size:11px;outline:none;margin-bottom:8px">'
 
       // MAC address input
@@ -4457,9 +4457,8 @@ let histState = { wid: null, hours: 168, points: [], hoverX: null };
 // Telegram). Stored on the server; the alarm picks a change up within
 // one check (~3 min).
 function siteAlarmStatusText(d) {
-  return 'Alarm at ' + d.alarm_at + '+ offline at one site. After an alarm, the next one comes if 5 more go down, '
-    + 'or after the site recovers to ' + d.rearm_at + ' or fewer and then fails again.'
-    + (d.alarm_at === d.default_alarm_at ? ' (default)' : '');
+  return 'Next alarm after 5 more go down, or once the site is back to ' + d.rearm_at + ' or fewer.'
+    + (d.alarm_at === d.default_alarm_at ? ' Default.' : '');
 }
 function loadSiteAlarmSetting() {
   const st = document.getElementById('siteAlarmStatus');
@@ -4503,8 +4502,8 @@ function renderAutoRestart(d) {
   if (st) {
     st.style.color = 'var(--mute)';
     st.textContent = d.enabled
-      ? 'On — a machine at 0 hashrate for ' + d.minutes + ' min is rebooted, at most ' + d.max_per_day + '× a day.'
-      : 'Off — nothing is restarted automatically.';
+      ? 'On — rebooted after ' + d.minutes + ' min at 0 hashrate, at most ' + d.max_per_day + '× a day.'
+      : 'Off — machines with their own setting still follow it.';
   }
   arDefault = { enabled: !!d.enabled, minutes: d.minutes, max_per_day: d.max_per_day };
   renderArMachines(d.machines);
@@ -4713,91 +4712,155 @@ function renderPendingAgents() {
   const panel = document.getElementById('pendingAgentsPanel'), grid = document.getElementById('pendingAgentsGrid');
   const n = farmsState.pending.length;
   if (panel) panel.style.display = n ? '' : 'none';
-  const b = document.getElementById('pendingAgentsBadge'); if (b) b.textContent = n + ' waiting';
+  const b = document.getElementById('pendingAgentsBadge'); if (b) b.textContent = n;
   if (!grid) return;
   grid.innerHTML = farmsState.pending.map(function(p){
     const sug = p.suggested_farm_id && farmById(p.suggested_farm_id);
-    return '<div class="card"><div class="card-head"><span class="sdot on"></span><div><div style="font-family:Exo 2,sans-serif;font-weight:700">' + escHtml(p.hostname || 'Unknown PC') + '</div>'
-      + '<div style="font-size:10px;color:var(--mute)">' + escHtml((p.ips || []).join(', ') || 'no IP reported') + (p.version ? ' &middot; v' + escHtml(p.version) : '') + '</div></div>'
-      + '<span class="badge bwn" style="margin-left:auto">NEW</span></div>'
-      + '<div class="card-body"><div class="card-row"><span class="ck">Networks</span><span class="cv" style="font-family:Share Tech Mono,monospace">' + escHtml((p.subnets || []).join(', ') || '—') + '</span></div>'
-      + (sug ? '<div class="card-row"><span class="ck">Looks like</span><span class="cv g">' + escHtml(sug.name) + '</span></div>' : '')
-      + (p.key_ok ? '' : '<div class="card-row"><span class="ck" style="color:var(--warn)">&#9888; Agent key</span><span class="cv" style="color:var(--warn)">different &mdash; assign only if you know this PC</span></div>')
-      + '</div><div class="card-foot"><button class="btn btn-sm btn-g" type="button" onclick="assignPendingPc(\'' + escAttr(p.pc_id) + '\')">Choose farm</button></div></div>';
+    return '<div class="pend"><span class="sdot on"></span><b>' + escHtml(p.hostname || 'Unknown PC') + '</b>'
+      + '<span class="mono">' + escHtml([(p.ips || []).join(', '), (p.subnets || []).join(', ')].filter(Boolean).join(' · ')) + '</span>'
+      + (sug ? '<span class="chip ok">looks like ' + escHtml(sug.name) + '</span>' : '')
+      + (p.key_ok ? '' : '<span class="chip warn">key differs<span class="tip" tabindex="0" data-tip="This PC&rsquo;s agent key doesn&rsquo;t match the server&rsquo;s AGENT_KEYS. Only assign it if you know this PC.">i</span></span>')
+      + '<button class="abtn active" type="button" onclick="assignPendingPc(\'' + escAttr(p.pc_id) + '\')">Choose farm</button></div>';
   }).join('');
+}
+
+function renderRaSummary() {
+  const el = document.getElementById('raSummary'); if (!el) return;
+  const farms = farmsState.farms;
+  const pcsOn = farms.reduce(function(n, f){ return n + (f.pcs || []).filter(function(p){ return p.online; }).length; }, 0);
+  const pcs = farms.reduce(function(n, f){ return n + (f.pcs || []).length; }, 0);
+  const machines = farms.reduce(function(n, f){ return n + (f.machines || 0); }, 0);
+  const online = farms.reduce(function(n, f){ return n + (f.networks || []).reduce(function(m, x){ return m + x.online; }, 0); }, 0);
+  el.innerHTML = '<span class="pill"><b>' + farms.length + '</b> farms</span>'
+    + '<span class="pill"><span class="sdot ' + (pcsOn === pcs && pcs ? 'on' : 'off') + '"></span><b>' + pcsOn + '/' + pcs + '</b> agents online</span>'
+    + '<span class="pill"><b>' + online + '/' + machines + '</b> machines online</span>'
+    + (farmsState.pending.length ? '<span class="pill" style="border-color:rgba(251,191,36,.45);color:#fcd34d"><b style="color:#fcd34d">' + farmsState.pending.length + '</b> waiting for a farm</span>' : '');
 }
 
 function renderFarmsPanel() {
   const el = document.getElementById('farmsList'); if (!el) return;
-  const b = document.getElementById('farmsBadge'); if (b) b.textContent = farmsState.farms.length + ' farm' + (farmsState.farms.length === 1 ? '' : 's');
-  if (!farmsState.farms.length) { el.innerHTML = '<div style="color:var(--mute);font-size:12px">No farms yet &mdash; they appear when an agent PC is given one.</div>'; return; }
-  // same name twice = a duplicate to merge; show the internal id then
+  const b = document.getElementById('farmsBadge'); if (b) b.textContent = farmsState.farms.length;
+  renderRaSummary();
+  if (!farmsState.farms.length) { el.innerHTML = '<div style="color:var(--mute);font-size:12.5px;padding:6px 2px">No farms yet &mdash; they appear when an agent PC is given one.</div>'; return; }
   const nameCount = {}; farmsState.farms.forEach(function(f){ nameCount[f.name] = (nameCount[f.name] || 0) + 1; });
-  el.innerHTML = farmsState.farms.map(function(f){
-    const dup = nameCount[f.name] > 1;
-    const pcs = (f.pcs || []).map(function(pc){
-      return '<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;margin-top:4px">'
-        + '<span class="sdot ' + (pc.online ? 'on' : 'off') + '"></span><span>' + escHtml(pc.hostname || 'PC') + '</span>'
-        + '<span style="color:var(--mute)">' + escHtml((pc.ips || []).join(', ')) + (pc.older_agent ? ' &middot; older agent (update pending)' : '') + '</span>'
-        + (pc.pc_id ? '<button class="abtn" type="button" style="margin-left:auto" onclick="changePcFarm(\'' + escAttr(pc.pc_id) + '\')">Move to farm&hellip;</button>' : '')
-        + (pc.pc_id && !pc.online ? '<button class="abtn" type="button" title="Forget this PC (it waits as new if it ever comes back)" onclick="forgetPc(\'' + escAttr(pc.pc_id) + '\')">Forget</button>' : '')
-        + '</div>';
-    }).join('');
-    const canDelete = !f.machines && !(f.pcs || []).length && !f.online;
-    return '<div style="border-top:1px solid var(--b1);padding:10px 0">'
-      + '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
-      + '<span class="sdot ' + (f.online ? 'on' : 'off') + '"></span>'
-      + '<b style="font-family:Exo 2,sans-serif;font-size:13.5px">' + escHtml(f.name) + '</b>'
-      + (dup || f.name !== f.farm_id ? '<span style="font-family:Share Tech Mono,monospace;font-size:10.5px;color:' + (dup ? 'var(--warn)' : 'var(--mute)') + '">' + escHtml(f.farm_id) + (dup ? ' &middot; same name as another farm' : '') + '</span>' : '')
-      + '<span style="font-size:11.5px;color:var(--mute)">' + f.machines + ' machine' + (f.machines === 1 ? '' : 's') + '</span>'
-      + '<span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">'
-      + '<button class="abtn" type="button" onclick="openRanges(\'' + escAttr(f.farm_id) + '\')">&#x1F310; IP ranges</button>'
-      + '<button class="abtn" type="button" onclick="renameFarmUi(\'' + escAttr(f.farm_id) + '\')">&#x270E; Rename</button>'
-      + (farmsState.farms.length > 1 ? '<button class="abtn" type="button" onclick="mergeFarmUi(\'' + escAttr(f.farm_id) + '\')">Merge into&hellip;</button>' : '')
-      + (canDelete ? '<button class="abtn" type="button" style="color:var(--red)" onclick="deleteFarmUi(\'' + escAttr(f.farm_id) + '\')">Delete</button>' : '')
-      + '</span></div>'
-      + (pcs || '<div style="font-size:11.5px;color:var(--mute);margin-top:4px">No agent PC on this farm</div>')
-      + pollingLine(f)
-      + '</div>';
-  }).join('');
+  el.innerHTML = farmsState.farms.map(function(f){ return farmCard(f, nameCount[f.name] > 1); }).join('');
 }
 
-// "Polling: … (from …) · N addresses · cycle Ns" under each farm
-function pollingLine(f) {
+function farmCard(f, dup) {
+  const nets = f.networks || [];
+  const inService = nets.reduce(function(n, x){ return n + x.total; }, 0);
+  const online = nets.reduce(function(n, x){ return n + x.online; }, 0);
+  const repair = Math.max(0, (f.machines || 0) - inService);
+  const pc = (f.pcs || [])[0];
+  const ag = (agents || []).find(function(a){ return a.id === f.farm_id; });
   const p = f.polling;
   const set = (f.subnets || []).length;
-  let txt, col = 'var(--mute)';
-  // networks of THIS farm's machines, with how many are online on each —
-  // a whole network at 0 online almost always means it isn't polled
-  const nets = (f.networks || []).map(function(n){
-    const dark = n.total >= 3 && n.online === 0;
-    return '<span style="color:' + (dark ? 'var(--warn)' : 'var(--mute)') + '">' + escHtml(n.net) + '.x ' + n.online + '/' + n.total + (dark ? ' &#9888;' : '') + '</span>';
-  }).join(' &middot; ');
-  const darkNets = (f.networks || []).filter(function(n){ return n.total >= 3 && n.online === 0; });
-  // ranges set on this farm that cover ANOTHER farm's machines
+  // alerts, short — the detail is in each chip's tip
+  const alerts = [];
+  const dark = nets.filter(function(n){ return n.total >= 3 && n.online === 0; });
+  if (f.online && dark.length) alerts.push('<span class="chip warn">&#9888; ' + dark.length + ' network' + (dark.length > 1 ? 's' : '') + ' dark<span class="tip" tabindex="0" data-tip="No machine online on ' + escAttr(dark.map(function(n){ return n.net + '.x'; }).join(', ')) + '. If those machines are running, the network isn&rsquo;t being polled &mdash; add it in IP ranges.">i</span></span>');
   const foreign = [];
   if (set) farmsState.farms.forEach(function(g){
     if (g.farm_id === f.farm_id) return;
-    (g.known_subnets || []).forEach(function(n){ if (rangeCovers(f.subnets, n.split('.').slice(0, 3).join('.') + '.1')) foreign.push(g.name + ' (' + n + ')'); });
+    (g.known_subnets || []).forEach(function(n){ if (rangeCovers(f.subnets, n.split('.').slice(0, 3).join('.') + '.1')) foreign.push(g.name + ' ' + n); });
   });
-  const extra = (nets ? '<br>Machines by network: ' + nets : '')
-    + (darkNets.length ? '<br><span style="color:var(--warn)">&#9888; No machine online on ' + escHtml(darkNets.map(function(n){ return n.net + '.x'; }).join(', ')) + ' — if they are running, that network isn’t being polled: add it in IP ranges.</span>' : '')
-    + (foreign.length ? '<br><span style="color:var(--red)">&#9888; The IP ranges set here cover another farm’s machines: ' + escHtml(foreign.join(', ')) + '. Unless both sites really use the same network numbers, remove them (IP ranges → Use automatic) — this PC can’t see that farm’s machines.</span>' : '');
-  if (p) {
-    txt = 'Polling ' + (p.subnets || []).join(', ') + ' <span style="color:var(--mute)">&middot; ' + escHtml(p.from || '') + ' &middot; '
-        + p.addresses + ' addresses &middot; cycle ' + Math.round((p.cycle_ms || 0) / 1000) + ' s &middot; ' + p.found + ' found</span>';
-    col = 'var(--txt)';
-    // machines on a network the agent doesn't poll → they can only show offline
-    const polled = (p.subnets || []).join(' ');
-    const missing = (f.known_subnets || []).filter(function(n){ const pre = n.split('.').slice(0, 3).join('.') + '.'; return polled.indexOf(pre) === -1 && !rangeCovers(p.subnets || [], pre + '1'); });
-    if (missing.length) txt += '<br><span style="color:var(--warn)">&#9888; Machines are also on ' + escHtml(missing.join(', ')) + ', which is not polled &mdash; they show offline. Add it in IP ranges.</span>';
-  } else if (f.online) {
-    txt = 'Waiting for the first poll report' + (set ? ' &middot; ranges set: ' + escHtml(f.subnets.join(', ')) : '') + ' <span style="color:var(--mute)">(agents older than v1.1.43 don’t report it)</span>';
-  } else {
-    txt = set ? 'Ranges set: ' + escHtml(f.subnets.join(', ')) : 'Automatic ranges';
+  if (foreign.length) alerts.push('<span class="chip bad">&#9888; ranges overlap ' + escHtml(foreign[0].split(' ')[0]) + '<span class="tip" tabindex="0" data-tip="These IP ranges cover another farm&rsquo;s machines (' + escAttr(foreign.join(', ')) + '). Unless both sites use the same network numbers, open IP ranges and choose Use automatic.">i</span></span>');
+  if (p && f.known_subnets) {
+    const missing = f.known_subnets.filter(function(n){ return !rangeCovers(p.subnets || [], n.split('.').slice(0, 3).join('.') + '.1'); });
+    if (missing.length) alerts.push('<span class="chip warn">&#9888; ' + missing.length + ' not polled<span class="tip" tabindex="0" data-tip="Machines are on ' + escAttr(missing.join(', ')) + ', which this agent doesn&rsquo;t poll, so they show offline. Add it in IP ranges.">i</span></span>');
   }
-  return '<div style="font-size:11.5px;margin-top:6px;font-family:Share Tech Mono,monospace;color:' + col + ';line-height:1.5">' + txt + extra + '</div>';
+  if (dup) alerts.push('<span class="chip warn">duplicate name<span class="tip" tabindex="0" data-tip="Another farm has the same name. If it&rsquo;s the same site, use &#8943; &rarr; Merge into&hellip; on the one to remove.">i</span></span>');
+  if (ag && ag.crash_count_5m > 0) alerts.push('<span class="chip bad">&#9888; ' + ag.crash_count_5m + ' agent restarts (5 min)</span>');
+
+  const netChips = nets.map(function(n){
+    const cls = n.online === n.total ? 'ok' : (n.total >= 3 && n.online === 0 ? 'warn' : '');
+    return '<span class="chip ' + cls + '">' + escHtml(n.net) + '.x <b style="color:inherit">' + n.online + '/' + n.total + '</b></span>';
+  }).join('');
+
+  const pcLine = pc
+    ? '<div class="fc-line"><svg class="ic sm"><use href="#i-monitor"/></svg><span class="sdot ' + (pc.online ? 'on' : 'off') + '"></span><span class="t"><b>' + escHtml(pc.hostname || 'PC') + '</b> &middot; ' + escHtml((pc.ips || [])[0] || '—')
+      + ((ag && ag.agent_version) || pc.version ? ' &middot; v' + escHtml((ag && ag.agent_version) || pc.version) : '') + (pc.older_agent ? ' &middot; update pending' : '') + '</span></div>'
+    : '<div class="fc-line"><svg class="ic sm"><use href="#i-monitor"/></svg><span class="t">No agent PC</span></div>';
+  const pollTxt = p
+    ? (p.subnets || []).length + ' range' + ((p.subnets || []).length === 1 ? '' : 's') + ' &middot; ' + p.addresses + ' addresses &middot; ' + Math.round((p.cycle_ms || 0) / 1000) + ' s cycle'
+    : (set ? 'Custom ranges' : 'Automatic ranges');
+  const pollTip = p ? (p.subnets || []).join(', ') + ' (' + (p.from || '') + ') · ' + p.found + ' found last cycle'
+    : (set ? f.subnets.join(', ') : 'LOCAL_SUBNET + the networks this farm’s machines are on') + (f.online ? ' · agents from v1.1.43 report exactly what they poll' : '');
+  const pollLine = '<div class="fc-line"><svg class="ic sm"><use href="#i-globe"/></svg><span class="t">' + pollTxt + '</span><span class="tip" tabindex="0" data-tip="' + escAttr(pollTip) + '">i</span></div>';
+
+  return '<div class="fcard' + (f.online ? '' : ' off') + '">'
+    + '<div class="fc-h"><span class="sdot ' + (f.online ? 'on' : 'off') + '"></span><b title="' + escAttr(f.name) + '">' + escHtml(f.name) + '</b>'
+    + (dup || f.name !== f.farm_id ? '<span class="fc-id">' + escHtml(f.farm_id) + '</span>' : '')
+    + '<button class="fc-more" type="button" title="More" onclick="farmMenu(event,\'' + escAttr(f.farm_id) + '\')">&#8943;</button></div>'
+    + '<div class="fc-k"><div class="g"><b>' + online + '</b><span>Online</span></div><div class="' + (inService - online ? 'r' : '') + '"><b>' + (inService - online) + '</b><span>Offline</span></div>'
+    + '<div><b>' + (f.machines || 0) + '</b><span>' + (repair ? repair + ' in repair' : 'Machines') + '</span></div></div>'
+    + (netChips ? '<div class="chips">' + netChips + '</div>' : '')
+    + pcLine + pollLine
+    + (alerts.length ? '<div class="chips">' + alerts.join('') + '</div>' : '')
+    + '<div class="fc-a">'
+    + (f.online ? '<button class="abtn" type="button" onclick="triggerScan(\'' + escAttr(f.farm_id) + '\')"><svg class="ic sm"><use href="#i-search"/></svg>Scan</button>' : '')
+    + '<button class="abtn" type="button" onclick="openRanges(\'' + escAttr(f.farm_id) + '\')"><svg class="ic sm"><use href="#i-globe"/></svg>IP ranges</button></div>'
+    + '</div>';
 }
+
+// ⋯ menu on a farm card
+function farmMenu(ev, fid) {
+  ev.stopPropagation();
+  closeMenus();
+  const f = farmById(fid); if (!f) return;
+  const pc = (f.pcs || [])[0];
+  const ag = (agents || []).find(function(a){ return a.id === fid; });
+  const items = [
+    ['&#x270E; Rename farm', 'renameFarmUi', fid],
+    pc && pc.pc_id ? ['&#8644; Move PC to another farm', 'changePcFarm', pc.pc_id] : null,
+    farmsState.farms.length > 1 ? ['&#10549; Merge into another farm', 'mergeFarmUi', fid] : null,
+    'hr',
+    pc && pc.pc_id && !pc.online ? ['Forget this PC', 'forgetPc', pc.pc_id, 'danger'] : null,
+    ag && !ag.online ? ['Remove offline agent', 'removeAgent', fid, 'danger'] : null,
+    !f.machines && !(f.pcs || []).length && !f.online ? ['Delete empty farm', 'deleteFarmUi', fid, 'danger'] : null,
+  ].filter(Boolean);
+  while (items.length && items[items.length - 1] === 'hr') items.pop();
+  const m = document.createElement('div');
+  m.className = 'menu-pop';
+  m.innerHTML = items.map(function(it){
+    if (it === 'hr') return '<hr>';
+    return '<button type="button" class="' + (it[3] || '') + '" data-fn="' + it[1] + '" data-arg="' + escAttr(it[2]) + '">' + it[0] + '</button>';
+  }).join('');
+  document.body.appendChild(m);
+  const r = ev.currentTarget.getBoundingClientRect();
+  const w = m.offsetWidth, h = m.offsetHeight;
+  m.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w)) + 'px';
+  m.style.top = (r.bottom + 6 + h > window.innerHeight ? Math.max(8, r.top - h - 6) : r.bottom + 6) + 'px';
+  m.addEventListener('click', function(e){
+    const bt = e.target.closest('button'); if (!bt) return;
+    closeMenus();
+    const fn = window[bt.getAttribute('data-fn')]; if (typeof fn === 'function') fn(bt.getAttribute('data-arg'));
+  });
+}
+function closeMenus() { document.querySelectorAll('.menu-pop').forEach(function(m){ m.remove(); }); }
+document.addEventListener('click', function(e){ if (!e.target.closest('.menu-pop')) closeMenus(); });
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape') { closeMenus(); hideTip(); } });
+window.addEventListener('scroll', closeMenus, true);
+
+// ⓘ tips: one floating box, kept inside the screen (works with tap on phones)
+let tipEl = null;
+function showTip(t) {
+  const txt = t.getAttribute('data-tip'); if (!txt) return;
+  if (!tipEl) { tipEl = document.createElement('div'); tipEl.id = 'tipPop'; document.body.appendChild(tipEl); }
+  tipEl.innerHTML = txt; tipEl.style.display = 'block';
+  const r = t.getBoundingClientRect(), w = tipEl.offsetWidth, h = tipEl.offsetHeight;
+  tipEl.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2)) + 'px';
+  tipEl.style.top = (r.bottom + 8 + h > window.innerHeight ? Math.max(8, r.top - h - 8) : r.bottom + 8) + 'px';
+}
+function hideTip() { if (tipEl) tipEl.style.display = 'none'; }
+document.addEventListener('mouseover', function(e){ const t = e.target.closest && e.target.closest('.tip'); if (t) showTip(t); });
+document.addEventListener('mouseout', function(e){ const t = e.target.closest && e.target.closest('.tip'); if (t && !t.contains(e.relatedTarget)) { if (document.activeElement !== t) hideTip(); } });
+document.addEventListener('focusin', function(e){ const t = e.target.closest && e.target.closest('.tip'); if (t) showTip(t); else hideTip(); });
+document.addEventListener('focusout', function(e){ if (e.target.closest && e.target.closest('.tip')) hideTip(); });
+window.addEventListener('scroll', hideTip, true);
+
+// keep the farm cards fresh while Remote Access is open
+setInterval(function(){ const pg = document.getElementById('page-agents'); if (pg && pg.classList.contains('active')) loadFarms(); }, 30000);
 
 // Same range formats as the agent (agent.js subnetToIPs), for the count
 // shown while typing and for the "not polled" warning.
