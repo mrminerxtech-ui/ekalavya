@@ -1,8 +1,10 @@
 {
-  "version": "1.1.39",
-  "released_at": "2026-09-28T14:20:09Z",
+  "version": "1.1.41",
+  "released_at": "2026-09-28T22:36:27Z",
   "min_node_version": "16.0.0",
   "changelog": [
+    "One agent per PC, enforced PC-wide (new agent-guard.js). The old guard was a lock file in the agent's own folder, so a second copy in another folder never saw it, and START.bat opened while PM2 already ran the updater started a second updater that restarted its refused agent forever while both rewrote the agent files. Now the running updater and agent each hold a loopback port (127.0.0.1:47811 / 47812): any second copy, from any folder, is refused with the farm, folder and process that is already running; Windows frees the port the moment a process dies, so a crash never leaves a stale lock. A refused agent under an updater exits with code 3 and the updater checks again every minute (no restart loop, message shown once); a refused copy under PM2 stands by and takes over if the other stops. If the port is used by an unrelated program the old folder lock is used instead. 'node agent-guard.js --status' shows what runs; '--stop-others' (used by SETUP-WINDOWS.bat) stops every other Ekalavya agent on the PC.",
+    "Fix Braiins OS 26.x showing 'Miner info: missing trailer' and empty Hardware Information / Hashboards through the web UI tunnel. Its dashboard calls the miner's gRPC-web API (GetMinerDetails, GetHashboards, GetMetadata…) with binary protobuf bodies; those bodies are now forwarded as raw bytes (base64 over the agent link, body_encoding) instead of being lost, the reply's grpc-status / grpc-message headers are returned (a call's result lives there when the reply has no body — dropping them is what the browser reported as 'missing trailer'), x-grpc-web / x-user-agent / grpc-timeout are passed to the miner, and the agent's root/root Basic header is no longer added to gRPC calls (gRPC reads Authorization as its own login token, so ours looked like an invalid token).",
     "Relay live WebSockets from a miner's web UI through the tunnel. Braiins OS 26.x streams its whole dashboard (hashrate, chip temperature, fans, hashboards, pools) over a GraphQL WebSocket at /graphql; the backend refused every socket under /api/webui/, so the page logged in and drew its layout but every panel spun forever ('WebSocket connection to wss://…/graphql failed'). The backend now asks the agent to open the socket to the miner (webui_ws_open, with the page's sub-protocol, the miner's own session cookie and Origin http://<miner-ip>), accepts the browser's socket only once the miner has answered, and relays frames both ways (text and binary). Up to 30 live sockets per agent; all are closed if the agent's connection to the backend drops. A socket on another port of the miner (Goldshell's :443 pool-test socket) keeps that port.",
     "Fix Braiins OS 26.x miners not staying logged in through the web UI tunnel: the password was accepted, then the login page came straight back. The agent passed only Content-Type to the miner and returned only Content-Type/Location, so the miner's session cookie (set on /graphql login) never reached the browser and was never sent back, and any Authorization header the miner's own page added was overwritten by the agent's root/root login. The page's Cookie, Accept and Authorization headers are now forwarded to the miner (root/root is only used when the page sends none), and the miner's Set-Cookie is returned to the backend, which scopes it to that miner's tunnel folder.",
     "Fix the ElphaPEX at 19.3.19.46 (and any HTTP-only miner) showing offline with no hashrate while every other field was filled in: its web server answers only one connection at a time, but each poll fired summary.cgi (hashrate), stats.cgi, pools.cgi and the hardware-ID cascade (up to 8 more requests, mostly other brands' endpoints) at it simultaneously. Model, worker, pool, MAC and serial are kept from any cycle that got through, so they filled in over time, but hashrate must arrive in the current cycle and summary.cgi kept losing the race - hashrate 0, status offline. HTTP-only units are now read one request at a time: hashrate first (with one retry), then temp/fan, then pools; hardware IDs only until found, then re-checked every 30 minutes. Machines with the cgminer port (Antminer, Avalon, etc.) are polled exactly as before.",
@@ -23,8 +25,13 @@
   "files": [
     {
       "name": "agent.js",
-      "sha256": "ce4b21c32f53abf858bdf30d18ca8cba36a8a1ea11e3c04a7a69056783a0ef8e",
-      "size": 105758
+      "sha256": "7fe9264b345fb943f2399f5c163ed123f37222cab9778b57b3c12116849ad915",
+      "size": 109489
+    },
+    {
+      "name": "agent-guard.js",
+      "sha256": "1f049911ed40c6dc69e74ff6e178b4f628d049d901c460efbce65a87312f4919",
+      "size": 10424
     },
     {
       "name": "sonoff-th.js",
