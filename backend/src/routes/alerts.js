@@ -64,4 +64,46 @@ router.post('/auto-restart', authMiddleware, requireRole('admin', 'manager'), as
   res.json({ ...r, log: autorestart.getLog(), machines: autorestart.listOverrides() });
 });
 
+// ── Log checks (known error patterns → messages; no AI) ────────────
+const logCheck = require('../services/logDiagnosis');
+
+// GET /api/alerts/log-rules → { ok, builtin:[{id,level,message,pattern,enabled}], custom:[…] }
+router.get('/log-rules', authMiddleware, staffOnly, async (req, res) => {
+  res.json({ ok: true, ...logCheck.listRules(await logCheck.loadRules(true)) });
+});
+
+// POST /api/alerts/log-rules  { disabled:[builtin ids], custom:[{pattern, message, level, enabled}] }
+router.post('/log-rules', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+  const who = (req.user && (req.user.name || req.user.id)) || 'unknown';
+  const r = await logCheck.saveRules(req.body || {}, who);
+  if (!r.ok) return res.status(400).json(r);
+  console.log(`[LOG-CHECK] Rules changed by ${who}: ${r.rules.disabled.length} built-in off, ${r.rules.custom.length} own rule(s)`);
+  res.json({ ok: true, ...logCheck.listRules(r.rules) });
+});
+
+// Try the rules on a pasted log, or on a machine's log fetched right now
+// (nothing is posted to Telegram).
+// POST /api/alerts/log-rules/test  { log } | { worker_id }
+router.post('/log-rules/test', authMiddleware, staffOnly, async (req, res) => {
+  const b = req.body || {};
+  let text = typeof b.log === 'string' ? b.log : null, snapshot = null, machine = null;
+  if (text === null && b.worker_id) {
+    const db = require('../services/db');
+    const agentMgr = require('../services/agentManager');
+    const w = (await db.loadWorkers()).find(x => x && String(x.id) === String(b.worker_id));
+    if (!w) return res.status(404).json({ ok: false, error: 'Machine not found' });
+    if (!agentMgr.getAgent(w.farm_id)) return res.status(409).json({ ok: false, error: 'That farm\'s agent is offline' });
+    let r;
+    try { r = await agentMgr.sendActionRequest(w.farm_id, w.ip, 'downloadlogs', { brand: w.brand, model: w.model, with_snapshot: true }); }
+    catch (e) { r = { ok: false, error: e.message }; }
+    if (!r || !r.ok || !r.logs) return res.status(502).json({ ok: false, error: (r && r.error) || 'The miner sent no log' });
+    text = String(r.logs); snapshot = r.snapshot || null;
+    machine = { name: w.name, ip: w.ip, model: w.model, farm: w.farm };
+  }
+  if (text === null) return res.status(400).json({ ok: false, error: 'Paste a log or choose a machine' });
+  const d = await logCheck.diagnose(text, snapshot);
+  res.json({ ok: true, machine, findings: d.findings, lines: d.checked, snapshot,
+             caption: logCheck.captionList(d.findings), log_tail: machine ? text.slice(-200000) : undefined });
+});
+
 module.exports = router;
