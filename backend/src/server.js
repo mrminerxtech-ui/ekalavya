@@ -18,6 +18,7 @@ process.on('unhandledRejection', (reason) => {
 const express     = require('express');
 const http        = require('http');
 const WebSocket   = require('ws');
+const db          = require('./services/db');
 const cors        = require('cors');
 const helmet      = require('helmet');
 const compression = require('compression');
@@ -91,6 +92,7 @@ app.use('/api/stats',     statsRoutes);
 app.use('/api/actions',   actionsRoutes);
 app.use('/api/customers', customerRoutes);
 app.use('/api/agents',    agentRoutes);
+app.use('/api/farms',     require('./routes/farms'));
 app.use('/api/logs',      logRoutes);
 app.use('/api/sensors',   sensorRoutes);
 app.use('/api/scada',     scadaRoutes);
@@ -137,6 +139,7 @@ require('./services/alerts').start();
 // Reboots machines that are reachable but at 0 hashrate for N minutes —
 // OFF until switched on in Settings. See services/autorestart.js.
 require('./services/autorestart').start();
+require('./services/farms').load().then(r => console.log(`[FARMS] ${Object.keys(r.farms).length} farm(s), ${Object.keys(r.agents).length} agent PC(s) known`)).catch(e => console.error('[FARMS] load failed:', e.message));
 
 // Finds and merges duplicate machine records (same machine recorded twice
 // after an IP change) every 10 minutes — the automatic version of the
@@ -211,46 +214,81 @@ const VALID_KEYS = (process.env.AGENT_KEYS || 'ekalavya123')
 
 agentWss.on('connection', (ws, req) => {
   const key      = req.headers['x-agent-key']     || '';
-  const farmId   = req.headers['x-farm-id']       || 'farm-' + Date.now();
-  const farmName = req.headers['x-farm-name']     || farmId;
-  const subnet   = req.headers['x-subnet']        || '192.168.1.0/24';
-  const hostname = req.headers['x-hostname']      || 'unknown';
+  const pcId     = String(req.headers['x-agent-pc-id'] || '').slice(0, 64) || null;   // agents from v1.1.42
+  const envFarm  = req.headers['x-farm-id']       || '';   // only when the PC's .env names a farm
+  const farmNameHdr = req.headers['x-farm-name']  || '';
+  const subnet   = req.headers['x-subnet']        || '';
+  const hostname = String(req.headers['x-hostname'] || 'unknown').slice(0, 80);
   const version  = req.headers['x-agent-version'] || '1.0.0';
+  const ips      = String(req.headers['x-local-ips'] || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 16);
+  const keyOk    = VALID_KEYS.includes(key);
 
-  if (!VALID_KEYS.includes(key)) {
-    console.warn(`[AGENT] ✗ Bad key from "${farmName}" — key starts with "${key.slice(0,8)}"`);
-    console.warn(`[AGENT]   Railway AGENT_KEYS = "${process.env.AGENT_KEYS || '(not set)'}"`);
-    console.warn(`[AGENT]   Fix: set AGENT_KEYS in Railway to match agent's AGENT_KEY`);
+  // An old agent (no PC id) still needs the real key and its .env farm.
+  if (!pcId && !keyOk) {
+    console.warn(`[AGENT] ✗ Bad key from "${farmNameHdr || envFarm}" — key starts with "${key.slice(0,8)}"`);
+    console.warn(`[AGENT]   Railway AGENT_KEYS = "${process.env.AGENT_KEYS ? '(set)' : '(not set)'}"`);
     ws.close(4001, 'Invalid agent key');
     return;
   }
-  console.log(`[AGENT] ✓ Connected — ${farmName} (${farmId})`);
 
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
+  ws.on('error', err => console.error(`[AGENT][${hostname}]`, err.message));
 
-  // Refused as a duplicate: the socket is already closed, and wiring up
-  // handlers for it would let a rejected agent keep feeding the fleet.
-  const accepted = agentMgr.registerAgent(ws, {
-    farm_id: farmId, farm_name: farmName, subnet, hostname, agent_version: version,
-  });
-  if (accepted === false) return;
-
+  // Messages that arrive while the farm is being looked up are held,
+  // then handled in order.
+  let farmId = null, held = [], isPending = false;
   ws.on('message', async (raw) => {
-    try {
-      const msg = JSON.parse(raw);
-      await agentMgr.handleAgentMessage(farmId, msg);
-    } catch (e) {
-      // Isolated to this one farm's message — never lets a problem
-      // with one agent's data affect any other agent's connection
-      console.error(`[AGENT][${farmId}] Message handling error (isolated, other farms unaffected):`, e.message);
-    }
+    if (!farmId && !isPending) { held.push(raw); return; }
+    handle(raw);
   });
-  // Pass the socket itself — unregisterAgent needs to know whether the
-  // socket that just closed is still the registered one, or a stale
-  // predecessor whose close arrived after the agent already reconnected.
-  ws.on('close', () => agentMgr.unregisterAgent(farmId, ws));
-  ws.on('error', err => console.error(`[AGENT][${farmId}]`, err.message));
+  async function handle(raw) {
+    let msg; try { msg = JSON.parse(raw); } catch (e) { return; }
+    if (isPending) {
+      // A PC waiting for its farm only gets heartbeat acks, so its
+      // watchdog stays calm; everything else it sends is ignored.
+      if (msg.type === 'heartbeat' && ws.readyState === 1) { try { ws.send(JSON.stringify({ type: 'heartbeat_ack' })); } catch (e) {} }
+      return;
+    }
+    try { await agentMgr.handleAgentMessage(farmId, msg); }
+    catch (e) { console.error(`[AGENT][${farmId}] Message handling error (isolated, other farms unaffected):`, e.message); }
+  }
+
+  const farms = require('./services/farms');
+  farms.resolveAgent({ pcId, legacyFarmId: envFarm, legacySource: req.headers['x-farm-id-source'] || 'env',
+                       legacyName: farmNameHdr, hostname, keyOk, ips, subnets: subnet ? subnet.split(',') : [], version })
+  .then(async r => {
+    if (ws.readyState !== 1) return;
+    if (r.pending) {
+      isPending = true; held = [];
+      const workers = await db.loadWorkers().catch(() => []);
+      const online = new Set(agentMgr.getAgents().map(a => a.farm_id));
+      const ok = farms.addPending({ pc_id: pcId, hostname, ips, subnets: subnet ? subnet.split(',') : [], version,
+        connected_at: new Date().toISOString(), ws, key_ok: keyOk, suggested_farm_id: farms.suggestFarm(ips, online, workers) });
+      if (!ok) { ws.close(4029, 'Too many new agents waiting'); return; }
+      console.log(`[AGENT] ⏳ New PC "${hostname}" (${ips.join(', ') || 'no IP'}) is waiting — choose its farm in Remote Access`);
+      try { ws.send(JSON.stringify({ type: 'pending', pc_id: pcId, message: 'Waiting for this PC to be given a farm in the app (Remote Access → New agents).' })); } catch (e) {}
+      try { require('./websocket').broadcast({ type: 'agent_pending', pc_id: pcId, hostname }); } catch (e) {}
+      ws.on('close', () => farms.removePending(pcId, ws));
+      return;
+    }
+    console.log(`[AGENT] ✓ Connected — ${r.farm_name} (${r.farm_id}) from ${hostname}${pcId ? '' : ' [older agent]'}`);
+    // Refused as a duplicate: the socket is already closed, and wiring up
+    // handlers for it would let a rejected agent keep feeding the fleet.
+    const accepted = agentMgr.registerAgent(ws, {
+      farm_id: r.farm_id, farm_name: r.farm_name, subnet: subnet || '(auto)', hostname, agent_version: version,
+      pc_id: pcId, ips, subnets: farms.subnetsFor(r.farm_id),
+    });
+    if (accepted === false) return;
+    farmId = r.farm_id;
+    // Pass the socket itself — unregisterAgent needs to know whether the
+    // socket that just closed is still the registered one, or a stale
+    // predecessor whose close arrived after the agent already reconnected.
+    ws.on('close', () => agentMgr.unregisterAgent(farmId, ws));
+    const q = held; held = [];
+    for (const raw of q) await handle(raw);
+  })
+  .catch(e => { console.error('[AGENT] farm lookup failed:', e.message); try { ws.close(1011, 'Server error'); } catch (x) {} });
 });
 
 // ── Server-side keepalive: ping every 8s, drop anyone that misses
