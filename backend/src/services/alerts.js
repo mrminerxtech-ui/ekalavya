@@ -1,109 +1,675 @@
 // ============================================================
-// ALERT SETTINGS ROUTE  /api/alerts
-// ------------------------------------------------------------
-// The site alarm (phone call + Telegram) fires when at least N machines
-// are offline at one site. N is set here from the Settings page and
-// stored on the server, so it's the same on every device and survives
-// redeploys. See services/alerts.js for how it's used.
+// ALERT SERVICE
+// Sends notifications via Slack, Telegram, Discord webhooks
 // ============================================================
-const express = require('express');
-const router  = express.Router();
-const { authMiddleware, requireRole } = require('../middleware/auth');
-const alerts  = require('../services/alerts');
+const axios = require('axios');
+const store = require('./store');
+const db    = require('./db');
+const agentMgr = require('./agentManager');
+const https = require('https');
 
-function staffOnly(req, res, next) {
-  if ((req.user && req.user.role) === 'customer') return res.status(403).json({ ok: false, error: 'Forbidden' });
-  next();
+const WEBHOOK = process.env.ALERT_WEBHOOK_URL;
+const TELEGRAM_TOKEN  = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT   = process.env.TELEGRAM_CHAT_ID;
+
+const LEVEL_EMOJI = { critical: '🔴', warn: '🟡', info: '🔵' };
+
+/**
+ * Send a Slack-compatible webhook alert
+ */
+async function sendSlackAlert(message, level = 'warn') {
+  if (!WEBHOOK) return;
+  try {
+    await axios.post(WEBHOOK, {
+      text: `${LEVEL_EMOJI[level] || '⚠️'} *Ekalavya Alert*\n${message}`,
+      username: 'MMX Bot',
+      icon_emoji: ':helmet_with_white_cross:',
+    }, { timeout: 5000 });
+  } catch (e) {
+    console.error('[ALERT] Webhook failed:', e.message);
+  }
 }
 
-// GET /api/alerts/settings → { ok, alarm_at, rearm_at, default_alarm_at }
-router.get('/settings', authMiddleware, staffOnly, async (req, res) => {
-  await alerts.loadAlarmSetting();
-  res.json({ ok: true, ...alerts.getAlarmSettings() });
-});
-
-// POST /api/alerts/settings  { alarm_at: 15 }
-router.post('/settings', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
-  const who = (req.user && (req.user.name || req.user.id)) || 'unknown';
-  const r = await alerts.setAlarmAt((req.body || {}).alarm_at, who);
-  if (!r.ok) return res.status(400).json(r);
-  res.json(r);
-});
-
-// ── Auto-restart (machines at 0 hashrate) ──────────────────────────
-const autorestart = require('../services/autorestart');
-
-// GET /api/alerts/auto-restart → { ok, enabled, minutes, max_per_day, defaults, log[], machines[] }
-router.get('/auto-restart', authMiddleware, staffOnly, async (req, res) => {
-  await Promise.all([autorestart.loadSettings(), autorestart.loadOverrides()]);
-  res.json({ ok: true, ...autorestart.getSettings(), log: autorestart.getLog(), machines: autorestart.listOverrides() });
-});
-
-// One machine's setting, as shown on its page.
-// GET /api/alerts/auto-restart/machine/:id → { ok, mode, minutes, max_per_day, default{}, active, restarts_today, zero_minutes }
-router.get('/auto-restart/machine/:id', authMiddleware, staffOnly, async (req, res) => {
-  const r = await autorestart.getMachine(req.params.id);
-  res.status(r.ok ? 200 : 404).json(r);
-});
-
-// Set one or many machines (machine page, or bulk from the Workers list).
-// POST /api/alerts/auto-restart/machines  { worker_ids:[…], mode:'default'|'off'|'on', minutes, max_per_day }
-router.post('/auto-restart/machines', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
-  const who = (req.user && (req.user.name || req.user.id)) || 'unknown';
-  const b = req.body || {};
-  const r = await autorestart.setMachines(b.worker_ids || b.worker_id, b, who);
-  if (!r.ok) return res.status(400).json(r);
-  res.json({ ...r, machines: autorestart.listOverrides() });
-});
-
-// POST /api/alerts/auto-restart  { enabled, minutes, max_per_day }
-router.post('/auto-restart', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
-  const who = (req.user && (req.user.name || req.user.id)) || 'unknown';
-  const r = await autorestart.saveSettings(req.body || {}, who);
-  if (!r.ok) return res.status(400).json(r);
-  res.json({ ...r, log: autorestart.getLog(), machines: autorestart.listOverrides() });
-});
-
-// ── Log checks (known error patterns → messages; no AI) ────────────
-const logCheck = require('../services/logDiagnosis');
-
-// GET /api/alerts/log-rules → { ok, builtin:[{id,level,message,pattern,enabled}], custom:[…] }
-router.get('/log-rules', authMiddleware, staffOnly, async (req, res) => {
-  res.json({ ok: true, ...logCheck.listRules(await logCheck.loadRules(true)) });
-});
-
-// POST /api/alerts/log-rules  { disabled:[builtin ids], custom:[{pattern, message, level, enabled}] }
-router.post('/log-rules', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
-  const who = (req.user && (req.user.name || req.user.id)) || 'unknown';
-  const r = await logCheck.saveRules(req.body || {}, who);
-  if (!r.ok) return res.status(400).json(r);
-  console.log(`[LOG-CHECK] Rules changed by ${who}: ${r.rules.disabled.length} built-in off, ${r.rules.custom.length} own rule(s)`);
-  res.json({ ok: true, ...logCheck.listRules(r.rules) });
-});
-
-// Try the rules on a pasted log, or on a machine's log fetched right now
-// (nothing is posted to Telegram).
-// POST /api/alerts/log-rules/test  { log } | { worker_id }
-router.post('/log-rules/test', authMiddleware, staffOnly, async (req, res) => {
-  const b = req.body || {};
-  let text = typeof b.log === 'string' ? b.log : null, snapshot = null, machine = null;
-  if (text === null && b.worker_id) {
-    const db = require('../services/db');
-    const agentMgr = require('../services/agentManager');
-    const w = (await db.loadWorkers()).find(x => x && String(x.id) === String(b.worker_id));
-    if (!w) return res.status(404).json({ ok: false, error: 'Machine not found' });
-    if (!agentMgr.getAgent(w.farm_id)) return res.status(409).json({ ok: false, error: 'That farm\'s agent is offline' });
-    let r;
-    try { r = await agentMgr.sendActionRequest(w.farm_id, w.ip, 'downloadlogs', { brand: w.brand, model: w.model, with_snapshot: true }); }
-    catch (e) { r = { ok: false, error: e.message }; }
-    if (!r || !r.ok || !r.logs) return res.status(502).json({ ok: false, error: (r && r.error) || 'The miner sent no log' });
-    text = String(r.logs); snapshot = r.snapshot || null;
-    machine = { name: w.name, ip: w.ip, model: w.model, farm: w.farm };
+/**
+ * Send Telegram alert
+ */
+// title: the bold first line (default "Ekalavya Alert")
+async function sendTelegramAlert(message, level = 'warn', title) {
+  if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT) return;
+  try {
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      chat_id: TELEGRAM_CHAT,
+      // The message body is escaped: machine names like "T21_015" contain
+      // Markdown characters, and an unbalanced "_" makes Telegram reject
+      // the whole message — an alert that silently never arrives.
+      text: `${LEVEL_EMOJI[level] ? LEVEL_EMOJI[level] + ' ' : ''}*${String(title || 'Ekalavya Alert').replace(/([_*`\[])/g, '\\$1')}*\n${String(message).replace(/([_*`\[])/g, '\\$1')}`,
+      parse_mode: 'Markdown',
+    }, { timeout: 5000 });
+  } catch (e) {
+    console.error('[ALERT] Telegram failed:', e.message);
   }
-  if (text === null) return res.status(400).json({ ok: false, error: 'Paste a log or choose a machine' });
-  const d = await logCheck.diagnose(text, snapshot);
-  res.json({ ok: true, machine, findings: d.findings, lines: d.checked, snapshot,
-             caption: logCheck.captionList(d.findings), log_tail: machine ? text.slice(-200000) : undefined });
-});
+}
 
-module.exports = router;
+// Send a text file to the Telegram group (sendDocument), with a caption.
+// Built as a plain multipart upload so no extra package is needed.
+// Caption: bold title line + message, escaped like sendTelegramAlert.
+async function sendTelegramDocument(caption, title, filename, content) {
+  if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT) return { ok: false, error: 'Telegram not configured' };
+  const esc = v => String(v).replace(/([_*`\[])/g, '\\$1');
+  let cap = (title ? '*' + esc(title) + '*\n' : '') + esc(caption);
+  if (cap.length > 1024) cap = cap.slice(0, 1020).replace(/\\$/, '') + '…';   // Telegram's caption limit
+  const safeName = String(filename || 'log.txt').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120);
+  const boundary = '----ekalavya' + Date.now().toString(16) + Math.random().toString(16).slice(2);
+  const field = (name, value) => Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`, 'utf8');
+  const body = Buffer.concat([
+    field('chat_id', TELEGRAM_CHAT),
+    field('caption', cap),
+    field('parse_mode', 'Markdown'),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${safeName}"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n`, 'utf8'),
+    Buffer.isBuffer(content) ? content : Buffer.from(String(content == null ? '' : content), 'utf8'),
+    Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8'),
+  ]);
+  try {
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument`, body, {
+      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': body.length },
+      timeout: 30000, maxBodyLength: Infinity, maxContentLength: Infinity,
+    });
+    return { ok: true };
+  } catch (e) {
+    const why = (e.response && e.response.data && e.response.data.description) || e.message;
+    console.error('[ALERT] Telegram file failed:', why);
+    return { ok: false, error: why };
+  }
+}
+
+/**
+ * Raise an alert — stores it, broadcasts via WS, and sends webhook
+ */
+async function raiseAlert(message, level = 'warn', metadata = {}) {
+  const alert = { message, level, metadata, time: new Date().toISOString() };
+  store.addAlert(alert);
+
+  // Fire and forget webhooks
+  sendSlackAlert(message, level).catch(() => {});
+  // The Telegram group gets only farm-level news (site alarm, last-restart
+  // log, auto-restart paused). Single-machine alerts (temperature, hashrate,
+  // one machine offline) stay in the app — pass { group: true } to post one.
+  if (metadata && metadata.group === true) sendTelegramAlert(message, level).catch(() => {});
+
+  console.log(`[ALERT][${level.toUpperCase()}] ${message}`);
+  return alert;
+}
+
+/**
+ * Evaluate thresholds for a worker and raise alerts if needed
+ */
+async function checkWorkerThresholds(worker) {
+  const alerts = [];
+
+  if (worker.temperature >= 90) {
+    alerts.push(raiseAlert(
+      `${worker.name} (${worker.ip}): CRITICAL temperature ${worker.temperature}°C`, 'critical', { worker_id: worker.id }
+    ));
+  } else if (worker.temperature >= 82) {
+    alerts.push(raiseAlert(
+      `${worker.name} (${worker.ip}): High temperature ${worker.temperature}°C`, 'warn', { worker_id: worker.id }
+    ));
+  }
+
+  const expectedHR = worker.expected_hashrate || worker.hashrate * 1.05;
+  if (worker.status === 'online' && expectedHR > 0 && worker.hashrate < expectedHR * 0.85) {
+    alerts.push(raiseAlert(
+      `${worker.name}: Hashrate degraded — ${worker.hashrate.toFixed(1)} vs ${expectedHR.toFixed(1)} TH/s expected`, 'warn', { worker_id: worker.id }
+    ));
+  }
+
+  if (worker.status === 'offline') {
+    alerts.push(raiseAlert(
+      `${worker.name} (${worker.ip}) is OFFLINE`, 'critical', { worker_id: worker.id }
+    ));
+  }
+
+  await Promise.allSettled(alerts);
+}
+
+// ============================================================
+// SITE-LEVEL OFFLINE-COUNT VOICE ALERT
+// ------------------------------------------------------------
+// Separate from checkWorkerThresholds above (which is per-machine and
+// fires on temp/hashrate/single-machine-offline) — this is the
+// "more than 10 machines offline at one SITE, warn the admins" alert,
+// with a spoken voice note, not just text. Uses the SAME
+// TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID as sendTelegramAlert() above, so
+// it lands in the same chat unless you point it elsewhere.
+//
+// Fires once per threshold-crossing, not every check cycle: db.js's
+// site_alerts table remembers the offline count a site was last
+// alerted at, and this only re-alerts if the count has since gotten
+// WORSE — never just for staying bad, and never again until it drops
+// back under the threshold and crosses it fresh.
+// ============================================================
+// How many machines offline at ONE site raise the alarm (phone call +
+// Telegram). Set from the Settings page and stored on the server
+// (db app_settings, key "site_alarm_offline"); re-read on every check, so
+// a change applies within one check (~3 min) with no redeploy. 11 keeps
+// the original rule ("more than 10").
+const DEFAULT_ALARM_AT = 11;
+const ALARM_SETTING_KEY = 'site_alarm_offline';
+let alarmAt = DEFAULT_ALARM_AT;
+const rearmAt = () => Math.max(0, alarmAt - 4);   // must recover to this many offline (or fewer) before a fresh alarm
+async function loadAlarmSetting() {
+  try {
+    const v = await db.getSetting(ALARM_SETTING_KEY);
+    const n = parseInt(v && v.alarm_at, 10);
+    if (n >= 1 && n <= 1000) alarmAt = n;
+  } catch (e) { /* keep the current value */ }
+}
+function getAlarmSettings() {
+  return { alarm_at: alarmAt, rearm_at: rearmAt(), default_alarm_at: DEFAULT_ALARM_AT };
+}
+async function setAlarmAt(n, by) {
+  n = parseInt(n, 10);
+  if (!(n >= 1 && n <= 1000)) return { ok: false, error: 'Enter a whole number of machines between 1 and 1000' };
+  const saved = await db.setSetting(ALARM_SETTING_KEY, { alarm_at: n }, by);
+  if (!saved) return { ok: false, error: 'Could not save the setting' };
+  const was = alarmAt;
+  alarmAt = n;
+  console.log(`[ALERT] Site alarm changed: ${was} → ${n} machines offline at one site${by ? ' (by ' + by + ')' : ''}`);
+  return { ok: true, ...getAlarmSettings() };
+}
+const CHECK_EVERY_MS    = 3 * 60 * 1000;   // how often to re-check every site
+
+function siteAlertingConfigured() {
+  return !!(TELEGRAM_TOKEN && TELEGRAM_CHAT);
+}
+
+// ── Real phone calls via Twilio ─────────────────────────────────────
+// No app, no tap, no notification setting can make a phone auto-play
+// audio — that's an OS-level restriction on every platform. An actual
+// phone CALL is the one thing that rings and starts talking on its own
+// the moment it's answered, so this is what genuinely delivers "ringing
+// tone... in voice" rather than a message someone has to open.
+// Needs its own Twilio account (twilio.com — has per-minute call costs
+// and, on a trial account, can only call phone numbers you've verified
+// in the Twilio console first):
+//   TWILIO_ACCOUNT_SID    — from the Twilio console dashboard
+//   TWILIO_AUTH_TOKEN     — same page, click to reveal
+//   TWILIO_FROM_NUMBER    — a Twilio phone number with Voice capability
+//   TWILIO_ALERT_NUMBERS  — comma-separated admin numbers to call, in
+//                           E.164 format (e.g. +971501234567,+15551234567)
+const TWILIO_SID  = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH = process.env.TWILIO_AUTH_TOKEN;
+const TWILIO_FROM = process.env.TWILIO_FROM_NUMBER;
+const TWILIO_TO   = (process.env.TWILIO_ALERT_NUMBERS || '').split(',').map(s => s.trim()).filter(Boolean);
+
+function phoneCallConfigured() {
+  return !!(TWILIO_SID && TWILIO_AUTH && TWILIO_FROM && TWILIO_TO.length);
+}
+
+// Speaks the alert twice with a short pause between — someone answering
+// a call can easily miss the first few words while picking up, so this
+// gives them a second pass rather than one shot at hearing it.
+//
+// Uses Twilio's standard voice unless TWILIO_VOICE names another (e.g.
+// Polly.Joanna): the standard one works on every account, trial included,
+// while premium voices may not.
+function buildAlertTwiml(spokenText) {
+  const escaped = String(spokenText).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const voice = (process.env.TWILIO_VOICE || '').replace(/[^A-Za-z0-9._-]/g, '');
+  const say = `<Say${voice ? ` voice="${voice}"` : ''}>${escaped}</Say>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><Response>${say}<Pause length="1"/>${say}</Response>`;
+}
+
+// ── Serving the spoken message by link ──────────────────────────────
+// Twilio trial accounts refuse the message sent inline with the call
+// ("trial accounts have limited parameter access"). What they do accept
+// is a Url: Twilio fetches the call's script from a web address when the
+// person answers. So each alert's script is kept here briefly under a
+// random, unguessable id and served at /api/alerts/twiml/<id> (mounted in
+// server.js). Works the same on paid accounts.
+//
+// The address comes from PUBLIC_BASE_URL if set, else from the domain
+// Railway gives the service (RAILWAY_PUBLIC_DOMAIN). With neither, calls
+// fall back to the inline message, which only paid accounts accept.
+const crypto = require('crypto');
+const TWIML_TTL_MS = 30 * 60 * 1000;
+const pendingTwiml = new Map();   // id -> { xml, expires }
+
+function publicBaseUrl() {
+  const explicit = (process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (explicit) return explicit;
+  const rail = (process.env.RAILWAY_PUBLIC_DOMAIN || '').trim();
+  return rail ? 'https://' + rail : null;
+}
+
+function twimlUrlFor(spokenText) {
+  const base = publicBaseUrl();
+  if (!base) return null;
+  const now = Date.now();
+  for (const [k, v] of pendingTwiml) if (v.expires < now) pendingTwiml.delete(k);
+  const id = crypto.randomBytes(16).toString('hex');
+  pendingTwiml.set(id, { xml: buildAlertTwiml(spokenText), expires: now + TWIML_TTL_MS });
+  return `${base}/api/alerts/twiml/${id}`;
+}
+
+// Twilio asks for the script (POST by default) when the call is answered.
+// No login here: Twilio can't carry one, and the random id is what keeps
+// it private. An unknown or expired id still gets a valid, harmless
+// script, so a late pickup hears something sensible, not an error.
+function twimlHandler(req, res) {
+  const entry = pendingTwiml.get(String(req.params.id || ''));
+  const xml = entry && entry.expires >= Date.now()
+    ? entry.xml
+    : buildAlertTwiml('This Ekalavya alert has expired. Please check the dashboard.');
+  res.set('Content-Type', 'text/xml');
+  res.send(xml);
+}
+
+// Calls every configured admin number.
+async function sendPhoneCallAlert(spokenText) {
+  if (!phoneCallConfigured()) return false;
+  const url = twimlUrlFor(spokenText);
+  const script = url ? { Url: url } : { Twiml: buildAlertTwiml(spokenText) };
+  if (!url) console.log('[ALERT] No public address known (set PUBLIC_BASE_URL) — sending the message inline, which Twilio trial accounts refuse');
+  const results = await Promise.allSettled(TWILIO_TO.map(number => {
+    const body = new URLSearchParams({ To: number, From: TWILIO_FROM, ...script });
+    return axios.post(
+      `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Calls.json`,
+      body.toString(),
+      {
+        auth: { username: TWILIO_SID, password: TWILIO_AUTH },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        timeout: 15000,
+      }
+    );
+  }));
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      console.error(`[ALERT] Twilio call to ${TWILIO_TO[i]} failed:`, r.reason?.response?.data?.message || r.reason.message);
+    }
+  });
+  const okCount = results.filter(r => r.status === 'fulfilled').length;
+  console.log(`[ALERT] Twilio: ${okCount}/${TWILIO_TO.length} call(s) placed`);
+  return okCount > 0;
+}
+
+// ── Free phone calls via CallMeBot (Telegram voice call) ────────────
+// A second, free call channel alongside Twilio: CallMeBot places a real
+// Telegram voice call to each person and reads the alert out loud, so
+// the phone rings like any incoming call with nothing to open or tap.
+// Twilio's free trial blocks some custom call scripts and limits who
+// and where it can call — this one works without any paid account.
+//
+// Setup, once per person: in Telegram, send /start to @CallMeBot_txtbot
+// (that is what authorises it to call you). Then set on Railway:
+//   CALLMEBOT_USERS — comma-separated Telegram usernames, e.g. @abhi,@ravi
+//                     (a phone number with country code, +971…, also works)
+//
+// It is a free shared service with no delivery guarantee, so Telegram
+// text + voice note and Twilio (if set) still fire as before — this adds
+// a ring, it doesn't replace anything. Known limit on their side: the
+// iPhone Telegram app may ring but not play the spoken message.
+const CALLMEBOT_USERS = (process.env.CALLMEBOT_USERS || '')
+  .split(',').map(s => s.trim()).filter(Boolean)
+  .map(u => (u.startsWith('@') || u.startsWith('+')) ? u : '@' + u);
+
+function callMeBotConfigured() { return CALLMEBOT_USERS.length > 0; }
+
+// Their reply is a small HTML page describing what happened (queued,
+// not authorised, too many calls, …). Tags are stripped so the log line
+// says in plain words why a call didn't ring.
+// Their page carries analytics <script> blocks ahead of the actual
+// message; those are dropped whole (not just their tags), otherwise the
+// script text used up the log line and cut the real answer off.
+function plainText(html) {
+  return String(html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
+async function sendCallMeBotAlert(spokenText) {
+  if (!callMeBotConfigured()) return false;
+  const text = String(spokenText).slice(0, 250);          // their limit is 256 characters
+  let okCount = 0;
+  // One after another rather than all at once: it's a shared free
+  // service, and a burst of simultaneous calls is what it throttles.
+  for (const user of CALLMEBOT_USERS) {
+    try {
+      const res = await axios.get('http://api.callmebot.com/start.php', {
+        // rpt: say it twice (someone picking up can miss the start);
+        // cc=missed: if the call isn't answered, they also send it as text.
+        params: { user, text, rpt: 2, cc: 'missed' },
+        timeout: 60000,
+        responseType: 'text',
+        validateStatus: () => true,
+      });
+      // Their reply is logged word for word — it is the only place that
+      // says why a call didn't ring (e.g. the person never sent /start).
+      const said = plainText(res.data);
+      if (res.status === 200) { okCount++; console.log(`[ALERT] CallMeBot → ${user}: ${said}`); }
+      else console.error(`[ALERT] CallMeBot → ${user} refused (HTTP ${res.status}): ${said}`);
+    } catch (e) {
+      console.error(`[ALERT] CallMeBot call to ${user} failed:`, e.message);
+    }
+  }
+  console.log(`[ALERT] CallMeBot: ${okCount}/${CALLMEBOT_USERS.length} call(s) placed`);
+  return okCount > 0;
+}
+
+// ── Text-to-speech via Google Translate's public TTS endpoint ──────
+// No API key, no account, no cost — the same audio the "listen" button
+// on translate.google.com plays. Unofficial/undocumented, so it's used
+// with a graceful fallback: if it ever fails, sendSiteVoiceAlert() below
+// returns false and the site check falls back to sendTelegramAlert()
+// (plain text, using the existing function above) automatically.
+function fetchGoogleTts(text) {
+  return new Promise((resolve, reject) => {
+    const q = encodeURIComponent(text.slice(0, 200));
+    const url = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=en&q=${q}`;
+    https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, res => {
+      if (res.statusCode !== 200) { res.resume(); reject(new Error('TTS HTTP ' + res.statusCode)); return; }
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+      res.on('error', reject);
+    }).on('error', reject);
+  });
+}
+
+// ── Send the generated MP3 as a Telegram audio message ─────────────
+// Uses sendAudio (not sendVoice) deliberately: Telegram's sendVoice only
+// accepts OGG/Opus, which would need ffmpeg to produce from the TTS
+// output above. sendAudio takes plain MP3 directly — it shows as a
+// tappable audio file with a title rather than the compact round
+// "voice message" bubble, but it's the same spoken audio with no extra
+// encoding step or dependency. Built as a raw multipart body (rather
+// than the `form-data` package) so this doesn't need a new dependency
+// beyond axios, which is already used above.
+async function sendSiteVoiceAlert(spokenText, caption) {
+  if (!siteAlertingConfigured()) return false;
+  let audio;
+  try { audio = await fetchGoogleTts(spokenText); }
+  catch (e) { console.error('[ALERT] TTS generation failed, falling back to text:', e.message); return false; }
+
+  const boundary = '----EkalavyaAlert' + Date.now();
+  const nl = '\r\n';
+  const parts = [
+    Buffer.from(`--${boundary}${nl}Content-Disposition: form-data; name="chat_id"${nl}${nl}${TELEGRAM_CHAT}${nl}`),
+    Buffer.from(`--${boundary}${nl}Content-Disposition: form-data; name="caption"${nl}${nl}${caption}${nl}`),
+    Buffer.from(`--${boundary}${nl}Content-Disposition: form-data; name="title"${nl}${nl}Site Alert${nl}`),
+    Buffer.from(`--${boundary}${nl}Content-Disposition: form-data; name="audio"; filename="alert.mp3"${nl}Content-Type: audio/mpeg${nl}${nl}`),
+    audio,
+    Buffer.from(`${nl}--${boundary}--${nl}`),
+  ];
+  const payload = Buffer.concat(parts);
+
+  try {
+    const res = await axios.post(
+      `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendAudio`,
+      payload,
+      { headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` }, timeout: 15000 }
+    );
+    return res.status === 200;
+  } catch (e) {
+    console.error('[ALERT] Telegram voice send failed:', e.message);
+    return false;
+  }
+}
+
+// ── False-alarm protection ────────────────────────────────────────
+// A site's internet dropping for a few seconds used to look exactly like
+// 100+ machines going offline (the agent's poll after the reconnect only
+// saw part of the fleet), and phoned everyone. Now a site only alarms if
+//   • it's over the threshold on TWO checks in a row (~6 min), and
+//   • its farm agent isn't in the middle of reconnecting — no alarm
+//     within AGENT_SETTLE_MS of it (re)connecting, or while it has only
+//     just dropped.
+// A site whose agent has been gone for longer than AGENT_GONE_MS still
+// alarms — that is the real emergency (power or internet lost on site) —
+// and says so in the message.
+const AGENT_SETTLE_MS = 3 * 60 * 1000;
+const AGENT_GONE_MS   = 5 * 60 * 1000;
+// Once a site has alarmed, it only alarms again if at least this many MORE
+// machines go down — one flaky unit flipping 65 <-> 66 must not phone
+// everyone every few minutes. And when things improve, the "alerted at"
+// level follows the count back down, so a one-off spike can't leave the
+// bar stuck so high that a later real incident never trips it.
+const WORSE_BY        = 5;
+
+// ── Count MACHINES, not database records ──────────────────────────
+// When a miner's IP changes (DHCP after a reboot or power cut), the
+// poller can create a second record for it; the old record then sits
+// offline until the dedupe service can safely merge it (dedupe.js —
+// deliberately cautious, it can take a while). Counting records made
+// every such stale copy look like another offline machine: Ghummadh
+// alarmed at 19–20 offline while only 3 miners were actually down.
+//
+// Records at the same site that share a hardware ID (MAC or serial) are
+// one physical machine here: counted once, and online if ANY of its
+// records is online. Records with no hardware ID are counted as they are.
+// Sleeping machines were put to sleep on purpose, so — like the app's own
+// offline filter — they don't count as offline.
+function normHw(kind, v) {
+  if (!v) return null;
+  if (kind === 'mac') {
+    const h = String(v).toUpperCase().replace(/[^0-9A-F]/g, '');
+    if (h.length !== 12 || /^0+$/.test(h) || /^F+$/.test(h)) return null;   // factory placeholders
+    return 'mac:' + h;
+  }
+  const s = String(v).trim();
+  if (s.length < 4 || /^(—|-|0+|unknown|none|null|n\/a)$/i.test(s)) return null;
+  return 'sn:' + s;
+}
+
+function countPhysicalMachines(workers) {
+  const byFarm = {};
+  const groups = {};   // farm -> Map(root -> [records])
+  const parent = new Map();
+  const find = k => { while (parent.get(k) !== k) { parent.set(k, parent.get(parent.get(k))); k = parent.get(k); } return k; };
+  const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+
+  const active = workers.filter(w => w && !w.disabled);   // disabled excluded, as before
+  active.forEach((w, i) => {
+    const fid = w.farm_id || 'unassigned';
+    const self = fid + '|rec:' + (w.id || i);
+    parent.set(self, self);
+    [normHw('mac', w.mac), normHw('sn', w.serial)].filter(Boolean).forEach(hw => {
+      const key = fid + '|' + hw;
+      if (!parent.has(key)) parent.set(key, key);
+      union(self, key);
+    });
+  });
+  active.forEach((w, i) => {
+    const fid = w.farm_id || 'unassigned';
+    const root = find(fid + '|rec:' + (w.id || i));
+    if (!groups[fid]) groups[fid] = new Map();
+    if (!groups[fid].has(root)) groups[fid].set(root, []);
+    groups[fid].get(root).push(w);
+  });
+
+  // A stale copy with no MAC/serial can't be grouped above. If it sits at
+  // the same site and IP as a live machine and nothing says it's a
+  // different machine, it's that machine (the dedupe service merges it
+  // within ~30 minutes) — not a machine that's down.
+  const wid = r => { const v = r && (r.worker_id || r.worker); const s = v ? String(v).trim() : ''; return s && s !== '—' ? s : null; };
+  const differs = (a, b) => {
+    const ma = normHw('mac', a.mac), mb = normHw('mac', b.mac); if (ma && mb && ma !== mb) return true;
+    const sa = normHw('sn', a.serial), sb = normHw('sn', b.serial); if (sa && sb && sa !== sb) return true;
+    const wa = wid(a), wb = wid(b); return !!(wa && wb && wa !== wb);
+  };
+  const liveAt = new Map();   // "farm|ip" -> live records there
+  active.forEach(w => {
+    if (!(w.status === 'online' || w.status === 'warn') || !w.ip) return;
+    const k = (w.farm_id || 'unassigned') + '|' + w.ip;
+    if (!liveAt.has(k)) liveAt.set(k, []);
+    liveAt.get(k).push(w);
+  });
+  const copyOfLive = recs => recs.every(r => {
+    const live = liveAt.get((r.farm_id || 'unassigned') + '|' + r.ip) || [];
+    return live.some(l => l !== r && !differs(r, l));
+  });
+
+  for (const [fid, m] of Object.entries(groups)) {
+    const c = { offline: 0, total: 0, offlineList: [], records: 0 };
+    for (const recs of m.values()) {
+      c.records += recs.length;
+      if (recs.some(r => r.status === 'online' || r.status === 'warn')) { c.total++; continue; }
+      if (copyOfLive(recs)) continue;   // a stale copy — not another machine at all
+      c.total++;
+      if (recs.some(r => r.status === 'sleeping')) continue;
+      c.offline++;
+      const r = recs.find(x => x.name && x.name !== x.ip) || recs[0];
+      c.offlineList.push(r.name && r.name !== r.ip ? `${r.name} (${r.ip || '?'})` : (r.ip || r.id || '?'));
+    }
+    byFarm[fid] = c;
+  }
+  return byFarm;
+}
+
+// Short list of which machines are down, for the Telegram text — so an
+// alarm can be checked at a glance instead of trusted blindly. Kept short:
+// Telegram captions are capped at 1024 characters.
+function offlineListText(counts, max = 12) {
+  const l = counts.offlineList || [];
+  if (!l.length) return '';
+  const shown = l.slice(0, max).map(s => String(s).slice(0, 40));
+  return '\nOffline: ' + shown.join(', ') + (l.length > max ? ` … +${l.length - max} more` : '');
+}
+const startedAt       = Date.now();
+const lastSeenAgent   = new Map();   // farm_id -> last time we saw it connected
+const overLastCheck   = new Map();   // farm_id -> offline count at the previous check (if over threshold)
+
+// ── The actual per-site check, run on a timer by start() below ─────
+async function checkSiteOfflineCounts() {
+  await loadAlarmSetting();   // picks up a change made on the Settings page
+  const workers = await db.loadWorkers();
+  const agents  = agentMgr.getAgents();
+  const now = Date.now();
+  agents.forEach(a => lastSeenAgent.set(a.farm_id, now));
+
+  const byFarm = countPhysicalMachines(workers);
+  const farmNames = {};
+  workers.forEach(w => { const fid = w.farm_id || 'unassigned'; if (w.farm && !farmNames[fid]) farmNames[fid] = w.farm; });
+
+  for (const [farmId, counts] of Object.entries(byFarm)) {
+    const agent = agents.find(a => a.farm_id === farmId);
+    const farmName = (agent && agent.farm_name) || farmNames[farmId] || farmId;
+    if (farmId === 'unassigned') continue;   // not a real site
+    const prev = await db.getSiteAlertState(farmId);
+
+    if (counts.offline < alarmAt) {
+      overLastCheck.delete(farmId);
+      if (prev !== null) {
+        // Only re-arm once the site has CLEARLY recovered. Alhayer sat at
+        // 10–11 offline all evening: every dip to 10 used to reset the
+        // alarm and the next 11 alarmed again — five identical messages.
+        // Now a dip to 8–10 just lowers the "alerted at" level (so it
+        // takes 5 more machines down to alarm again), and only a real
+        // recovery to rearmAt() (alarm number − 4) or fewer starts a fresh alarm cycle.
+        if (counts.offline <= rearmAt()) await db.clearSiteAlertState(farmId);
+        else if (counts.offline < prev) await db.setSiteAlertState(farmId, counts.offline);
+      }
+      continue;
+    }
+
+    // Is this site's agent settled enough for the numbers to mean anything?
+    let agentGone = false;
+    if (agent) {
+      if (now - new Date(agent.connected_at).getTime() < AGENT_SETTLE_MS) {
+        console.log(`[ALERT] ${farmName}: ${counts.offline} offline, but its agent only just (re)connected — waiting before alarming`);
+        overLastCheck.delete(farmId);
+        continue;
+      }
+    } else {
+      const seen = lastSeenAgent.get(farmId) || startedAt;
+      if (now - seen < AGENT_GONE_MS) { overLastCheck.delete(farmId); continue; }   // just dropped — may be a blip
+      agentGone = true;
+    }
+
+    // Two checks in a row, counted at the LOWER of the two, so a single
+    // bad reading can neither trigger an alarm nor inflate the count the
+    // next one is compared against.
+    const before = overLastCheck.get(farmId);
+    overLastCheck.set(farmId, counts.offline);
+    if (before === undefined) {
+      console.log(`[ALERT] ${farmName}: ${counts.offline} offline — confirming on the next check before alarming`);
+      continue;
+    }
+    const confirmed = Math.min(before, counts.offline);
+
+    // Already alerted: follow improvements down silently, and only
+    // re-alert once it's clearly WORSE than that, not just for staying bad.
+    if (prev !== null && confirmed < prev) { await db.setSiteAlertState(farmId, confirmed); continue; }
+    if (prev !== null && confirmed < prev + WORSE_BY) continue;
+
+    const text = agentGone
+      ? `${farmName} is unreachable: its farm agent has been disconnected for over ${AGENT_GONE_MS / 60000} minutes, so all ${confirmed} of its machines show offline. The site may have lost power or internet.`
+      : `${confirmed} of ${counts.total} machines are offline at ${farmName} (excluding disabled), confirmed on two checks. Alarm set at ${alarmAt}.`
+        + offlineListText(counts);
+    const spoken = agentGone
+      ? `Warning. ${farmName} is not reachable. The site may have lost power or internet. Please check.`
+      : `Warning. ${confirmed} machines are offline at ${farmName}. Please be warned.`;
+    counts.offline = confirmed;   // what gets recorded as "alerted at" below
+
+    console.log(`[ALERT] ${farmName}: ${confirmed} offline (alarm at ${alarmAt}${agentGone ? ', agent unreachable' : ''}) — sending alerts`);
+    // Fire both channels together — the phone call is the one that
+    // actually gets heard with no tap required, Telegram is the
+    // always-on record even if a call goes unanswered.
+    const [voiceOk] = await Promise.all([
+      sendSiteVoiceAlert(spoken, text),
+      sendPhoneCallAlert(spoken),
+      sendCallMeBotAlert(spoken),
+    ]);
+    if (!voiceOk) await sendTelegramAlert(text, 'critical');   // fall back to the existing text-alert function above
+    await db.setSiteAlertState(farmId, counts.offline);
+  }
+}
+
+let siteAlertTimer = null;
+// Places one test call on every configured call channel when the server
+// starts with ALERT_TEST_CALL=1 — a way to check the phone really rings
+// without waiting for a real outage. Remove the variable afterwards, or
+// every restart/redeploy will ring you again.
+async function sendTestCalls() {
+  const spoken = 'This is a test call from Ekalavya. Site alert calls are working.';
+  console.log('[ALERT] ALERT_TEST_CALL=1 — placing a test call on every configured call channel');
+  if (phoneCallConfigured()) await sendPhoneCallAlert(spoken);
+  if (callMeBotConfigured()) await sendCallMeBotAlert(spoken);
+  if (!phoneCallConfigured() && !callMeBotConfigured()) console.log('[ALERT] Test call skipped — no call channel (Twilio or CallMeBot) is configured');
+}
+
+function start() {
+  if (!siteAlertingConfigured() && !phoneCallConfigured() && !callMeBotConfigured()) {
+    console.log('[ALERT] No alert channel is configured — Telegram (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID), Twilio (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_FROM_NUMBER/TWILIO_ALERT_NUMBERS) or CallMeBot (CALLMEBOT_USERS) — site offline-count alerts are disabled.');
+    return;
+  }
+  const channels = [
+    siteAlertingConfigured() && 'Telegram',
+    phoneCallConfigured()    && `Twilio call (${TWILIO_TO.length} number(s))`,
+    callMeBotConfigured()    && `CallMeBot call (${CALLMEBOT_USERS.join(', ')})`,
+  ].filter(Boolean).join(' + ');
+  console.log(`[ALERT] Site offline-count alerting active via ${channels} — checking every ${CHECK_EVERY_MS / 60000}m, alarm at ${alarmAt}+ offline at one site (excluding disabled).`);
+  // Say plainly when a call channel is off, so a missing or misspelt
+  // variable shows up in the startup log instead of as a silent no-call
+  // during a real outage (which is how the Twilio mix-up went unnoticed).
+  if (phoneCallConfigured()) {
+    const base = publicBaseUrl();
+    console.log(base
+      ? `[ALERT] Twilio will fetch each call's message from ${base}/api/alerts/twiml/…`
+      : '[ALERT] Twilio: no public address known — set PUBLIC_BASE_URL (e.g. https://your-backend.up.railway.app), trial accounts need it');
+  }
+  if (!phoneCallConfigured()) {
+    const missing =['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM_NUMBER', 'TWILIO_ALERT_NUMBERS'].filter(k => !process.env[k]);
+    console.log(`[ALERT] Twilio calls OFF${missing.length ? ' — not set: ' + missing.join(', ') : ''}`);
+  }
+  if (!callMeBotConfigured()) console.log('[ALERT] CallMeBot calls OFF — CALLMEBOT_USERS not set');
+  if (process.env.ALERT_TEST_CALL === '1') sendTestCalls().catch(e => console.error('[ALERT] Test call error:', e.message));
+  checkSiteOfflineCounts().catch(e => console.error('[ALERT]', e.message));
+  siteAlertTimer = setInterval(() => { checkSiteOfflineCounts().catch(e => console.error('[ALERT]', e.message)); }, CHECK_EVERY_MS);
+}
+
+module.exports = { sendTelegramDocument, raiseAlert, sendSlackAlert, sendTelegramAlert, checkWorkerThresholds, start, checkSiteOfflineCounts, twimlHandler,
+                   getAlarmSettings, setAlarmAt, loadAlarmSetting };
