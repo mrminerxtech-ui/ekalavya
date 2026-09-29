@@ -844,6 +844,31 @@ function upsertWorkersFallback(farmId, minersFoundNow, collisions, skipMarkOffli
 // clears the last hashrate/temp/fan it reported. That left a genuinely
 // dead machine's row looking like it was still hashing, badged OFFLINE
 // only because the frontend separately checks agent connectivity.
+// Farm management (services/farms.js): move every machine record of one
+// farm into another, or put a farm's new name on its machine records.
+async function moveWorkersToFarm(fromId, intoId, intoName) {
+  return updateFarmOnWorkers(fromId, { farm_id: intoId, farm: intoName });
+}
+async function setFarmNameOnWorkers(farmId, name) {
+  return updateFarmOnWorkers(farmId, { farm: name });
+}
+async function updateFarmOnWorkers(farmId, patch) {
+  if (useFallback || !pool) {
+    const existing = loadFallback('workers');
+    let n = 0;
+    existing.forEach(w => { if (w && w.farm_id === farmId) { Object.assign(w, patch); n++; } });
+    if (n) saveFallback('workers', existing, true);
+    return n;
+  }
+  try {
+    const r = await pool.query(
+      `UPDATE workers SET data = data || $2::jsonb, farm_id = COALESCE($3, farm_id), updated_at = NOW()
+        WHERE farm_id = $1 OR data->>'farm_id' = $1`,
+      [farmId, JSON.stringify(patch), patch.farm_id || null]);
+    return r.rowCount || 0;
+  } catch (e) { console.error('[DB] updateFarmOnWorkers error:', e.message); return 0; }
+}
+
 async function clearFarmReadings(farmId) {
   if (useFallback || !pool) {
     const existing = loadFallback('workers');
@@ -1742,4 +1767,4 @@ async function getUptimeReport(days, farmId) {
   }
 }
 
-module.exports = { identityConflict, getSetting, setSetting, connect, loadModelPower, saveModelPower, deleteModelPower, normalizeModelKeyDb, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, clearFarmReadings, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, addTombstone, clearTombstone, loadTombstones, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport, getSiteAlertState, setSiteAlertState, clearSiteAlertState, getWorkerActivityMeta, countOnlineOverlap, applyAutoMerge };
+module.exports = { moveWorkersToFarm, setFarmNameOnWorkers, identityConflict, getSetting, setSetting, connect, loadModelPower, saveModelPower, deleteModelPower, normalizeModelKeyDb, saveWorkers, loadWorkers, getWorkerById, findWorkerByFarmAndIp, deleteWorker, mergeWorkers, upsertWorkersByIp, clearFarmReadings, saveCustomers, loadCustomers, deleteCustomer, loadTeamMembers, saveTeamMember, deleteTeamMember, addTombstone, clearTombstone, loadTombstones, saveAgentConfig, loadAgentConfig, loadAllAgentConfigs, isUsingDB, accrueEarnings, getEarningsSummary, getEarningsHistory, recordMetrics, pruneMetrics, getWorkerHistory, getUptimeReport, getSiteAlertState, setSiteAlertState, clearSiteAlertState, getWorkerActivityMeta, countOnlineOverlap, applyAutoMerge };
