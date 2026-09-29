@@ -706,6 +706,78 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
   64%  {opacity:1;   transform:scale(1);  filter:brightness(1)   drop-shadow(0 0 20px rgba(0,200,255,.32));}
   100% {opacity:1;   transform:scale(1);  filter:brightness(1)   drop-shadow(0 0 20px rgba(0,200,255,.32));}
 }
+
+/* ── Compact admin UI: info tips, farm cards, settings grid ───────── */
+.tip{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;border:1px solid var(--b2);color:var(--mute);font:700 10.5px/1 var(--font);cursor:help;margin-left:7px;vertical-align:middle;outline:none;flex-shrink:0;user-select:none;}
+.tip:hover,.tip:focus{color:#fff;border-color:var(--cyan);background:rgba(56,198,244,.12);}
+#tipPop{position:fixed;z-index:9999;max-width:300px;padding:10px 12px;border-radius:10px;background:var(--s3);border:1px solid var(--b2);box-shadow:var(--sh-lg);color:var(--txt);font:500 12px/1.55 var(--font);pointer-events:none;display:none;}
+.menu-pop{position:fixed;z-index:9998;min-width:190px;padding:6px;border-radius:12px;background:var(--s2);border:1px solid var(--b2);box-shadow:var(--sh-lg);}
+.menu-pop button{display:flex;align-items:center;gap:9px;width:100%;padding:9px 11px;border:0;border-radius:8px;background:transparent;color:var(--txt);font:500 12.5px/1.2 var(--font);cursor:pointer;text-align:left;}
+.menu-pop button:hover{background:rgba(56,198,244,.12);}
+.menu-pop button.danger{color:var(--red);}
+.menu-pop button.danger:hover{background:rgba(247,89,108,.12);}
+.menu-pop hr{border:0;border-top:1px solid var(--b1);margin:5px 4px;}
+
+.ra-sum{display:flex;gap:8px;flex-wrap:wrap;margin:-4px 0 16px;}
+.ra-sum .pill{display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border-radius:999px;background:var(--s1);border:1px solid var(--b1);font:600 12px/1 var(--font);color:var(--mute);}
+.ra-sum .pill b{color:var(--txt);font-family:var(--mono);font-weight:600;}
+.sec-h{display:flex;align-items:center;gap:8px;margin:4px 2px 12px;font:700 14px/1.2 var(--font);color:var(--txt);}
+.sec-h .ic{color:var(--cyan);}
+.sec-h .right{margin-left:auto;display:flex;gap:8px;}
+
+.fgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px;margin-bottom:18px;}
+.fcard{background:var(--s1);border:1px solid var(--b1);border-radius:14px;padding:14px 16px;display:flex;flex-direction:column;gap:11px;transition:border-color .15s;}
+.fcard:hover{border-color:var(--b2);}
+.fcard.off{opacity:.85;}
+.fc-h{display:flex;align-items:center;gap:9px;min-width:0;}
+.fc-h b{font:700 15px/1.2 var(--font);color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.fc-id{font:500 10.5px/1 var(--mono);color:var(--dim);padding:3px 6px;border:1px solid var(--b1);border-radius:6px;white-space:nowrap;}
+.fc-more{margin-left:auto;width:30px;height:30px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--mute);cursor:pointer;font:700 16px/1 var(--font);flex-shrink:0;}
+.fc-more:hover{border-color:var(--b2);color:#fff;background:var(--s2);}
+.fc-k{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+.fc-k div{background:var(--bg2);border:1px solid var(--b1);border-radius:10px;padding:8px 10px;}
+.fc-k b{display:block;font:600 19px/1.1 var(--mono);color:var(--txt);}
+.fc-k span{font:600 10px/1 var(--font);letter-spacing:.06em;text-transform:uppercase;color:var(--dim);}
+.fc-k .g b{color:var(--green);} .fc-k .r b{color:var(--red);}
+.chips{display:flex;gap:6px;flex-wrap:wrap;}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border-radius:7px;background:var(--bg2);border:1px solid var(--b1);font:500 11px/1 var(--mono);color:var(--mute);white-space:nowrap;}
+.chip.ok{color:#a7f3d0;border-color:rgba(52,211,153,.25);}
+.chip.warn{color:#fcd34d;border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.07);}
+.chip.bad{color:#fda4af;border-color:rgba(247,89,108,.35);background:rgba(247,89,108,.07);}
+.fc-line{display:flex;align-items:center;gap:8px;font:500 12px/1.35 var(--font);color:var(--mute);min-width:0;}
+.fc-line .ic{color:var(--dim);flex-shrink:0;}
+.fc-line .t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.fc-line b{color:var(--txt);font-weight:600;}
+.fc-a{display:flex;gap:8px;margin-top:2px;}
+.fc-a .abtn{flex:1;justify-content:center;padding:7px 10px;}
+.pend{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px;border:1px solid rgba(251,191,36,.4);background:linear-gradient(90deg,rgba(251,191,36,.07),transparent 70%);border-radius:12px;margin-bottom:10px;}
+.pend b{font:700 13.5px/1.2 var(--font);color:#fff;}
+.pend .mono{font:500 11.5px/1 var(--mono);color:var(--mute);}
+.pend .abtn{margin-left:auto;}
+details.setup{background:var(--s1);border:1px solid var(--b1);border-radius:14px;margin-bottom:16px;}
+details.setup summary{list-style:none;cursor:pointer;padding:14px 18px;display:flex;align-items:center;gap:9px;font:700 13.5px/1.2 var(--font);color:var(--txt);}
+details.setup summary::-webkit-details-marker{display:none;}
+details.setup summary .chev{margin-left:auto;color:var(--mute);transition:transform .15s;}
+details.setup[open] summary .chev{transform:rotate(90deg);}
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;padding:0 18px 16px;}
+.step{background:var(--bg2);border:1px solid var(--b1);border-radius:10px;padding:12px 14px;font:500 12.5px/1.45 var(--font);color:var(--mute);}
+.step b{display:block;color:var(--txt);margin-bottom:3px;}
+.step .n{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:rgba(56,198,244,.15);color:var(--cyan);font:700 11px/1 var(--font);margin-bottom:8px;}
+.step code{font:500 11.5px/1 var(--mono);color:var(--cyan);}
+
+.set-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start;}
+.set-grid>.panel{margin-bottom:0;}
+.set-grid>.span2{grid-column:1/-1;}
+@media (max-width:1000px){.set-grid{grid-template-columns:1fr;}}
+.sb{padding:14px 18px;}
+.srow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.srow+.srow{margin-top:10px;}
+.slb{font:500 12.5px/1.3 var(--font);color:var(--mute);letter-spacing:0;text-transform:none;}
+.num{width:72px;text-align:center;}
+.shint{margin-top:10px;font:500 11.5px/1.5 var(--font);color:var(--mute);}
+.swrow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:2px 0;}
+.swrow .lbl{font:600 13px/1.3 var(--font);color:var(--txt);display:flex;align-items:center;}
+.ph .tip{margin-left:6px;}
 </style>
 </head>
 <body>
@@ -735,6 +807,8 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
   <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></symbol>
+  <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
   <symbol id="i-scan" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></symbol>
   <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></symbol>
   <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5M12 15V3"/></symbol>
@@ -1065,36 +1139,33 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
       </div>
 
       <div id="raSectionAgents">
+        <div class="ra-sum" id="raSummary"></div>
+
         <!-- PCs whose agent is running but that have no farm yet -->
-        <div class="panel" id="pendingAgentsPanel" style="display:none;border-color:rgba(251,191,36,.45)">
-          <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-radio"/></svg>New agents waiting for a farm</div><span class="badge bwn" id="pendingAgentsBadge">0</span></div>
-          <div style="padding:6px 18px 0;font-size:12px;color:var(--mute);line-height:1.5">These PCs are running the agent. Choose which farm each one runs &mdash; an existing farm, or type a new farm name. Nothing is polled until you do.</div>
-          <div class="card-grid" style="padding:16px" id="pendingAgentsGrid"></div>
+        <div id="pendingAgentsPanel" style="display:none">
+          <div class="sec-h"><svg class="ic sm"><use href="#i-radio"/></svg>New agents <span class="badge bwn" id="pendingAgentsBadge">0</span>
+            <span class="tip" tabindex="0" data-tip="PCs running the agent that don&rsquo;t have a farm yet. Choose an existing farm or type a new farm name &mdash; nothing is polled until you do.">i</span></div>
+          <div id="pendingAgentsGrid"></div>
         </div>
-        <!-- Farms: names are typed here; a PC's .env no longer decides them -->
-        <div class="panel" id="farmsPanel">
-          <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-layers"/></svg>Farms</div><span class="badge" id="farmsBadge">&hellip;</span></div>
-          <div style="padding:6px 18px 0;font-size:12px;color:var(--mute);line-height:1.5">Rename a farm, move a PC to another farm, or merge a duplicate farm into the real one (its machines move with it).</div>
-          <div id="farmsList" style="padding:12px 18px 16px"></div>
-        </div>
-        <div class="panel">
-          <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-server"/></svg>Connected Agents</div><span class="badge bgn" id="agentCountBadge">0 Online</span></div>
-          <div class="card-grid" style="padding:16px" id="agentGrid"></div>
-        </div>
-        <div class="panel">
-          <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-file"/></svg>Quick Setup</div><span class="badge bc">One command per farm</span></div>
-          <div style="padding:16px 18px">
-            <div style="font-size:13px;color:#b9c6d8;margin-bottom:12px">Run on any PC inside the farm. It dials <em>outward</em> &mdash; no port forwarding, works through NAT.</div>
-            <div class="code-box">
-              <span class="c"># Install</span><br>
-              git clone https://github.com/yourrepo/mmx-agent &amp;&amp; cd mmx-agent &amp;&amp; npm install<br>
-              <span class="c"># Configure .env</span><br>
-              <span class="c">MMX_SERVER=wss://your-server.com/agent &nbsp; AGENT_KEY=your-secret</span><br>
-              <span class="c">FARM_NAME="Farm Dubai" &nbsp; LOCAL_SUBNET=192.168.1.0/24</span><br>
-              <span class="c"># Start (auto-reconnects forever)</span><br>
-              npm start
-            </div>
+
+        <!-- Farms: one card per farm — its machines, networks, PC and actions -->
+        <div class="sec-h"><svg class="ic sm"><use href="#i-layers"/></svg>Farms <span class="badge" id="farmsBadge">&hellip;</span>
+          <span class="tip" tabindex="0" data-tip="Each farm is run by one agent PC. Farm names are set here, not on the PC. Use &#8943; on a card to rename, move its PC, or merge a duplicate farm into the real one.">i</span></div>
+        <div class="fgrid" id="farmsList"></div>
+
+        <details class="setup" id="raSetup">
+          <summary><svg class="ic sm"><use href="#i-plus"/></svg>Add a farm PC<svg class="ic sm chev"><use href="#i-chevron"/></svg></summary>
+          <div class="steps">
+            <div class="step"><span class="n">1</span><b>Copy the agent</b>Download the <code>agent</code> folder to the farm PC, e.g. <code>C:\ekalavya-agent</code>.</div>
+            <div class="step"><span class="n">2</span><b>Run setup</b>Double-click <code>SETUP-WINDOWS.bat</code>. No settings to type &mdash; it runs in the background and updates itself.</div>
+            <div class="step"><span class="n">3</span><b>Choose its farm</b>The PC appears here under <b style="display:inline;color:var(--warn)">New agents</b>. Pick its farm or type a new name.</div>
           </div>
+        </details>
+
+        <!-- Kept for the agent list's own logic; each farm card above shows its agent -->
+        <div class="panel" style="display:none">
+          <div class="ph"><div class="phd">Connected Agents</div><span class="badge bgn" id="agentCountBadge">0 Online</span></div>
+          <div class="card-grid" style="padding:16px" id="agentGrid"></div>
         </div>
       </div>
 
@@ -1222,150 +1293,124 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
 
     <!-- SETTINGS -->
     <div id="page-settings" class="page">
-      <div class="page-title">Settings <span>Connection, sensors, data &amp; notifications</span></div>
-      <div class="panel">
-        <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-server"/></svg>Backend Connection</div></div>
-        <div style="padding:16px 18px">
-          <div class="frow"><label>API URL</label><input class="si" style="width:100%" id="apiUrl" placeholder="https://your-app.up.railway.app" value="" oninput="">
-          <div style="font-size:11.5px;color:var(--mute);margin-top:6px">Current: <span style="color:var(--cyan);font-family:'Share Tech Mono',monospace" id="currentApiDisplay"></span></div>
-          <button class="btn btn-sm" style="margin-top:10px" onclick="setApiBase(document.getElementById('apiUrl').value)">Save &amp; Reconnect</button></div>
-          <button class="btn btn-g btn-sm" onclick="testConn()"><svg class="ic sm"><use href="#i-check"/></svg>Test Connection</button>
-        </div>
-      </div>
+      <div class="page-title">Settings <span>Alarms, automation, sensors &amp; data</span></div>
+      <div class="set-grid">
+
       <!-- Site alarm: phone call + Telegram when N machines are offline at one site -->
       <div class="panel" id="siteAlarmPanel">
-        <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-bell"/></svg>Site Alarm</div></div>
-        <div style="padding:16px 18px">
-          <div style="font-size:12.5px;color:var(--txt);margin-bottom:12px;line-height:1.6">
-            Phones the on-call numbers and posts to Telegram when this many machines are offline at <b>one site</b>,
-            confirmed on two checks in a row (about 6&nbsp;minutes). Machines in repair or asleep don&rsquo;t count.
-          </div>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <label for="siteAlarmAt" style="font-size:12.5px;color:var(--mute)">Alarm when at least</label>
-            <input class="si" id="siteAlarmAt" type="number" min="1" max="1000" step="1" style="width:90px;text-align:center" inputmode="numeric">
-            <span style="font-size:12.5px;color:var(--mute)">machines are offline at one site</span>
+        <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-bell"/></svg>Site Alarm</div>
+          <span class="tip" tabindex="0" data-tip="Phones the on-call numbers and posts to Telegram when this many machines are offline at one site, confirmed on two checks in a row (about 6 minutes). Machines in repair or asleep don&rsquo;t count.">i</span></div>
+        <div class="sb">
+          <div class="srow">
+            <label class="slb" for="siteAlarmAt">Call when</label>
+            <input class="si num" id="siteAlarmAt" type="number" min="1" max="1000" step="1" inputmode="numeric">
+            <span class="slb">or more are offline at one site</span>
             <button class="btn btn-sm" id="siteAlarmSave" onclick="saveSiteAlarmSetting()">Save</button>
           </div>
-          <div id="siteAlarmStatus" style="margin-top:10px;font-size:11.5px;color:var(--mute)">Loading…</div>
+          <div id="siteAlarmStatus" class="shint">Loading…</div>
         </div>
       </div>
+
       <!-- Auto-restart machines stuck at 0 hashrate -->
       <div class="panel" id="autoRestartPanel">
         <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-refresh"/></svg>Auto-Restart</div>
+          <span class="tip" tabindex="0" data-tip="Reboots a machine that still answers but has been at 0 hashrate for the time set. Never touches machines in repair or asleep. If a big part of a site drops to 0 at once (pool, network or power), nothing is restarted and Telegram is told instead.<br><br>This is the default for every machine; a machine can have its own setting on its page, or several at once from Workers &rarr; Auto-Restart.">i</span>
           <span class="badge" id="arBadge" style="margin-left:auto">Off</span></div>
-        <div style="padding:16px 18px">
-          <div style="font-size:12.5px;color:var(--txt);margin-bottom:12px;line-height:1.6">
-            Reboots a machine that is still reachable but has been at <b>0 hashrate</b> for the time below.
-            Never touches machines in repair or asleep. If a big part of a site drops to 0 at once (pool, network or power),
-            nothing is restarted and Telegram is told instead.
-          </div>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;margin-bottom:12px;cursor:pointer">
-            <input type="checkbox" id="arEnabled" style="accent-color:var(--cyan);width:16px;height:16px"> Restart machines automatically (default for all machines)
-          </label>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
-            <label for="arMinutes" style="font-size:12.5px;color:var(--mute)">Restart after</label>
-            <input class="si" id="arMinutes" type="number" min="5" max="1440" step="1" style="width:80px;text-align:center" inputmode="numeric">
-            <span style="font-size:12.5px;color:var(--mute)">minutes at 0 hashrate</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <label for="arMax" style="font-size:12.5px;color:var(--mute)">At most</label>
-            <input class="si" id="arMax" type="number" min="1" max="20" step="1" style="width:80px;text-align:center" inputmode="numeric">
-            <span style="font-size:12.5px;color:var(--mute)">restarts per machine per day, then leave it for a person</span>
+        <div class="sb">
+          <div class="swrow"><span class="lbl">Restart machines automatically</span>
+            <label class="toggle" title="Restart machines automatically"><input type="checkbox" id="arEnabled"><span class="tsldr"></span></label></div>
+          <div class="srow" style="margin-top:10px">
+            <label class="slb" for="arMinutes">After</label>
+            <input class="si num" id="arMinutes" type="number" min="5" max="1440" step="1" inputmode="numeric">
+            <span class="slb">min at 0 hashrate &middot; max</span>
+            <input class="si num" id="arMax" type="number" min="1" max="20" step="1" inputmode="numeric" aria-label="Restarts per machine per day">
+            <span class="slb">/ day</span>
             <button class="btn btn-sm" id="arSave" onclick="saveAutoRestart()">Save</button>
           </div>
-          <div id="arStatus" style="margin-top:10px;font-size:11.5px;color:var(--mute)">Loading…</div>
-          <div style="margin-top:10px;font-size:11.5px;color:var(--mute);line-height:1.5">
-            This is the default for every machine. A machine can have its own setting — off (e.g. hydro machines) or its own minutes and limit —
-            on its page (Workers → machine), or tick several on the Workers page and use <b>Auto-Restart</b>.
-          </div>
+          <div id="arStatus" class="shint">Loading…</div>
           <div id="arMachines" style="margin-top:10px"></div>
           <div id="arLog" style="margin-top:10px"></div>
         </div>
       </div>
-      <!-- eWeLink Cloud Connection -->
-      <div class="panel">
+
+      <!-- Sensor Readings — LAN Scan or eWeLink assignment, per farm -->
+      <div class="panel span2">
         <div class="ph">
-          <div class="phd"><svg class="ic sm"><use href="#i-cloud"/></svg>eWeLink Cloud Connection</div>
-          <span class="badge" id="ewConnBadge" style="background:rgba(95,110,132,.15);color:var(--mute);border-color:var(--b2)">Not connected</span>
+          <div class="phd"><svg class="ic sm"><use href="#i-thermo"/></svg>Farm Sensors</div>
+          <span class="tip" tabindex="0" data-tip="<b>Same network as the farm&rsquo;s agent:</b> enter the sensor&rsquo;s MAC address &mdash; free, no cloud needed.<br><b>Different network:</b> connect eWeLink below, then assign the sensor to a farm.">i</span>
+          <span class="badge bgn" style="margin-left:auto">Live</span>
         </div>
-        <div style="padding:16px 18px">
-          <div class="note note-c" style="margin-bottom:14px">
-            <div>Use this when a sensor is on a different network than the farm agent. Enter your app's details from <strong style="color:#fff">dev.ewelink.cc</strong> once, then tap Connect — you'll briefly go to eWeLink's own login page and come right back.</div>
-          </div>
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px">
-            <div class="frow"><label>App ID</label><input class="si" style="width:100%" id="ewAppId" placeholder="from dev.ewelink.cc"></div>
-            <div class="frow"><label>App Secret</label><input class="si" style="width:100%" id="ewSecret" type="password" placeholder="from dev.ewelink.cc"></div>
-          </div>
-          <div class="frow" style="margin-bottom:12px">
-            <label>Redirect URL <span style="color:var(--dim);font-weight:500">(must exactly match what's set on dev.ewelink.cc for this app)</span></label>
-            <input class="si" style="width:100%" id="ewRedirectUrl" placeholder="https://your-app-url">
-          </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-g btn-sm" onclick="connectEwelink()"><svg class="ic sm"><use href="#i-link"/></svg>Connect to eWeLink</button>
-            <button class="btn btn-sm" onclick="fetchEwelinkDevices()"><svg class="ic sm"><use href="#i-refresh"/></svg>Fetch My Sensors</button>
-          </div>
-          <div id="ewStatus" style="margin-top:10px;font-size:12px;color:var(--mute)"></div>
-          <div id="ewDeviceList" style="margin-top:12px"></div>
+        <div class="sb">
+          <div id="sensorMacGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
         </div>
       </div>
 
-      <!-- Sensor Readings — LAN Scan or eWeLink assignment, per farm -->
+      <!-- eWeLink Cloud Connection -->
       <div class="panel">
         <div class="ph">
-          <div class="phd"><svg class="ic sm"><use href="#i-thermo"/></svg>Farm Sensor Readings</div>
-          <span class="badge bgn">Live</span>
+          <div class="phd"><svg class="ic sm"><use href="#i-cloud"/></svg>eWeLink Cloud</div>
+          <span class="tip" tabindex="0" data-tip="For sensors on a different network than the farm&rsquo;s agent. Enter your app&rsquo;s details from dev.ewelink.cc once, then Connect &mdash; you briefly go to eWeLink&rsquo;s login page and come right back. The Redirect URL must match the one set on dev.ewelink.cc exactly.">i</span>
+          <span class="badge" id="ewConnBadge" style="margin-left:auto;background:rgba(95,110,132,.15);color:var(--mute);border-color:var(--b2)">Not connected</span>
         </div>
-        <div style="padding:16px 18px">
-          <div class="note note-g" style="margin-bottom:14px">
-            <div><strong style="color:#fff">Same network as agent?</strong> Enter the sensor's MAC address below — free, no cloud needed.<br>
-            <strong style="color:#fff">Different network?</strong> Connect eWeLink above, then assign the sensor to a farm below.</div>
+        <div class="sb">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px">
+            <div class="frow" style="margin-bottom:0"><label>App ID</label><input class="si" style="width:100%" id="ewAppId" placeholder="from dev.ewelink.cc"></div>
+            <div class="frow" style="margin-bottom:0"><label>App Secret</label><input class="si" style="width:100%" id="ewSecret" type="password" placeholder="from dev.ewelink.cc"></div>
           </div>
-
-          <!-- Per-farm MAC configuration + live readings -->
-          <div id="sensorMacGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
+          <div class="frow" style="margin:10px 0 12px"><label>Redirect URL</label><input class="si" style="width:100%" id="ewRedirectUrl" placeholder="https://your-app-url"></div>
+          <div class="srow">
+            <button class="btn btn-g btn-sm" onclick="connectEwelink()"><svg class="ic sm"><use href="#i-link"/></svg>Connect</button>
+            <button class="btn btn-sm" onclick="fetchEwelinkDevices()"><svg class="ic sm"><use href="#i-refresh"/></svg>Fetch sensors</button>
+          </div>
+          <div id="ewStatus" class="shint"></div>
+          <div id="ewDeviceList" style="margin-top:12px"></div>
         </div>
       </div>
 
       <!-- Fleet Data Backup -->
       <div class="panel">
-        <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-database"/></svg>Fleet Data</div><span class="badge bgn">Auto-saved</span></div>
-        <div style="padding:16px 18px">
-          <div style="font-size:12px;color:var(--mute);margin-bottom:12px">
-            Workers and customers auto-save to this device and the server. Use Export to back up or transfer to another device.
-          </div>
+        <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-database"/></svg>Fleet Data</div>
+          <span class="tip" tabindex="0" data-tip="Machines and customers save automatically to this device and the server. Export makes a CSV backup; Import loads one on another device.">i</span>
+          <span class="badge bgn" style="margin-left:auto">Auto-saved</span></div>
+        <div class="sb">
           <div id="fleetStoreStat" style="font-family:'Share Tech Mono',monospace;font-size:12px;color:var(--cyan);margin-bottom:12px"></div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-sm btn-g" onclick="exportFleet()"><svg class="ic sm"><use href="#i-download"/></svg>Export CSV</button>
-            <button class="btn btn-sm" onclick="document.getElementById('importFile').click()"><svg class="ic sm"><use href="#i-upload"/></svg>Import CSV</button>
+          <div class="srow">
+            <button class="btn btn-sm btn-g" onclick="exportFleet()"><svg class="ic sm"><use href="#i-download"/></svg>Export</button>
+            <button class="btn btn-sm" onclick="document.getElementById('importFile').click()"><svg class="ic sm"><use href="#i-upload"/></svg>Import</button>
             <input type="file" id="importFile" accept=".csv" style="display:none" onchange="importFleet(event)">
-            <button class="btn btn-sm" onclick="findAndMergeDuplicates()"><svg class="ic sm"><use href="#i-link"/></svg>Find &amp; Merge Duplicates</button>
-            <button class="btn btn-sm btn-r" onclick="clearAllFleetData()"><svg class="ic sm"><use href="#i-trash"/></svg>Clear All</button>
+            <button class="btn btn-sm" onclick="findAndMergeDuplicates()"><svg class="ic sm"><use href="#i-link"/></svg>Merge duplicates</button>
+            <button class="btn btn-sm btn-r" onclick="clearAllFleetData()"><svg class="ic sm"><use href="#i-trash"/></svg>Clear all</button>
           </div>
         </div>
       </div>
 
+      <!-- This device: how miner web UIs open + notifications -->
       <div class="panel">
-        <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-globe"/></svg>Web Login</div></div>
-        <div style="padding:16px 18px">
-          <div style="font-size:12px;color:var(--mute);margin-bottom:12px">
-            How "Open miner web UI" should connect. Only turn on Tailscale mode if <strong style="color:var(--txt)">this specific device</strong> has Tailscale installed and joined to the same network as your farm PCs — otherwise leave it off.
-          </div>
-          <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
-            <input type="checkbox" id="tailscaleToggle" onchange="toggleTailscaleMode(this.checked)" style="width:16px;height:16px;accent-color:var(--cyan)">
-            <span style="font-size:13px">Use Tailscale direct connection on this device</span>
-          </label>
-          <div style="font-size:11.5px;color:var(--mute);margin-top:8px;line-height:1.55">Off (default): routes through the agent tunnel — works from any browser, anywhere.<br>On: connects straight to the miner's local IP — faster and more reliable, but only works if Tailscale is active on this device.</div>
+        <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-globe"/></svg>This Device</div></div>
+        <div class="sb" style="padding-top:6px;padding-bottom:6px">
+          <div class="tw-row"><div class="lbl" style="display:flex;align-items:center">Tailscale direct web login
+            <span class="tip" tabindex="0" data-tip="How &ldquo;Web Login&rdquo; opens a miner on this device.<br><b>Off (default):</b> through the farm agent &mdash; works from any browser, anywhere.<br><b>On:</b> straight to the miner&rsquo;s local IP &mdash; faster, but only if Tailscale is running on this device and joined to the farm network.">i</span></div>
+            <label class="toggle"><input type="checkbox" id="tailscaleToggle" onchange="toggleTailscaleMode(this.checked)"><span class="tsldr"></span></label></div>
+          <div class="tw-row"><div style="font-weight:600">Push notifications</div><label class="toggle"><input type="checkbox" checked><span class="tsldr"></span></label></div>
+          <div class="tw-row"><div style="font-weight:600">Offline miner alert</div><label class="toggle"><input type="checkbox" checked><span class="tsldr"></span></label></div>
+          <div class="tw-row"><div style="font-weight:600">Temperature warning</div><label class="toggle"><input type="checkbox" checked><span class="tsldr"></span></label></div>
+          <div class="tw-row"><div style="font-weight:600">Hashrate drop</div><label class="toggle"><input type="checkbox" checked><span class="tsldr"></span></label></div>
         </div>
       </div>
 
       <div class="panel">
-        <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-bell"/></svg>Notifications</div></div>
-        <div style="padding:6px 18px">
-          <div class="tw-row"><div style="font-weight:600">Push Notifications</div><label class="toggle"><input type="checkbox" checked><span class="tsldr"></span></label></div>
-          <div class="tw-row"><div style="font-weight:600">Offline Miner Alert</div><label class="toggle"><input type="checkbox" checked><span class="tsldr"></span></label></div>
-          <div class="tw-row"><div style="font-weight:600">Temperature Warning</div><label class="toggle"><input type="checkbox" checked><span class="tsldr"></span></label></div>
-          <div class="tw-row"><div style="font-weight:600">Hashrate Drop</div><label class="toggle"><input type="checkbox" checked><span class="tsldr"></span></label></div>
+        <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-server"/></svg>Server</div>
+          <span class="tip" tabindex="0" data-tip="The backend this app talks to. Only change it if the server moved.">i</span></div>
+        <div class="sb">
+          <div class="srow" style="flex-wrap:nowrap">
+            <input class="si" style="flex:1;min-width:0" id="apiUrl" placeholder="https://your-app.up.railway.app" value="">
+            <button class="btn btn-sm" onclick="setApiBase(document.getElementById('apiUrl').value)">Save</button>
+            <button class="btn btn-g btn-sm" onclick="testConn()" title="Test connection"><svg class="ic sm"><use href="#i-check"/></svg>Test</button>
+          </div>
+          <div class="shint">Connected to <span style="color:var(--cyan);font-family:'Share Tech Mono',monospace" id="currentApiDisplay"></span></div>
         </div>
+      </div>
+
       </div>
     </div>
 
