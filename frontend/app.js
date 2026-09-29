@@ -2502,6 +2502,15 @@ function loadFleetFromBackend(cb) {
               else if (existing.status === 'disabled') existing.status = bw.status || 'offline';
               updated++;
             }
+            // Which farm a machine belongs to (and that farm's name) is
+            // decided on the server — by the agent that finds it, or by
+            // renaming / merging farms in Remote Access — so this device
+            // always takes it from there.
+            if (existing && ((bw.farm_id && existing.farm_id !== bw.farm_id) || (bw.farm && existing.farm !== bw.farm))) {
+              if (bw.farm_id) existing.farm_id = bw.farm_id;
+              if (bw.farm) existing.farm = bw.farm;
+              updated++;
+            }
             if (!existing) {
               workers.push(bw); added++;
             } else if (!existing.disabled) {
@@ -2800,6 +2809,9 @@ setInterval(liveUpdate,30000);fetchAgents();setInterval(fetchAgents,30000);
         }
         if(msg.type==='agent_connected') fetchAgents();
         if(msg.type==='agent_disconnected') fetchAgents();
+        // farm management (Remote Access → Farms / New agents)
+        if(msg.type==='agent_pending' || msg.type==='farm_renamed' || msg.type==='farms_changed') { loadFarms(); fetchAgents(); }
+        if(msg.type==='agent_connected' || msg.type==='agent_disconnected') loadFarms();
 
         // Live auto-discovery: the agent polls its whole subnet every
         // 30s independent of any manual scan. New machines appear here
@@ -2999,7 +3011,7 @@ function showPage(n){
     if(n==='dashboard')     { renderDash(); }
     if(n==='settings')      { loadSiteAlarmSetting(); loadAutoRestart(); }
     if(n==='workers')       { renderWorkers(); attachSortHandlers(); }
-    if(n==='agents')        { renderAgents(); populateDropdowns(); }
+    if(n==='agents')        { renderAgents(); populateDropdowns(); loadFarms(); }
     if(n==='customers')     { renderCustomers(); }
     if(n==='team')          { loadTeamFromBackend(); }
     if(n==='alerts')        { renderAlerts(); }
@@ -4666,6 +4678,186 @@ function arResetMachine(wid) {
     toast('✓ Back to the default', 'var(--green)');
     renderArMachines(d.machines);
   }).catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
+}
+
+// ── Farms & agent PCs (Remote Access) ──────────────────────────────
+// Which farm a PC runs, and each farm's name, are set here — not in the
+// PC's .env. A PC the server hasn't seen waits under "New agents" until
+// it's given a farm. See backend services/farms.js.
+let farmsState = { farms: [], pending: [] };
+let farmPick = null;   // { onOk, allowNew }
+
+function loadFarms() {
+  if (isCustomer) return;
+  const pg = document.getElementById('page-agents');
+  authFetch('/api/farms').then(function(d){
+    if (!d || !d.ok) { const fl = document.getElementById('farmsList'); if (fl && !farmsState.farms.length) fl.innerHTML = '<div style="color:var(--mute);font-size:12px">Could not load farms.</div>'; return; }
+    farmsState = { farms: d.farms || [], pending: d.pending || [] };
+    renderFarmsPanel(); renderPendingAgents();
+  });
+}
+function farmById(id) { return farmsState.farms.find(function(f){ return f.farm_id === id; }); }
+function farmLabel(f) { return f ? (f.name + (f.name !== f.farm_id ? '' : '')) : ''; }
+
+function renderPendingAgents() {
+  const panel = document.getElementById('pendingAgentsPanel'), grid = document.getElementById('pendingAgentsGrid');
+  const n = farmsState.pending.length;
+  if (panel) panel.style.display = n ? '' : 'none';
+  const b = document.getElementById('pendingAgentsBadge'); if (b) b.textContent = n + ' waiting';
+  if (!grid) return;
+  grid.innerHTML = farmsState.pending.map(function(p){
+    const sug = p.suggested_farm_id && farmById(p.suggested_farm_id);
+    return '<div class="card"><div class="card-head"><span class="sdot on"></span><div><div style="font-family:Exo 2,sans-serif;font-weight:700">' + escHtml(p.hostname || 'Unknown PC') + '</div>'
+      + '<div style="font-size:10px;color:var(--mute)">' + escHtml((p.ips || []).join(', ') || 'no IP reported') + (p.version ? ' &middot; v' + escHtml(p.version) : '') + '</div></div>'
+      + '<span class="badge bwn" style="margin-left:auto">NEW</span></div>'
+      + '<div class="card-body"><div class="card-row"><span class="ck">Networks</span><span class="cv" style="font-family:Share Tech Mono,monospace">' + escHtml((p.subnets || []).join(', ') || '—') + '</span></div>'
+      + (sug ? '<div class="card-row"><span class="ck">Looks like</span><span class="cv g">' + escHtml(sug.name) + '</span></div>' : '')
+      + (p.key_ok ? '' : '<div class="card-row"><span class="ck" style="color:var(--warn)">&#9888; Agent key</span><span class="cv" style="color:var(--warn)">different &mdash; assign only if you know this PC</span></div>')
+      + '</div><div class="card-foot"><button class="btn btn-sm btn-g" type="button" onclick="assignPendingPc(\'' + escAttr(p.pc_id) + '\')">Choose farm</button></div></div>';
+  }).join('');
+}
+
+function renderFarmsPanel() {
+  const el = document.getElementById('farmsList'); if (!el) return;
+  const b = document.getElementById('farmsBadge'); if (b) b.textContent = farmsState.farms.length + ' farm' + (farmsState.farms.length === 1 ? '' : 's');
+  if (!farmsState.farms.length) { el.innerHTML = '<div style="color:var(--mute);font-size:12px">No farms yet &mdash; they appear when an agent PC is given one.</div>'; return; }
+  // same name twice = a duplicate to merge; show the internal id then
+  const nameCount = {}; farmsState.farms.forEach(function(f){ nameCount[f.name] = (nameCount[f.name] || 0) + 1; });
+  el.innerHTML = farmsState.farms.map(function(f){
+    const dup = nameCount[f.name] > 1;
+    const pcs = (f.pcs || []).map(function(pc){
+      return '<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;margin-top:4px">'
+        + '<span class="sdot ' + (pc.online ? 'on' : 'off') + '"></span><span>' + escHtml(pc.hostname || 'PC') + '</span>'
+        + '<span style="color:var(--mute)">' + escHtml((pc.ips || []).join(', ')) + (pc.older_agent ? ' &middot; older agent (update pending)' : '') + '</span>'
+        + (pc.pc_id ? '<button class="abtn" type="button" style="margin-left:auto" onclick="changePcFarm(\'' + escAttr(pc.pc_id) + '\')">Move to farm&hellip;</button>' : '')
+        + (pc.pc_id && !pc.online ? '<button class="abtn" type="button" title="Forget this PC (it waits as new if it ever comes back)" onclick="forgetPc(\'' + escAttr(pc.pc_id) + '\')">Forget</button>' : '')
+        + '</div>';
+    }).join('');
+    const canDelete = !f.machines && !(f.pcs || []).length && !f.online;
+    return '<div style="border-top:1px solid var(--b1);padding:10px 0">'
+      + '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+      + '<span class="sdot ' + (f.online ? 'on' : 'off') + '"></span>'
+      + '<b style="font-family:Exo 2,sans-serif;font-size:13.5px">' + escHtml(f.name) + '</b>'
+      + (dup || f.name !== f.farm_id ? '<span style="font-family:Share Tech Mono,monospace;font-size:10.5px;color:' + (dup ? 'var(--warn)' : 'var(--mute)') + '">' + escHtml(f.farm_id) + (dup ? ' &middot; same name as another farm' : '') + '</span>' : '')
+      + '<span style="font-size:11.5px;color:var(--mute)">' + f.machines + ' machine' + (f.machines === 1 ? '' : 's') + '</span>'
+      + '<span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">'
+      + '<button class="abtn" type="button" onclick="renameFarmUi(\'' + escAttr(f.farm_id) + '\')">&#x270E; Rename</button>'
+      + (farmsState.farms.length > 1 ? '<button class="abtn" type="button" onclick="mergeFarmUi(\'' + escAttr(f.farm_id) + '\')">Merge into&hellip;</button>' : '')
+      + (canDelete ? '<button class="abtn" type="button" style="color:var(--red)" onclick="deleteFarmUi(\'' + escAttr(f.farm_id) + '\')">Delete</button>' : '')
+      + '</span></div>'
+      + (pcs || '<div style="font-size:11.5px;color:var(--mute);margin-top:4px">No agent PC on this farm</div>')
+      + '</div>';
+  }).join('');
+}
+
+function openFarmPicker(opts) {
+  farmPick = opts;
+  const t = document.getElementById('farmPickTitle'); if (t) t.textContent = opts.title;
+  const n = document.getElementById('farmPickNote'); if (n) n.textContent = opts.note || '';
+  const ok = document.getElementById('farmPickOk'); if (ok) ok.textContent = opts.okLabel || 'Assign';
+  const sel = document.getElementById('farmPickSel');
+  if (sel) {
+    sel.innerHTML = (opts.allowNew ? '<option value="__new">&#x2795; New farm&hellip;</option>' : '<option value="">Choose&hellip;</option>')
+      + farmsState.farms.filter(function(f){ return f.farm_id !== opts.exclude; }).map(function(f){
+          return '<option value="' + escAttr(f.farm_id) + '">' + escHtml(f.name) + ' (' + f.machines + ' machine' + (f.machines === 1 ? '' : 's') + (f.online ? ', online' : '') + ')</option>';
+        }).join('');
+    sel.value = opts.preselect && farmById(opts.preselect) ? opts.preselect : (opts.allowNew ? '__new' : '');
+  }
+  const nm = document.getElementById('farmPickName'); if (nm) nm.value = '';
+  farmPickChanged();
+  openSheet('farmPickSheet');
+}
+function farmPickChanged() {
+  const sel = document.getElementById('farmPickSel'), row = document.getElementById('farmPickNewRow');
+  if (row) row.style.display = sel && sel.value === '__new' ? '' : 'none';
+}
+function farmPickConfirm() {
+  if (!farmPick) return;
+  const sel = document.getElementById('farmPickSel'), nm = document.getElementById('farmPickName');
+  const v = sel ? sel.value : '';
+  let choice;
+  if (v === '__new') {
+    const name = (nm && nm.value || '').trim();
+    if (!name) { toast('Type the new farm name', 'var(--warn)'); if (nm) nm.focus(); return; }
+    choice = { new_farm_name: name };
+  } else if (v) choice = { farm_id: v };
+  else { toast('Choose a farm', 'var(--warn)'); return; }
+  const cb = farmPick.onOk;
+  closeSheet('farmPickSheet'); farmPick = null;
+  cb(choice);
+}
+
+function farmApi(method, path, body) {
+  const token = localStorage.getItem('ekl_token') || '';
+  return fetch(API_BASE + '/api/farms' + path, {
+    method: method, headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+    body: body ? JSON.stringify(body) : undefined
+  })
+  .then(function(r){ return r.json().catch(function(){ return { ok: false, error: 'HTTP ' + r.status }; })
+    .then(function(d){ if (r.status === 403) d = { ok: false, error: 'Only an admin or manager can change farms' }; return d; }); })
+  .then(function(d){
+    if (!d || !d.ok) { toast('✗ ' + ((d && d.error) || 'Could not save'), 'var(--red)'); return null; }
+    if (d.farms) { farmsState = { farms: d.farms, pending: d.pending || [] }; renderFarmsPanel(); renderPendingAgents(); }
+    // names / farms of machines changed on the server — bring them in
+    try { fetchAgents(); } catch (e) {}
+    try { loadFleetFromBackend(function(){ try { _fleetHash = ''; renderWorkers(); renderDash(); } catch (e) {} }); } catch (e) {}
+    return d;
+  })
+  .catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); return null; });
+}
+
+function assignPendingPc(pcId) {
+  const p = farmsState.pending.find(function(x){ return x.pc_id === pcId; }); if (!p) return;
+  openFarmPicker({
+    title: 'Farm for ' + (p.hostname || 'this PC'),
+    note: 'This PC will poll that farm’s machines. Choose the farm it sits in, or make a new one.',
+    allowNew: true, preselect: p.suggested_farm_id, okLabel: 'Assign',
+    onOk: function(c){
+      farmApi('POST', '/assign', Object.assign({ pc_id: pcId }, c)).then(function(d){ if (d) toast('✓ ' + (p.hostname || 'PC') + ' → ' + d.farm_name, 'var(--green)'); });
+    }
+  });
+}
+function changePcFarm(pcId) {
+  let pc = null, cur = null;
+  farmsState.farms.forEach(function(f){ (f.pcs || []).forEach(function(x){ if (x.pc_id === pcId) { pc = x; cur = f; } }); });
+  if (!pc) return;
+  openFarmPicker({
+    title: 'Move ' + (pc.hostname || 'PC') + ' to another farm',
+    note: 'Its agent reconnects at once and polls the chosen farm. Machines already recorded stay where they are — use “Merge into” to move a farm’s machines.',
+    allowNew: true, exclude: cur && cur.farm_id, okLabel: 'Move',
+    onOk: function(c){
+      farmApi('POST', '/assign', Object.assign({ pc_id: pcId }, c)).then(function(d){ if (d) toast('✓ ' + (pc.hostname || 'PC') + ' → ' + d.farm_name, 'var(--green)'); });
+    }
+  });
+}
+function renameFarmUi(fid) {
+  const f = farmById(fid); if (!f) return;
+  const name = prompt('New name for "' + f.name + '":', f.name);
+  if (name === null) return;
+  if (!name.trim() || name.trim() === f.name) return;
+  farmApi('POST', '/' + encodeURIComponent(fid) + '/rename', { name: name.trim() }).then(function(d){ if (d) toast('✓ Renamed to ' + name.trim(), 'var(--green)'); });
+}
+function mergeFarmUi(fid) {
+  const f = farmById(fid); if (!f) return;
+  openFarmPicker({
+    title: 'Merge “' + f.name + '” into…',
+    note: 'All ' + f.machines + ' machine record(s) and any PC of “' + f.name + '” move to the farm you choose, and “' + f.name + '” is removed. Use this for a duplicate farm.',
+    allowNew: false, exclude: fid, okLabel: 'Merge',
+    onOk: function(c){
+      const into = farmById(c.farm_id);
+      if (!confirm('Move ' + f.machines + ' machine(s) from "' + f.name + '" into "' + (into ? into.name : c.farm_id) + '" and remove "' + f.name + '"?')) return;
+      farmApi('POST', '/' + encodeURIComponent(fid) + '/merge', { into: c.farm_id }).then(function(d){ if (d) toast('✓ Merged — ' + d.moved + ' machine record(s) moved', 'var(--green)'); });
+    }
+  });
+}
+function deleteFarmUi(fid) {
+  const f = farmById(fid); if (!f) return;
+  if (!confirm('Delete the empty farm "' + f.name + '"?')) return;
+  farmApi('DELETE', '/' + encodeURIComponent(fid)).then(function(d){ if (d) toast('✓ Farm deleted', 'var(--green)'); });
+}
+function forgetPc(pcId) {
+  if (!confirm('Forget this PC? If its agent ever runs again it will wait under New agents.')) return;
+  farmApi('DELETE', '/pc/' + encodeURIComponent(pcId)).then(function(d){ if (d) toast('✓ PC forgotten', 'var(--green)'); });
 }
 
 function authFetch(path) {
