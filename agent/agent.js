@@ -85,7 +85,7 @@ function writeFarmFile() {
   // written to a temp file and renamed, so a power cut mid-write can't leave it half-written
   try {
     const fsx = require('fs'), tmp = FARM_FILE + '.tmp';
-    fsx.writeFileSync(tmp, JSON.stringify({ farm_id: FARM_ID, farm_name: FARM_NAME, subnets: APP_SUBNETS, saved_at: new Date().toISOString() }, null, 2));
+    fsx.writeFileSync(tmp, JSON.stringify({ farm_id: FARM_ID, farm_name: FARM_NAME, subnets: APP_SUBNETS, known_subnets: KNOWN_SUBNETS, saved_at: new Date().toISOString() }, null, 2));
     fsx.renameSync(tmp, FARM_FILE);
   } catch (e) {}
 }
@@ -123,19 +123,31 @@ const SAVED_FARM = readFarmFile() || {};
 let FARM_ID   = ENV_FARM_ID || SAVED_FARM.farm_id || '';
 let FARM_NAME = SAVED_FARM.farm_name || process.env.FARM_NAME || FARM_ID || '';
 let APP_SUBNETS = Array.isArray(SAVED_FARM.subnets) ? SAVED_FARM.subnets.filter(Boolean) : [];
+// Networks the farm's machines are already on (sent by the server from
+// the machine records), so a farm spread over several networks is never
+// half-polled just because nobody typed them in.
+let KNOWN_SUBNETS = Array.isArray(SAVED_FARM.known_subnets) ? SAVED_FARM.known_subnets.filter(Boolean) : [];
 function pickSubnets() {
   if (APP_SUBNETS.length) return { list: APP_SUBNETS.slice(), from: 'set in the app' };
-  if (ENV_SUBNETS.length) return { list: ENV_SUBNETS.slice(), from: 'LOCAL_SUBNET in .env' };
+  const union = [];
+  ENV_SUBNETS.concat(KNOWN_SUBNETS).forEach(x => { if (!union.includes(x)) union.push(x); });
+  if (union.length) {
+    const from = ENV_SUBNETS.length && KNOWN_SUBNETS.length ? 'LOCAL_SUBNET in .env + networks of this farm\'s machines'
+               : ENV_SUBNETS.length ? 'LOCAL_SUBNET in .env' : 'networks of this farm\'s machines';
+    return { list: union, from };
+  }
   if (LOCAL_NET.subnets.length) return { list: LOCAL_NET.subnets.slice(), from: 'detected on this PC' };
   return { list: ['192.168.1.0/24'], from: 'default — no network card found' };
 }
 let SUBNETS   = pickSubnets().list;
+let SUBNETS_FROM = pickSubnets().from;
 let SUBNET    = SUBNETS[0];  // first one for display/registration
-function applySubnets(fromServer) {
+function applySubnets(fromServer, knownFromServer) {
   if (Array.isArray(fromServer)) APP_SUBNETS = fromServer.map(String).map(s => s.trim()).filter(Boolean);
+  if (Array.isArray(knownFromServer)) KNOWN_SUBNETS = knownFromServer.map(String).map(s => s.trim()).filter(Boolean);
   const pick = pickSubnets();
   const changed = pick.list.join(',') !== SUBNETS.join(',');
-  SUBNETS = pick.list; SUBNET = SUBNETS[0];
+  SUBNETS = pick.list; SUBNETS_FROM = pick.from; SUBNET = SUBNETS[0];
   if (changed) console.log(`[CONFIG] Polling ${SUBNETS.join(', ')} (${pick.from})`);
 }
 
@@ -1115,41 +1127,65 @@ function formatUptime(secs) {
 }
 
 // ── Subnet to IPs ──────────────────────────────────────────
+// Turns one IP range as typed in the app (or LOCAL_SUBNET) into its
+// addresses. Accepted:
+//   192.168.70.0/24   192.168.70.0/22        any network up to 4,096 addresses
+//   192.168.70.1-192.168.73.254               a continuous range, across networks
+//   192.168.70.1-200                           part of one network
+//   192.168.70   192.168.70.*                  a whole /24
+//   192.168.70-73.*   192.168.70-73            several whole /24s in a row
+//   192.168.70.15                              one address
+// Two bugs used to hide machines here: a network bigger than /24 was cut
+// at its first 254 addresses, and "a.b.c.d-e.f.g.h" only covered the
+// first network (the end address was read as just its last number) — so
+// every machine on the next network was never polled and showed offline.
+const MAX_IPS_PER_RANGE = 4096;
+function ipToInt(ip) {
+  const p = String(ip).trim().split('.');
+  if (p.length !== 4) return null;
+  const n = p.map(x => (/^\d{1,3}$/.test(x) ? parseInt(x, 10) : NaN));
+  if (n.some(x => isNaN(x) || x > 255)) return null;
+  return ((n[0] << 24) >>> 0) + (n[1] << 16) + (n[2] << 8) + n[3];
+}
+function intToIp(n) { return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.'); }
+function rangeIPs(from, to, skipEnds) {
+  const out = [];
+  if (from === null || to === null || to < from) return out;
+  let count = to - from + 1;
+  if (count > MAX_IPS_PER_RANGE) { console.warn(`[RANGE] ${intToIp(from)}-${intToIp(to)} is ${count} addresses — only the first ${MAX_IPS_PER_RANGE} are used. Split it into smaller ranges.`); to = from + MAX_IPS_PER_RANGE - 1; }
+  for (let n = from; n <= to; n++) {
+    const last = n & 255;
+    if (skipEnds && (last === 0 || last === 255)) continue;   // network / broadcast of each /24
+    out.push(intToIp(n));
+  }
+  return out;
+}
 function subnetToIPs(input) {
-  input = (input || '').trim();
+  input = String(input || '').trim().replace(/\s+/g, '');
+  if (!input) return [];
   try {
-    // Format: 192.168.70.0/24 (CIDR)
-    if (input.includes('/')) {
-      const [base, bits] = input.split('/');
-      const mask  = ~((1 << (32 - parseInt(bits))) - 1);
-      const p     = base.split('.').map(Number);
-      const base32= (p[0]<<24)|(p[1]<<16)|(p[2]<<8)|p[3];
-      const net32 = base32 & mask;
-      const size  = Math.min(Math.pow(2, 32 - parseInt(bits)) - 2, 254);
-      return Array.from({length: size}, (_, i) => {
-        const n = net32 + i + 1;
-        return [(n>>24)&255,(n>>16)&255,(n>>8)&255,n&255].join('.');
-      });
+    let m;
+    // CIDR
+    if ((m = input.match(/^(\d+\.\d+\.\d+\.\d+)\/(\d{1,2})$/))) {
+      const bits = parseInt(m[2], 10), base = ipToInt(m[1]);
+      if (base === null || bits < 8 || bits > 32) return [];
+      if (bits >= 31) return rangeIPs(base, base + (bits === 32 ? 0 : 1), false);
+      const mask = (~((1 << (32 - bits)) - 1)) >>> 0;
+      const net = (base & mask) >>> 0, bcast = (net + Math.pow(2, 32 - bits) - 1) >>> 0;
+      return rangeIPs(net + 1, bcast - 1, false);   // every host; only the network and broadcast addresses are left out
     }
-    // Format: 192.168.70.1-255 or 192.168.70.1-192.168.70.255
-    if (input.includes('-')) {
-      const parts = input.split('-');
-      const startParts = parts[0].trim().split('.');
-      const endPart    = parts[1].trim();
-      // If end is just a number (last octet)
-      const endOctet   = endPart.includes('.') ? parseInt(endPart.split('.').pop()) : parseInt(endPart);
-      const startOctet = parseInt(startParts[3]);
-      const prefix     = startParts.slice(0,3).join('.');
-      const ips = [];
-      for (let i = startOctet; i <= endOctet; i++) ips.push(`${prefix}.${i}`);
-      return ips;
-    }
-    // Format: 192.168.70 (assume .1-254)
-    if (input.split('.').length === 3) {
-      return Array.from({length: 254}, (_, i) => `${input}.${i + 1}`);
-    }
-    // Single IP
-    return [input];
+    // full start-end addresses, may cross networks
+    if ((m = input.match(/^(\d+\.\d+\.\d+\.\d+)-(\d+\.\d+\.\d+\.\d+)$/))) return rangeIPs(ipToInt(m[1]), ipToInt(m[2]), false);
+    // a.b.c.x-y
+    if ((m = input.match(/^(\d+\.\d+\.\d+)\.(\d+)-(\d+)$/))) return rangeIPs(ipToInt(m[1] + '.' + m[2]), ipToInt(m[1] + '.' + m[3]), false);
+    // a.b.c-d(.*)  several whole /24s
+    if ((m = input.match(/^(\d+\.\d+)\.(\d+)-(\d+)(?:\.\*)?$/))) return rangeIPs(ipToInt(m[1] + '.' + m[2] + '.0'), ipToInt(m[1] + '.' + m[3] + '.255'), true);
+    // a.b.c or a.b.c.*
+    if ((m = input.match(/^(\d+\.\d+\.\d+)(?:\.\*)?$/))) return rangeIPs(ipToInt(m[1] + '.1'), ipToInt(m[1] + '.254'), false);
+    // single address
+    if (ipToInt(input) !== null) return [input];
+    console.warn('[RANGE] Not understood, ignored: ' + input);
+    return [];
   } catch(e) {
     console.error('[SCAN] subnetToIPs error:', e.message, 'input:', input);
     return [];
@@ -1394,55 +1430,58 @@ async function pollMiners() {
 }
 
 async function doPollMiners() {
-  // Poll EVERY configured subnet, not just the first one — a farm
-  // with multiple subnets (e.g. "192.168.70.0/24,192.168.44.0/24")
-  // must have every machine on every subnet checked each cycle,
-  // otherwise machines on the 2nd+ subnet get wrongly marked offline
-  // even though they're actually online.
+  // Poll EVERY configured range, not just the first one — a farm with
+  // several networks (e.g. "192.168.70.0/24,192.168.44.0/24") must have
+  // every machine on every one checked each cycle, otherwise machines on
+  // the 2nd+ network get marked offline even though they're running.
+  //
+  // Two steps, so more networks don't mean minutes per cycle:
+  //   1. knock on every address (cgminer port, then port 80 for the rest),
+  //      128 at a time — an empty address costs a timeout, so this is
+  //      where the time goes and where the parallelism helps;
+  //   2. read the machines that answered, 25 at a time, exactly as before.
+  const started = Date.now();
   const live  = [];
-  const BATCH = 25;
-
-  for (const subnet of SUBNETS) {
-    const ips = subnetToIPs(subnet);
-    for (let i = 0; i < ips.length; i += BATCH) {
-      const batch = ips.slice(i, i + BATCH);
-      const results = await Promise.all(batch.map(async ip => {
-        // This was the real reason the ElphaPEX at 19.3.19.46 never got
-        // any of the pools.cgi fixes above a chance to run: every recurring
-        // poll cycle gated entry on the cgminer TCP port (4028) alone, so
-        // a unit whose firmware doesn't run that service at all was
-        // silently skipped here, BEFORE getMinerInfo() — and therefore
-        // every one of its HTTP fallbacks — ever got called. It only ever
-        // showed up via a manual "Scan Network", whose isAsic() check
-        // already accepts HTTP-only units too.
-        //
-        // Widening this to "port 4028 OR port 80" on its own (an earlier
-        // version of this fix) caused a regression: literally ANY device
-        // that answers on port 80 — a router, a camera, a printer — got
-        // treated as a miner. isAsic() is the actual verification step
-        // (checks for real cgminer/Antminer/Avalon/Whatsminer/ElphaPEX
-        // signatures, not just "something is listening"); it's only run
-        // for the HTTP-only case, since a port-4028 hit is already a
-        // reliable enough signal on its own and doesn't need the extra
-        // round trip on every one of a farm's machines every cycle.
-        if (await checkPort(ip, CGPORT, 1500)) return getMinerInfo(ip).catch(() => null);
-        if (!(await checkPort(ip, 80, 1500))) { knownAsicIps.delete(ip); return null; }
-        // Skip the isAsic() cascade for a unit already verified recently —
-        // see the comment on knownAsicIps above for why this matters for
-        // one-connection-at-a-time embedded servers like the ElphaPEX's.
-        const knownAt = knownAsicIps.get(ip);
-        const stillTrusted = knownAt && (Date.now() - knownAt) < ASIC_RECHECK_MS;
-        if (!stillTrusted) {
-          if (!(await isAsic(ip))) { knownAsicIps.delete(ip); return null; }
-          knownAsicIps.set(ip, Date.now());
-        }
-        // No cgminer port: an HTTP-only unit — read it one request at a
-        // time (see httpOnlyReads above).
-        return getMinerInfo(ip, { httpOnly: true }).catch(() => null);
-      }));
-      live.push(...results.filter(Boolean));
-    }
+  const seen  = new Set();
+  const ips   = [];
+  for (const subnet of SUBNETS) for (const ip of subnetToIPs(subnet)) if (!seen.has(ip)) { seen.add(ip); ips.push(ip); }
+  const KNOCK = 128, BATCH = 25;
+  async function inBatches(list, size, fn) {
+    const out = [];
+    for (let i = 0; i < list.length; i += size) out.push(...await Promise.all(list.slice(i, i + size).map(fn)));
+    return out;
   }
+  const cg = await inBatches(ips, KNOCK, async ip => (await checkPort(ip, CGPORT, 1500)) ? ip : null);
+  const cgSet = new Set(cg.filter(Boolean));
+  const rest = ips.filter(ip => !cgSet.has(ip));
+  const web = await inBatches(rest, KNOCK, async ip => {
+    if (await checkPort(ip, 80, 1500)) return ip;
+    knownAsicIps.delete(ip); return null;
+  });
+  const webOnly = web.filter(Boolean);
+
+  // This was the real reason the ElphaPEX at 19.3.19.46 never got any of
+  // the pools.cgi fixes a chance to run: the recurring poll gated entry
+  // on the cgminer TCP port (4028) alone, so a unit whose firmware doesn't
+  // run that service was skipped before getMinerInfo() — and all its HTTP
+  // fallbacks — ever ran. Port 80 on its own isn't proof of a miner
+  // (routers, cameras, printers answer it too), so isAsic() verifies it.
+  const found = await inBatches([...cgSet, ...webOnly], BATCH, async ip => {
+    if (cgSet.has(ip)) return getMinerInfo(ip).catch(() => null);
+    // Skip the isAsic() cascade for a unit already verified recently —
+    // see the comment on knownAsicIps above for why this matters for
+    // one-connection-at-a-time embedded servers like the ElphaPEX's.
+    const knownAt = knownAsicIps.get(ip);
+    const stillTrusted = knownAt && (Date.now() - knownAt) < ASIC_RECHECK_MS;
+    if (!stillTrusted) {
+      if (!(await isAsic(ip))) { knownAsicIps.delete(ip); return null; }
+      knownAsicIps.set(ip, Date.now());
+    }
+    // No cgminer port: an HTTP-only unit — read it one request at a
+    // time (see httpOnlyReads above).
+    return getMinerInfo(ip, { httpOnly: true }).catch(() => null);
+  });
+  live.push(...found.filter(Boolean));
 
   if (live.length > 0) {
     // Recover MACs for machines whose firmware didn't report one, so
@@ -1451,9 +1490,12 @@ async function doPollMiners() {
     // those machines simply keep their previous identity behaviour.
     try { await enrichMacsFromArp(live); } catch(e) { console.log('[ARP] enrichment error (non-fatal):', e.message); }
 
-    console.log(`[POLL] ${live.length} miners online across ${SUBNETS.length} subnet(s)`);
+    console.log(`[POLL] ${live.length} miners online across ${SUBNETS.length} range(s), ${ips.length} addresses, ${Math.round((Date.now() - started) / 1000)}s`);
     send({ type:'poll_result', miners:live, miner_count:live.length });
   }
+  // What this PC actually polls — shown for the farm in Remote Access.
+  send({ type: 'poll_stats', subnets: SUBNETS, from: SUBNETS_FROM, addresses: ips.length, found: live.length,
+         cycle_ms: Date.now() - started, detected: LOCAL_NET.subnets, at: new Date().toISOString() });
 }
 
 // ── Send ───────────────────────────────────────────────────
@@ -2128,8 +2170,8 @@ function connect() {
         console.log(`[INFO] ${msg.message}`);
         if (msg.farm_id) FARM_ID = msg.farm_id;
         if (msg.farm_name) FARM_NAME = msg.farm_name;
-        applySubnets(Array.isArray(msg.subnets) ? msg.subnets : undefined);
-        console.log(`[INFO] This PC runs farm "${FARM_NAME || FARM_ID}" — polling ${SUBNETS.join(', ')}`);
+        applySubnets(Array.isArray(msg.subnets) ? msg.subnets : undefined, Array.isArray(msg.known_subnets) ? msg.known_subnets : undefined);
+        console.log(`[INFO] This PC runs farm "${FARM_NAME || FARM_ID}" — polling ${SUBNETS.join(', ')} (${SUBNETS_FROM})`);
         writeFarmFile();
         startFarmWork();
       } else if (msg.type === 'pending') {
@@ -2150,7 +2192,7 @@ function connect() {
         console.log(`[INFO] Farm renamed in the app: "${FARM_NAME}"`);
         writeFarmFile();
       } else if (msg.type === 'set_subnets') {
-        applySubnets(Array.isArray(msg.subnets) ? msg.subnets : []);
+        applySubnets(Array.isArray(msg.subnets) ? msg.subnets : undefined, Array.isArray(msg.known_subnets) ? msg.known_subnets : undefined);
         writeFarmFile();
       } else if (msg.type === 'sensor_read_now') {
         console.log('[TH16] Manual read triggered');
