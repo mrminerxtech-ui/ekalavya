@@ -72,7 +72,7 @@ router.get('/checkins/all', (req, res) => {
 });
 
 // DELETE /api/agents/:farmId — remove a stale agent
-router.delete('/:farmId', (req, res) => {
+router.delete('/:farmId', authMiddleware, (req, res) => {   // was open to anyone
   const agentMgr = require('../services/agentManager');
   const removed = agentMgr.removeAgent(req.params.farmId);
   console.log(`[AGENT] Manually removed: ${req.params.farmId}`);
