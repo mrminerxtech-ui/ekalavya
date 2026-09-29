@@ -48,34 +48,13 @@ if errorlevel 1 (
 echo [OK] Dependencies installed
 echo.
 
-:: Create .env if not exists
-if not exist .env (
-    echo [2/5] Creating config file...
-    copy .env.example .env >nul
-    echo [OK] Config file created: .env
-    echo.
-    echo ================================================
-    echo  IMPORTANT: Edit the .env file before starting
-    echo ================================================
-    echo.
-    echo  Open .env with Notepad and set:
-    echo.
-    echo  1. MMX_SERVER   = your Railway wss:// URL
-    echo  2. AGENT_KEY    = your agent key
-    echo  3. FARM_ID      = this farm's ID - must match the app, e.g. Farm_1^&2 for Harz Hydro
-    echo  4. FARM_NAME    = name for this farm
-    echo  5. LOCAL_SUBNET = your miner network, e.g. 192.168.1.0/24
-    echo.
-    echo  To find your subnet, your IP is:
-    ipconfig | findstr "IPv4"
-    echo  Your subnet is the first 3 numbers + .0/24
-    echo.
-    notepad .env
-    echo.
-    echo After saving the .env file, press any key to continue.
-    pause
+:: No settings file needed: the farm is chosen in the app, and the agent
+:: finds this PC's networks itself. An existing .env (PCs set up the old
+:: way) is kept and still works.
+if exist .env (
+    echo [2/5] Keeping the existing .env settings
 ) else (
-    echo [2/5] Config file already exists
+    echo [2/5] No settings needed - farm and networks are set in the app
 )
 echo.
 
@@ -122,7 +101,11 @@ echo.
 echo  Do NOT also open START.bat on this PC - the agent
 echo  already runs in the background.
 echo.
-echo  If connected, the farm appears in your
-echo  Ekalavya dashboard under Farm Agents.
+echo  ------------------------------------------------
+echo   LAST STEP - in the Ekalavya app:
+echo   Remote Access - New agents - "%COMPUTERNAME%"
+echo   - choose its farm, or type a new farm name.
+echo   A PC that already had a farm continues by itself.
+echo  ------------------------------------------------
 echo.
 pause
