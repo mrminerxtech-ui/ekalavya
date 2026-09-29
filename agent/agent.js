@@ -28,6 +28,7 @@ async function resolveEnvMACs() {
 
 // Called on every live reading — push to backend immediately
 function onSensorReading(ip, reading) {
+  if (!instanceHeld) return;   // another agent on this PC owns the readings
   const farmId   = FARM_ID;
   const farmName = process.env.FARM_NAME || FARM_ID;
   console.log(`[TH16] ${ip} → ${reading.temp}°C ${reading.humidity}% (${reading.source||'http'})`);
@@ -80,6 +81,50 @@ const SUBNET    = SUBNETS[0];  // first one for display/registration
 const POLL_MS   = parseInt(process.env.POLL_MS || '30000');
 const CGPORT    = parseInt(process.env.CGMINER_PORT || '4028');
 
+// ── One agent per PC ────────────────────────────────────────
+// PC-wide guard (agent-guard.js): the running agent holds a loopback
+// port, so a second copy — from this folder or any other — sees it and
+// refuses, saying which farm/folder/process is already running. Windows
+// frees the port when the process dies, so a crash never leaves a lock
+// behind. Only if that guard file is missing, or the port is taken by
+// an unrelated program, does the older per-folder lock file below apply.
+//
+// A refused copy:
+//   • started by our updater → exits with code 3; the updater waits and
+//     checks again every minute instead of restart-looping it
+//   • started by PM2 → stays idle and takes over if the other one stops
+//     (exiting would just make PM2 restart it again and again)
+//   • started by hand in a window → explains and exits
+var instanceHeld = false;
+const instanceReady = (function claimSingleInstance() {
+  let guard = null;
+  try { guard = require('./agent-guard'); } catch (e) { guard = null; }
+  // (deferred a tick: the fallback's settings are defined further down this file)
+  if (!guard) return Promise.resolve().then(() => { folderLockFallback(); return true; });
+  return guard.claim('agent', __dirname).then(r => {
+    if (r.ok) return true;
+    if (r.foreign) {
+      console.log(`[LOCK] Port ${guard.PORTS.agent} is used by another program — using the folder lock instead (set EKL_AGENT_LOCK_PORT to change the port)`);
+      folderLockFallback();
+      return true;
+    }
+    if (process.env.EKL_DUP_QUIET !== '1') guard.printRefusal('agent', r.other);
+    if (process.env.EKL_SUPERVISED === '1') process.exit(3);
+    if (process.env.pm_id !== undefined) {
+      console.log('[LOCK] Standing by — will take over only if that agent stops (checked every minute).');
+      return new Promise(resolve => {
+        const t = setInterval(() => {
+          guard.claim('agent', __dirname, { waitMs: 0 }).then(r2 => {
+            if (r2.ok) { clearInterval(t); console.log('[LOCK] The other agent has stopped — starting now.'); resolve(true); }
+          });
+        }, 60 * 1000);
+      });
+    }
+    process.exit(0);
+  }).catch(e => { console.log('[LOCK] Guard error (' + e.message + ') — using the folder lock'); folderLockFallback(); return true; });
+})();
+
+// Older per-folder lock, kept only as the fallback described above.
 // ── One agent per farm, enforced locally ────────────────────
 // Two agents sharing a FARM_ID fight: each registration kicks the other
 // off the backend, the kicked one reconnects, and they trade places
@@ -89,7 +134,7 @@ const CGPORT    = parseInt(process.env.CGMINER_PORT || '4028');
 // accident, and says so clearly rather than failing mysteriously.
 const LOCK_STALE_MS = 3 * 60 * 1000; // see touchLock() below
 let touchLockInterval = null;
-(function claimSingleInstance() {
+function folderLockFallback() {
   const fsLock   = require('fs');
   const pathLock = require('path');
   const lockFile = pathLock.join(__dirname, '.agent.lock');
@@ -150,7 +195,7 @@ let touchLockInterval = null;
     // from doing its job — the backend still catches duplicates.
     console.log('[LOCK] Could not use a lock file (' + e.message + ') — continuing');
   }
-})();
+}
 
 let ws = null, reconnectMs = 3000, pollTimer = null;
 
@@ -190,6 +235,7 @@ let wsGeneration         = 0;
 // crash-loop backoff and leaving the farm dark for several minutes.
 // It now fires only for states the reconnect loop cannot get out of.
 setInterval(() => {
+  if (!instanceHeld) return;                   // not started (standing by for another agent)
   const connected = ws && ws.readyState === 1; // 1 = OPEN
   const silentFor = Date.now() - lastServerMsgAt;
 
@@ -1648,7 +1694,10 @@ function agentFor(ip) {
 
 function handleWebuiProxyRequestNow(msg) {
   return new Promise(resolveQueue => {
-  const { request_id, ip, method, path: reqPath, headers, body } = msg;
+  const { request_id, ip, method, path: reqPath, headers } = msg;
+  // Raw bytes (gRPC-web protobuf) arrive base64-encoded; text as-is.
+  const body = msg.body_encoding === 'base64' && msg.body ? Buffer.from(msg.body, 'base64') : msg.body;
+  const isGrpc = /^application\/grpc/i.test((headers && headers['content-type']) || '');
   const REQUEST_USER = 'root', REQUEST_PASS = 'root'; // every Antminer unit uses this
 
   // Extensions that are ALWAYS binary, whatever Content-Type the miner's
@@ -1677,8 +1726,11 @@ function handleWebuiProxyRequestNow(msg) {
       // set-cookie: the miner's own login session (Braiins OS keeps it in
       // a cookie). It used to be dropped here, so a correct password was
       // accepted and then immediately forgotten.
-      headers: { 'content-type': contentType || 'text/html', 'location': res.headers['location'] || null,
+      headers: Object.assign({ 'content-type': contentType || 'text/html', 'location': res.headers['location'] || null,
                  'set-cookie': res.headers['set-cookie'] || null },
+                 // gRPC-web status/message (Braiins OS); a call's result lives here
+                 // when the reply has no body, and dropping it showed "missing trailer"
+                 ...Object.keys(res.headers).filter(h => /^grpc-/i.test(h)).map(h => ({ [h]: res.headers[h] }))),
       body: isText ? buf.toString('utf8') : buf.toString('base64'),
       encoding: isText ? 'utf8' : 'base64',
     });
@@ -1720,6 +1772,10 @@ function handleWebuiProxyRequestNow(msg) {
     // as sent — see pageAuth below for its own Authorization header.
     if (headers && headers.cookie) options.headers['Cookie'] = headers.cookie;
     if (headers && headers.accept) options.headers['Accept'] = headers.accept;
+    ['x-grpc-web', 'x-user-agent', 'grpc-timeout'].forEach(h => { if (headers && headers[h]) options.headers[h] = headers[h]; });
+    // gRPC reads Authorization as its own login token: our root/root Basic
+    // header there is an invalid token, so it's left off gRPC calls.
+    if (!authHeader) delete options.headers['Authorization'];
 
     const req = http.request(options, res => {
       if (res.statusCode === 401 && phase < 2 && res.headers['www-authenticate']) {
@@ -1779,6 +1835,8 @@ function handleWebuiProxyRequestNow(msg) {
   const cached = digestCache.get(ip);
   if (pageAuth) {
     attempt(pageAuth, 0);
+  } else if (isGrpc) {
+    attempt(null, 2);          // no login of ours, and no Digest retry
   } else if (cached) {
     cached.nc += 1;
     attempt(buildDigestAuth(REQUEST_USER, REQUEST_PASS, method || 'GET', reqPath || '/', cached.params, ncHex(cached.nc)), 0);
@@ -2088,4 +2146,9 @@ function connect() {
   ws.on('error', err => console.error(`[ERROR] ${err.message}`));
 }
 
-connect();
+instanceReady.then(ok => {
+  if (!ok) return;
+  instanceHeld = true;
+  lastServerMsgAt = Date.now();
+  connect();
+});
