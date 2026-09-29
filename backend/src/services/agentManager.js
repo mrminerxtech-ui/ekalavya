@@ -132,6 +132,8 @@ function registerAgent(ws, info) {
   const agent = {
     farm_id:       info.farm_id,
     farm_name:     info.farm_name,
+    pc_id:         info.pc_id || null,     // the PC's own permanent id (services/farms.js)
+    ips:           info.ips || [],
     subnet:        info.subnet        || '192.168.1.0/24',
     hostname:      info.hostname      || 'unknown',
     agent_version: info.agent_version || '1.0.0',
@@ -149,9 +151,13 @@ function registerAgent(ws, info) {
   try {
     if (ws.readyState === 1) {
       ws.send(JSON.stringify({
-        type:    'welcome',
-        message: `Ekalavya — Farm ${info.farm_name} registered`,
-        farm_id: info.farm_id,
+        type:      'welcome',
+        message:   `Ekalavya — Farm ${info.farm_name} registered`,
+        farm_id:   info.farm_id,
+        farm_name: info.farm_name,
+        // IP ranges set in the app for this farm; empty = the agent uses
+        // its .env LOCAL_SUBNET, or else the networks it detects itself
+        subnets:   info.subnets || [],
       }));
     }
   } catch(e) {}
@@ -285,6 +291,19 @@ function sendToAgent(farmId, payload) {
   try { agent.ws.send(JSON.stringify(payload)); return true; } catch(e) { return false; }
 }
 
+// Farm management (routes/farms.js): close a farm's connection so its
+// agent reconnects under its new farm, and show a renamed farm's name.
+function closeAgent(farmId, code, reason) {
+  const agent = connectedAgents.get(farmId);
+  if (!agent) return false;
+  try { agent.ws.close(code || 4010, reason || 'Reconnect'); } catch (e) { try { agent.ws.terminate(); } catch (x) {} }
+  return true;
+}
+function setFarmName(farmId, name) {
+  const agent = connectedAgents.get(farmId);
+  if (agent) agent.farm_name = name;
+}
+
 // ── Web UI tunnel — request/response matching ──────────────
 // The agent proxies an HTTP request to a miner's local web UI and sends
 // the raw response back over the same WebSocket. Since WebSocket is
@@ -292,7 +311,7 @@ function sendToAgent(farmId, payload) {
 // resolve/reject a Promise when the matching response message arrives.
 const pendingWebuiRequests = new Map(); // request_id -> { resolve, reject, timer }
 
-function sendWebuiRequest(farmId, ip, method, path, headers, body) {
+function sendWebuiRequest(farmId, ip, method, path, headers, body, opts) {
   return new Promise((resolve, reject) => {
     const agent = connectedAgents.get(farmId);
     if (!agent || agent.ws.readyState !== 1) { reject(new Error(`Agent "${farmId}" not connected`)); return; }
@@ -324,6 +343,8 @@ function sendWebuiRequest(farmId, ip, method, path, headers, body) {
         // deadline so it doesn't depend on the farm PC's clock matching
         // the server's.
         type: 'webui_proxy_request', request_id, ip, method, path, headers, body, ttl_ms: TTL_MS,
+        // 'base64' when body is raw bytes (gRPC-web) rather than text
+        body_encoding: (opts && opts.body_encoding) || undefined,
       }));
     } catch(e) {
       clearTimeout(timer);
@@ -425,4 +446,4 @@ setInterval(() => {
 }, 30 * 1000);
 
 module.exports = {
-  removeAgent, registerAgent, unregisterAgent, handleAgentMessage, getAgents, getAgent, sendToAgent, sendWebuiRequest, sendActionRequest };
+  removeAgent, registerAgent, unregisterAgent, handleAgentMessage, getAgents, getAgent, sendToAgent, sendWebuiRequest, sendActionRequest, closeAgent, setFarmName };
