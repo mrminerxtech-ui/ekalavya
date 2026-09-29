@@ -91,7 +91,10 @@ async function raiseAlert(message, level = 'warn', metadata = {}) {
 
   // Fire and forget webhooks
   sendSlackAlert(message, level).catch(() => {});
-  sendTelegramAlert(message, level).catch(() => {});
+  // The Telegram group gets only farm-level news (site alarm, last-restart
+  // log, auto-restart paused). Single-machine alerts (temperature, hashrate,
+  // one machine offline) stay in the app — pass { group: true } to post one.
+  if (metadata && metadata.group === true) sendTelegramAlert(message, level).catch(() => {});
 
   console.log(`[ALERT][${level.toUpperCase()}] ${message}`);
   return alert;
