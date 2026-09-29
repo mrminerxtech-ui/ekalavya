@@ -237,7 +237,38 @@ async function setSubnets(fid, subnets, by) {
 }
 function subnetsFor(fid) { return (reg && reg.farms[fid] && reg.farms[fid].subnets) || []; }
 
+// Networks (as /24s) this farm's machine records sit on. Sent to the
+// farm's agent so it always polls every network its machines are on,
+// even when no IP ranges were typed in — a farm spread over two networks
+// used to be half-polled (the other half showed offline).
+function knownSubnetsFor(fid, workers) {
+  const nets = new Set();
+  (workers || []).forEach(w => {
+    if (!w || w.farm_id !== fid || !w.ip) return;
+    const p = String(w.ip).split('.');
+    if (p.length === 4 && p.every(x => /^\d{1,3}$/.test(x))) nets.add(p.slice(0, 3).join('.') + '.0/24');
+  });
+  return [...nets].sort().slice(0, 32);
+}
+// Every few minutes: if a farm's machines turned up on a new network
+// (e.g. added with the Network Scanner), tell its agent.
+const lastKnownSent = new Map();
+function startKnownSubnetSync(agentMgr) {
+  setInterval(async () => {
+    try {
+      const workers = await db.loadWorkers();
+      agentMgr.getAgents().forEach(a => {
+        const list = knownSubnetsFor(a.farm_id, workers);
+        const key = list.join(',');
+        if (lastKnownSent.get(a.farm_id) === key) return;
+        if (agentMgr.sendToAgent(a.farm_id, { type: 'set_subnets', known_subnets: list })) lastKnownSent.set(a.farm_id, key);
+      });
+    } catch (e) {}
+  }, 5 * 60 * 1000).unref();
+}
+function noteKnownSent(fid, list) { lastKnownSent.set(fid, (list || []).join(',')); }
+
 function snapshot() { return reg ? JSON.parse(JSON.stringify(reg)) : blank(); }
 
 module.exports = { load, resolveAgent, suggestFarm, addPending, removePending, listPending, assignAgent, renameFarm,
-                   mergeFarm, deleteFarm, forgetAgent, farmName, snapshot, setSubnets, subnetsFor, _pending: pending, _reset: () => { reg = null; pending.clear(); } };
+                   mergeFarm, deleteFarm, forgetAgent, farmName, snapshot, setSubnets, subnetsFor, knownSubnetsFor, startKnownSubnetSync, noteKnownSent, _pending: pending, _reset: () => { reg = null; pending.clear(); } };
