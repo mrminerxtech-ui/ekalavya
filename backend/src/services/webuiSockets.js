@@ -49,10 +49,11 @@ function refuse(socket, code, text) {
   try { socket.write(`HTTP/1.1 ${code} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); } catch (e) {}
   try { socket.destroy(); } catch (e) {}
 }
+// sendToAgent, not getAgent().ws: getAgent() returns a copy without the
+// connection, so sending through it failed every time — every live socket
+// was refused within milliseconds ("WebSocket connection … failed").
 function toAgent(farmId, payload) {
-  const agent = agentMgr.getAgent(farmId);
-  if (!agent || !agent.ws || agent.ws.readyState !== 1) return false;
-  try { agent.ws.send(JSON.stringify(payload)); return true; } catch (e) { return false; }
+  return agentMgr.sendToAgent(farmId, payload);
 }
 
 async function allowed(user, farmId, ip) {
@@ -150,6 +151,7 @@ function onAgentMessage(farmId, msg) {
   if (msg.type === 'webui_ws_opened') {
     if (t.state !== 'opening') return;
     clearTimeout(t.timer); t.state = 'accepting';
+    console.log(`[WEBUI] ✓ live socket ${t.path} open (farm=${farmId} ip=${t.ip}${msg.protocol ? ', ' + msg.protocol : ''})`);
     t.accept(msg.protocol);
   } else if (msg.type === 'webui_ws_error') {
     clearTimeout(t.timer); tunnels.delete(msg.id);
