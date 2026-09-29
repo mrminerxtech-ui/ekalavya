@@ -37,6 +37,7 @@
 // rules above apply to every machine whatever its setting.
 // ============================================================
 const agentMgr = require('./agentManager');
+const logCheck = require('./logDiagnosis');
 const db       = require('./db');
 
 const SETTING_KEY       = 'auto_restart';
@@ -304,7 +305,7 @@ async function runLogJobs(now) {
     let result;
     if (!agentUp) result = { ok: false, error: 'farm agent offline' };
     else {
-      try { result = await agentMgr.sendActionRequest(j.farmId, ip, 'downloadlogs', { brand: w && w.brand, model: w && w.model }); }
+      try { result = await agentMgr.sendActionRequest(j.farmId, ip, 'downloadlogs', { brand: w && w.brand, model: w && w.model, with_snapshot: true }); }
       catch (e) { result = { ok: false, error: e.message }; }
     }
     const got = result && result.ok && result.logs;
@@ -323,19 +324,26 @@ async function runLogJobs(now) {
     const card = logCard(j.siteName, w, ip, customers);
     const after = Math.round((now - j.lastAt) / 60000);
     if (got) {
+      // Known error patterns + the miner's own fan / chip numbers → short list
+      let diag = { findings: [] };
+      try { diag = await logCheck.diagnose(result.logs, result.snapshot); }
+      catch (e) { console.error('[AUTO-RESTART] log check error:', e.message); }
       const header = [
         'Ekalavya — miner log', card, '',
         'Serial: ' + ((w && w.serial) || '—'),
         'Automatic restarts today: ' + j.restarts + ' (last at ' + new Date(j.lastAt).toISOString().replace('T', ' ').slice(0, 16) + ' UTC)',
         'Fetched: ' + new Date(now).toISOString().replace('T', ' ').slice(0, 16) + ' UTC — ' + after + ' min after the last restart',
         'Status when fetched: ' + status,
+        '', logCheck.fileBlock(diag.findings, result.snapshot),
         '', '─'.repeat(60), '',
       ].join('\n');
       const text = header + String(result.logs).slice(-4 * 1024 * 1024);   // last 4 MB is plenty
       const fname = `${j.siteName}_${(w && (w.worker_id && w.worker_id !== '—' ? w.worker_id : w.name)) || ip}_${stamp(new Date(now))}.txt`;
-      const sent = telegramDoc ? await telegramDoc(card, title, fname, text) : { ok: false, error: 'Telegram not ready' };
+      const caption = card + '\n\n' + logCheck.captionList(diag.findings, 1000 - card.length - title.length - 10);
+      const sent = telegramDoc ? await telegramDoc(caption, title, fname, text) : { ok: false, error: 'Telegram not ready' };
       console.log(`[AUTO-RESTART] ${sent.ok ? '✓' : '✗'} ${j.siteName}: log of ${label} ${sent.ok ? 'posted to Telegram' : 'not posted — ' + sent.error} (${after} min after the last restart, ${String(result.logs).length} chars)`);
-      note({ site: j.siteName, machine: label, action: sent.ok ? 'log-sent' : 'failed', detail: sent.ok ? `log posted to Telegram (${after} min after the last restart)` : 'log not posted: ' + sent.error });
+      const found = diag.findings.length ? diag.findings.slice(0, 3).map(f => f.text.split(' — ')[0]).join('; ') + (diag.findings.length > 3 ? ` +${diag.findings.length - 3}` : '') : 'no known error found';
+      note({ site: j.siteName, machine: label, action: sent.ok ? 'log-sent' : 'failed', detail: sent.ok ? `log posted to Telegram (${after} min after the last restart) · ${found}` : 'log not posted: ' + sent.error });
       if (!sent.ok && sent.error !== 'Telegram not configured') tell(card + '\n\nLog could not be sent: ' + sent.error, title);
     } else {
       const why = (result && result.error) || 'the miner sent no log';
