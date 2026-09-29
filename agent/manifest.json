@@ -1,8 +1,9 @@
 {
-  "version": "1.1.42",
-  "released_at": "2026-09-29T05:24:32Z",
+  "version": "1.1.43",
+  "released_at": "2026-09-29T06:29:52Z",
   "min_node_version": "16.0.0",
   "changelog": [
+    "Fix machines on a farm's second network showing offline. IP ranges were cut short: a network bigger than /24 (10.0.0.0/23, /22) was only polled for its first 254 addresses, and a continuous range such as 192.168.70.1-192.168.73.254 only covered its first network (the end address was read as just its last number). Ranges now cover everything up to 4,096 addresses each, and also accept 192.168.70-73.* for several whole networks; overlapping ranges are polled once. Unless ranges are set in the app, the agent now polls LOCAL_SUBNET plus every network the farm's machines are on (sent by the server, refreshed every 5 minutes), so a farm spread over several networks is never half-polled; with neither, the PC's own networks. Polling knocks on 128 addresses at a time before reading the machines that answer 25 at a time, so more networks don't stretch the cycle. After each cycle the agent reports what it polled (ranges, where they came from, addresses, cycle time, machines found) — shown per farm in Remote Access.",
     "Farms are chosen in the app, not in .env. The agent now identifies the PC (permanent id from the Windows MachineGuid + PC name, sent as x-agent-pc-id) and the server decides which farm it runs; a PC it has never seen waits under Remote Access → New agents until someone picks a farm or types a new farm name, and polls nothing meanwhile. PCs set up the old way (FARM_ID in .env) are linked to that farm automatically the first time. The farm and the IP ranges set in the app are kept in .farm.json so a restart knows them at once. No .env is needed any more: IP ranges come from the app (Remote Access → IP Ranges, now actually pushed to the agent), else LOCAL_SUBNET in .env, else the PC's own network cards (virtual/VPN adapters skipped, anything wider than /24 narrowed to the PC's /24). Handles new server messages pending / assigned / farm_renamed / set_subnets, and reconnects at once (code 4010) when its farm is changed in the app. Polling starts on the server's welcome instead of on connect.",
     "One agent per PC, enforced PC-wide (new agent-guard.js). The old guard was a lock file in the agent's own folder, so a second copy in another folder never saw it, and START.bat opened while PM2 already ran the updater started a second updater that restarted its refused agent forever while both rewrote the agent files. Now the running updater and agent each hold a loopback port (127.0.0.1:47811 / 47812): any second copy, from any folder, is refused with the farm, folder and process that is already running; Windows frees the port the moment a process dies, so a crash never leaves a stale lock. A refused agent under an updater exits with code 3 and the updater checks again every minute (no restart loop, message shown once); a refused copy under PM2 stands by and takes over if the other stops. If the port is used by an unrelated program the old folder lock is used instead. 'node agent-guard.js --status' shows what runs; '--stop-others' (used by SETUP-WINDOWS.bat) stops every other Ekalavya agent on the PC.",
     "Fix Braiins OS 26.x showing 'Miner info: missing trailer' and empty Hardware Information / Hashboards through the web UI tunnel. Its dashboard calls the miner's gRPC-web API (GetMinerDetails, GetHashboards, GetMetadata…) with binary protobuf bodies; those bodies are now forwarded as raw bytes (base64 over the agent link, body_encoding) instead of being lost, the reply's grpc-status / grpc-message headers are returned (a call's result lives there when the reply has no body — dropping them is what the browser reported as 'missing trailer'), x-grpc-web / x-user-agent / grpc-timeout are passed to the miner, and the agent's root/root Basic header is no longer added to gRPC calls (gRPC reads Authorization as its own login token, so ours looked like an invalid token).",
@@ -26,8 +27,8 @@
   "files": [
     {
       "name": "agent.js",
-      "sha256": "4132b8acb45f6d2e70f75155d05ed00a0f23afd203541d3cf515790b4cd39b5d",
-      "size": 117109
+      "sha256": "dfe47c9e05c2337f0d30eb733b4723de222bd6a4815c19704974c97006f4a966",
+      "size": 120389
     },
     {
       "name": "agent-guard.js",
