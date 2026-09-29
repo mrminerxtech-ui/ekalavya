@@ -1065,6 +1065,18 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
       </div>
 
       <div id="raSectionAgents">
+        <!-- PCs whose agent is running but that have no farm yet -->
+        <div class="panel" id="pendingAgentsPanel" style="display:none;border-color:rgba(251,191,36,.45)">
+          <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-radio"/></svg>New agents waiting for a farm</div><span class="badge bwn" id="pendingAgentsBadge">0</span></div>
+          <div style="padding:6px 18px 0;font-size:12px;color:var(--mute);line-height:1.5">These PCs are running the agent. Choose which farm each one runs &mdash; an existing farm, or type a new farm name. Nothing is polled until you do.</div>
+          <div class="card-grid" style="padding:16px" id="pendingAgentsGrid"></div>
+        </div>
+        <!-- Farms: names are typed here; a PC's .env no longer decides them -->
+        <div class="panel" id="farmsPanel">
+          <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-layers"/></svg>Farms</div><span class="badge" id="farmsBadge">&hellip;</span></div>
+          <div style="padding:6px 18px 0;font-size:12px;color:var(--mute);line-height:1.5">Rename a farm, move a PC to another farm, or merge a duplicate farm into the real one (its machines move with it).</div>
+          <div id="farmsList" style="padding:12px 18px 16px"></div>
+        </div>
         <div class="panel">
           <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-server"/></svg>Connected Agents</div><span class="badge bgn" id="agentCountBadge">0 Online</span></div>
           <div class="card-grid" style="padding:16px" id="agentGrid"></div>
@@ -1555,6 +1567,25 @@ input[type=checkbox]{accent-color:var(--cyan);width:15px;height:15px;cursor:poin
     </div>
   </div>
 </div>
+<!-- Choose a farm: for a new PC, moving a PC, or merging a farm -->
+<div class="overlay" id="farmPickSheet">
+  <div class="sheet" style="max-width:480px">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title" id="farmPickTitle">Choose farm</div>
+    <div class="sheet-body">
+      <div id="farmPickNote" style="font-size:12.5px;color:var(--mute);line-height:1.5;margin-bottom:12px"></div>
+      <div class="frow"><label for="farmPickSel">Farm</label>
+        <select class="si" id="farmPickSel" style="width:100%" onchange="farmPickChanged()"></select></div>
+      <div class="frow" id="farmPickNewRow" style="display:none"><label for="farmPickName">New farm name</label>
+        <input class="si" id="farmPickName" style="width:100%" maxlength="60" placeholder="e.g. Harz Hydro"></div>
+    </div>
+    <div class="sheet-foot">
+      <button class="btn btn-ghost" onclick="closeSheet('farmPickSheet')">Cancel</button>
+      <button class="btn btn-g" id="farmPickOk" onclick="farmPickConfirm()">Assign</button>
+    </div>
+  </div>
+</div>
+
 <!-- MINER CONTROL PANEL -->
 <div id="ctrlPanel">
   <div class="ctrl-topbar">
