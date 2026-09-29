@@ -195,7 +195,7 @@ function setMachines(workerIds, v, by) {
     const all = await db.loadWorkers();
     const byId = new Map(all.filter(Boolean).map(w => [w.id, w]));
     const next = { ...overrides }, changed = [], missing = [];
-    const at = new Date().toISOString();
+    const at = new Date(Date.now()).toISOString();
     for (const id of ids) {
       const rec = byId.get(id);
       if (!rec) {
@@ -232,7 +232,27 @@ function setMachines(workerIds, v, by) {
 function getLog() { return log.slice(0, 50); }
 
 let telegram = null;   // set in start() — alerts.js requires agentManager too, so resolved lazily
-function tell(text) { try { telegram && telegram(text, 'warn'); } catch (e) {} }
+// A message with its own title carries its own icon, so no level emoji in front
+function tell(text, title) { try { telegram && telegram(text, title ? 'plain' : 'warn', title); } catch (e) {} }
+
+// One Telegram message per machine, in the layout the team uses:
+//   Farm : / Customer: / Worker: / Sl.no: / IP:
+function machineCard(siteName, w, ip, customers) {
+  const clean = v => (v === undefined || v === null || String(v).trim() === '' || String(v).trim() === '—') ? '—' : String(v).trim();
+  let cust = null;
+  if (w) {
+    cust = (customers || []).find(c => c && w.cid != null && String(c.id) === String(w.cid))
+        || (customers || []).find(c => c && Array.isArray(c.miners) && c.miners.includes(w.id));
+  }
+  const worker = w ? (clean(w.worker_id) !== '—' ? w.worker_id : clean(w.worker) !== '—' ? w.worker : w.name) : null;
+  return [
+    'Farm : ' + clean(siteName),
+    'Customer: ' + clean(cust && cust.name),
+    'Worker: ' + clean(worker),
+    'Sl.no: ' + clean(w && w.serial),
+    'IP: ' + clean(ip),
+  ].join('\n');
+}
 
 async function tick() {
   await Promise.all([loadSettings(), loadOverrides()]);
@@ -298,7 +318,7 @@ async function tick() {
       if (recent.length >= cfg.max_per_day) {
         if (!gaveUpNotified.get(k) || now - gaveUpNotified.get(k) > DAY_MS) {
           gaveUpNotified.set(k, now);
-          gaveUp.push(`${label} (${recent.length}×)`);
+          gaveUp.push({ w, ip: e.ip, count: recent.length });
           note({ site: siteName, machine: label, action: 'gave-up', detail: `${recent.length} automatic restarts in 24h` });
         }
         continue;
@@ -315,15 +335,21 @@ async function tick() {
       if (result && result.ok) {
         console.log(`[AUTO-RESTART] ✓ ${siteName}: rebooted ${label} — 0 hashrate for ${mins} min (restart ${recent.length}/${cfg.max_per_day} today${own})`);
         note({ site: siteName, machine: label, action: 'restarted', detail: `0 hashrate for ${mins} min · ${recent.length}/${cfg.max_per_day} today${own}` });
-        restarted.push(`${label} (${mins} min at 0)`);
+        restarted.push({ w, ip: e.ip, mins, n: recent.length, max: cfg.max_per_day });
       } else {
         const why = (result && result.error) || 'no reply';
         console.log(`[AUTO-RESTART] ✗ ${siteName}: reboot of ${label} failed — ${why}`);
         note({ site: siteName, machine: label, action: 'failed', detail: why });
       }
     }
-    if (restarted.length) tell(`Auto-restart at ${siteName}: rebooted ${restarted.length} machine(s) at 0 hashrate: ${restarted.join(', ')}`);
-    if (gaveUp.length) tell(`Auto-restart at ${siteName}: still at 0 hashrate after the daily limit of automatic restarts — needs a person: ${gaveUp.join(', ')}`);
+    if (restarted.length || gaveUp.length) {
+      let customers = [];
+      try { customers = await db.loadCustomers(); } catch (e) {}
+      restarted.forEach(r => tell(machineCard(siteName, r.w, r.ip, customers),
+        `🔄 Machine rebooted — 0 hashrate for ${r.mins} min (restart ${r.n}/${r.max} today)`));
+      gaveUp.forEach(g => tell(machineCard(siteName, g.w, g.ip, customers),
+        `🛠 Needs a person — still at 0 hashrate after ${g.count} restarts today`));
+    }
   }
 }
 
