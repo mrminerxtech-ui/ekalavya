@@ -1665,13 +1665,14 @@ function triggerScan(farmId) {
 
 // ── Agent config panel ────────────────────────────────────
 function getAgentSubnets(farmId) { try { return JSON.parse(localStorage.getItem('agent_subnets_' + farmId) || '[]'); } catch { return []; } }
+// Ranges typed here are for a one-off SCAN only (kept on this device to
+// fill the scanner). They used to be saved to the server as well, and
+// since agents started polling the server's ranges that turned a scan of
+// one farm's networks into another farm's permanent polling ranges
+// (Ghummadh ended up "polling" Alhayer's 192.168.44/70). Polling ranges
+// are set only in Remote Access → Farms → IP ranges.
 function setAgentSubnets(farmId, subnets) {
   localStorage.setItem('agent_subnets_' + farmId, JSON.stringify(subnets));
-  const a = agents.find(x => x.id === farmId); if (a) a.subnet = subnets.join(',');
-  const token = localStorage.getItem('ekl_token');
-  if (token && API_BASE && !API_BASE.includes('localhost')) {
-    fetch(API_BASE + '/api/fleet/agent-config', { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body:JSON.stringify({farm_id:farmId, subnets, name:a?.name||farmId}) }).catch(() => {});
-  }
 }
 function openAgentConfig(farmId, farmName, currentSubnet) {
   _cfgAgentId = farmId;
@@ -4766,6 +4767,22 @@ function pollingLine(f) {
   const p = f.polling;
   const set = (f.subnets || []).length;
   let txt, col = 'var(--mute)';
+  // networks of THIS farm's machines, with how many are online on each —
+  // a whole network at 0 online almost always means it isn't polled
+  const nets = (f.networks || []).map(function(n){
+    const dark = n.total >= 3 && n.online === 0;
+    return '<span style="color:' + (dark ? 'var(--warn)' : 'var(--mute)') + '">' + escHtml(n.net) + '.x ' + n.online + '/' + n.total + (dark ? ' &#9888;' : '') + '</span>';
+  }).join(' &middot; ');
+  const darkNets = (f.networks || []).filter(function(n){ return n.total >= 3 && n.online === 0; });
+  // ranges set on this farm that cover ANOTHER farm's machines
+  const foreign = [];
+  if (set) farmsState.farms.forEach(function(g){
+    if (g.farm_id === f.farm_id) return;
+    (g.known_subnets || []).forEach(function(n){ if (rangeCovers(f.subnets, n.split('.').slice(0, 3).join('.') + '.1')) foreign.push(g.name + ' (' + n + ')'); });
+  });
+  const extra = (nets ? '<br>Machines by network: ' + nets : '')
+    + (darkNets.length ? '<br><span style="color:var(--warn)">&#9888; No machine online on ' + escHtml(darkNets.map(function(n){ return n.net + '.x'; }).join(', ')) + ' — if they are running, that network isn’t being polled: add it in IP ranges.</span>' : '')
+    + (foreign.length ? '<br><span style="color:var(--red)">&#9888; The IP ranges set here cover another farm’s machines: ' + escHtml(foreign.join(', ')) + '. Unless both sites really use the same network numbers, remove them (IP ranges → Use automatic) — this PC can’t see that farm’s machines.</span>' : '');
   if (p) {
     txt = 'Polling ' + (p.subnets || []).join(', ') + ' <span style="color:var(--mute)">&middot; ' + escHtml(p.from || '') + ' &middot; '
         + p.addresses + ' addresses &middot; cycle ' + Math.round((p.cycle_ms || 0) / 1000) + ' s &middot; ' + p.found + ' found</span>';
@@ -4779,7 +4796,7 @@ function pollingLine(f) {
   } else {
     txt = set ? 'Ranges set: ' + escHtml(f.subnets.join(', ')) : 'Automatic ranges';
   }
-  return '<div style="font-size:11.5px;margin-top:6px;font-family:Share Tech Mono,monospace;color:' + col + ';line-height:1.5">' + txt + '</div>';
+  return '<div style="font-size:11.5px;margin-top:6px;font-family:Share Tech Mono,monospace;color:' + col + ';line-height:1.5">' + txt + extra + '</div>';
 }
 
 // Same range formats as the agent (agent.js subnetToIPs), for the count
@@ -4821,6 +4838,9 @@ function rangesPreview() {
     html = lines.length + ' range' + (lines.length === 1 ? '' : 's') + ', ' + total.toLocaleString() + ' addresses polled every cycle.';
     const missing = (f.known_subnets || []).filter(function(n){ return !rangeCovers(lines, n.split('.').slice(0, 3).join('.') + '.1'); });
     if (missing.length) html += '<br><span style="color:var(--warn)">&#9888; This farm has machines on ' + escHtml(missing.join(', ')) + ' — not in these ranges, so they would show offline.</span>';
+    const foreign = [];
+    farmsState.farms.forEach(function(g){ if (g.farm_id !== f.farm_id) (g.known_subnets || []).forEach(function(n){ if (rangeCovers(lines, n.split('.').slice(0, 3).join('.') + '.1')) foreign.push(g.name + ' (' + n + ')'); }); });
+    if (foreign.length) html += '<br><span style="color:var(--red)">&#9888; These ranges include another farm’s machines: ' + escHtml(foreign.join(', ')) + '. Unless both sites really use the same network numbers, leave them to the PC at that farm.</span>';
   }
   if (big.length) html += '<br><span style="color:var(--warn)">&#9888; Over 4,096 addresses, only the first 4,096 are polled: ' + escHtml(big.join(', ')) + '</span>';
   if (bad.length) html += '<br><span style="color:var(--red)">&#10007; Not an IP range: ' + escHtml(bad.join(', ')) + '</span>';
