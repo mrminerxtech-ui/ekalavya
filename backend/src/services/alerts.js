@@ -50,6 +50,38 @@ async function sendTelegramAlert(message, level = 'warn', title) {
   }
 }
 
+// Send a text file to the Telegram group (sendDocument), with a caption.
+// Built as a plain multipart upload so no extra package is needed.
+// Caption: bold title line + message, escaped like sendTelegramAlert.
+async function sendTelegramDocument(caption, title, filename, content) {
+  if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT) return { ok: false, error: 'Telegram not configured' };
+  const esc = v => String(v).replace(/([_*`\[])/g, '\\$1');
+  let cap = (title ? '*' + esc(title) + '*\n' : '') + esc(caption);
+  if (cap.length > 1024) cap = cap.slice(0, 1020).replace(/\\$/, '') + '…';   // Telegram's caption limit
+  const safeName = String(filename || 'log.txt').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120);
+  const boundary = '----ekalavya' + Date.now().toString(16) + Math.random().toString(16).slice(2);
+  const field = (name, value) => Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`, 'utf8');
+  const body = Buffer.concat([
+    field('chat_id', TELEGRAM_CHAT),
+    field('caption', cap),
+    field('parse_mode', 'Markdown'),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${safeName}"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n`, 'utf8'),
+    Buffer.isBuffer(content) ? content : Buffer.from(String(content == null ? '' : content), 'utf8'),
+    Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8'),
+  ]);
+  try {
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument`, body, {
+      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': body.length },
+      timeout: 30000, maxBodyLength: Infinity, maxContentLength: Infinity,
+    });
+    return { ok: true };
+  } catch (e) {
+    const why = (e.response && e.response.data && e.response.data.description) || e.message;
+    console.error('[ALERT] Telegram file failed:', why);
+    return { ok: false, error: why };
+  }
+}
+
 /**
  * Raise an alert — stores it, broadcasts via WS, and sends webhook
  */
@@ -636,5 +668,5 @@ function start() {
   siteAlertTimer = setInterval(() => { checkSiteOfflineCounts().catch(e => console.error('[ALERT]', e.message)); }, CHECK_EVERY_MS);
 }
 
-module.exports = { raiseAlert, sendSlackAlert, sendTelegramAlert, checkWorkerThresholds, start, checkSiteOfflineCounts, twimlHandler,
+module.exports = { sendTelegramDocument, raiseAlert, sendSlackAlert, sendTelegramAlert, checkWorkerThresholds, start, checkSiteOfflineCounts, twimlHandler,
                    getAlarmSettings, setAlarmAt, loadAlarmSetting };
