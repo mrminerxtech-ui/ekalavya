@@ -11,11 +11,17 @@
 // real hardware on its own:
 //   • Never touches: machines in repair (disabled), machines put to sleep
 //     (last action = sleep), machines whose farm agent is disconnected.
-//   • At most `max_per_day` automatic restarts per machine per 24h
-//     (default 3). After that it's left alone — this also stops a loop on
-//     a machine whose hashrate simply can't be read. Individual restarts
-//     are NOT posted to Telegram (the group was flooded); the group hears
-//     about a machine once: its log, 10 min after its last restart.
+//   • At most `max_per_day` automatic restarts per machine (default 3).
+//     After that it's LEFT FOR A PERSON: no more automatic restarts until
+//     it has hashed again for RECOVERED_MS (1 h) — then a fresh count
+//     starts. (Until 2026-09-30 this was a rolling 24 h window: a machine
+//     stuck for days got 3 restarts a day forever, and after the first day
+//     every restart was "the 3rd", so its log was posted 3 times a day.)
+//     The count is kept on the server (app_settings `auto_restart_state`)
+//     so a redeploy doesn't hand every stuck machine 3 new restarts.
+//     Individual restarts are NOT posted to Telegram (the group was
+//     flooded); the group hears about a machine once per failure: its log,
+//     10 min after its last restart.
 //   • After a restart the machine gets `minutes` again (min 15) to boot
 //     and start hashing before it can be restarted again.
 //   • Site-wide problem: if more than SITE_WIDE_PCT of a site's reachable
@@ -50,12 +56,17 @@ const SITE_WIDE_PCT     = 0.30;
 const SITE_WIDE_MIN     = 8;
 const PER_SITE_PER_TICK = 5;
 const FORGET_AFTER_MS   = 3 * 60 * 1000;   // gone from polls this long → no longer tracked
+const RECOVERED_MS      = 60 * 60 * 1000;  // hashing this long without a break → restart count starts again
+const STATE_KEY         = 'auto_restart_state';
+const STATE_PRUNE_MS    = 14 * DAY_MS;     // counts of machines not restarted for 2 weeks are dropped
 
 let settings = { ...DEFAULTS };
 let overrides = {};           // machineKey -> { mode:'on'|'off', minutes, max_per_day, worker_id, name, ip, farm_id, set_by, set_at }
 const zero     = new Map();   // "farm|key" -> { farmId, ip, key, since, lastSeen }
 const seenAt   = new Map();   // farmId -> Map(key -> { ip, zero:boolean, at }) latest poll per site
-const history  = new Map();   // "farm|key" -> [restart timestamps]
+const history  = new Map();   // "farm|key" -> [restart timestamps] since the machine last hashed steadily
+const okSince  = new Map();   // "farm|key" -> hashing without a break since
+const learnedMac = new Map(); // "farm|ip" -> MAC, so a poll that misses the MAC still finds the same machine
 const graceTil = new Map();   // "farm|key" -> timestamp; no restart before this
 const log      = [];          // recent actions, newest first (for the Settings page)
 const siteWarnedAt = new Map();
@@ -92,9 +103,36 @@ function saveLogJobs() {
   try { Promise.resolve(db.setSetting(LOG_JOBS_KEY, Object.fromEntries(logJobs), 'auto-restart')).catch(() => {}); } catch (e) {}
 }
 
-function keyOf(m) {
+// Restart counts and "left for a person" survive a redeploy.
+let stateLoaded = false, stateDirty = false;
+async function loadState() {
+  if (stateLoaded) return;
+  try {
+    const v = await db.getSetting(STATE_KEY);
+    if (v && typeof v === 'object') {
+      Object.entries(v.history || {}).forEach(([k, arr]) => {
+        if (Array.isArray(arr) && arr.length && !history.has(k)) history.set(k, arr.filter(Number.isFinite));
+      });
+      Object.entries(v.gave_up || {}).forEach(([k, t]) => { if (Number.isFinite(t) && !gaveUpNotified.has(k)) gaveUpNotified.set(k, t); });
+    }
+    stateLoaded = true;
+  } catch (e) { /* try again next tick */ }
+}
+function saveState() {
+  if (!stateDirty) return;
+  stateDirty = false;
+  const now = Date.now();
+  const h = {}, g = {};
+  history.forEach((arr, k) => { if (arr.length && now - arr[arr.length - 1] < STATE_PRUNE_MS) h[k] = arr.slice(-20); });
+  gaveUpNotified.forEach((t, k) => { if (h[k]) g[k] = t; });
+  try { Promise.resolve(db.setSetting(STATE_KEY, { history: h, gave_up: g }, 'auto-restart')).catch(() => {}); } catch (e) {}
+}
+
+function keyOf(m, farmId) {
   const mac = m.mac ? String(m.mac).toUpperCase().replace(/[^0-9A-F]/g, '') : '';
-  return mac.length === 12 ? 'mac:' + mac : 'ip:' + m.ip;
+  if (mac.length === 12) { if (farmId) learnedMac.set(farmId + '|' + m.ip, mac); return 'mac:' + mac; }
+  const known = farmId && learnedMac.get(farmId + '|' + m.ip);   // this poll missed the MAC — same machine as before
+  return known ? 'mac:' + known : 'ip:' + m.ip;
 }
 function normMac(v) {
   const mac = v ? String(v).toUpperCase().replace(/[^0-9A-F]/g, '') : '';
@@ -131,14 +169,22 @@ function observePoll(farmId, miners) {
   const site = new Map();
   for (const m of miners) {
     if (!m || !m.ip) continue;
-    const key = keyOf(m), k = farmId + '|' + key, z = isZero(m);
+    const key = keyOf(m, farmId), k = farmId + '|' + key, z = isZero(m);
     site.set(key, { ip: m.ip, zero: z, at: now });
     if (z) {
       const e = zero.get(k);
       if (e) { e.ip = m.ip; e.lastSeen = now; }
       else zero.set(k, { farmId, ip: m.ip, key, since: now, lastSeen: now });
+      okSince.delete(k);
     } else {
       zero.delete(k);
+      if (!okSince.has(k)) okSince.set(k, now);
+      // Hashing steadily again → this failure is over; a new one gets a fresh count.
+      if (now - okSince.get(k) >= RECOVERED_MS && (history.has(k) || gaveUpNotified.has(k))) {
+        const n = (history.get(k) || []).length;
+        history.delete(k); gaveUpNotified.delete(k); stateDirty = true;
+        if (n) console.log(`[AUTO-RESTART] ${farmId}: ${m.ip} hashing again for ${RECOVERED_MS / 60000} min — restart count (${n}) cleared`);
+      }
     }
   }
   seenAt.set(farmId, site);
@@ -169,7 +215,7 @@ function sanitize(v) {
 function validate(v) {
   const minutes = parseInt(v.minutes, 10), max = parseInt(v.max_per_day, 10);
   if (!(minutes >= 5 && minutes <= 1440)) return 'Minutes at zero hashrate must be between 5 and 1440';
-  if (!(max >= 1 && max <= 20)) return 'Restarts per machine per day must be between 1 and 20';
+  if (!(max >= 1 && max <= 20)) return 'Restarts per machine must be between 1 and 20';
   return null;
 }
 function getSettings() { return { ...settings, defaults: DEFAULTS }; }
@@ -180,7 +226,7 @@ async function saveSettings(v, by) {
   if (!(await db.setSetting(SETTING_KEY, next, by))) return { ok: false, error: 'Could not save the setting' };
   const was = settings; settings = next;
   console.log(`[AUTO-RESTART] Settings changed${by ? ' by ' + by : ''}: ${was.enabled ? 'on' : 'off'} → ${next.enabled ? 'ON' : 'off'}, ` +
-              `${next.minutes} min at 0 hashrate, max ${next.max_per_day}/machine/day`);
+              `${next.minutes} min at 0 hashrate, max ${next.max_per_day} restarts per machine`);
   if (!was.enabled && next.enabled) {
     // Start counting from now — a machine that happened to be at 0 for an
     // hour while this was off shouldn't be rebooted the instant it's on.
@@ -209,7 +255,9 @@ async function getMachine(workerId) {
     set_by: ov ? ov.set_by : null, set_at: ov ? ov.set_at : null,
     default: { enabled: settings.enabled, minutes: settings.minutes, max_per_day: settings.max_per_day },
     active: !!eff,
-    restarts_today: (history.get(pk) || []).filter(t => now - t < DAY_MS).length,
+    restarts_today: (history.get(pk) || []).length,     // name kept for older pages: restarts in the current failure
+    restarts: (history.get(pk) || []).length,
+    left_for_person: (history.get(pk) || []).length >= (eff ? eff.max_per_day : Infinity),
     zero_minutes: z ? Math.floor((now - z.since) / 60000) : null,
   };
 }
@@ -320,7 +368,7 @@ async function runLogJobs(now) {
     const status = zero.has(k) ? 'still at 0 hashrate'
                  : (w && w.status === 'offline') ? 'offline since the restart'
                  : (w && Number(w.hashrate) > 0) ? 'hashing again' : 'still at 0 hashrate';
-    const title = `📄 Log after ${j.restarts} automatic restarts today — ${status}`;
+    const title = `📄 Log after ${j.restarts} automatic restarts — ${status}`;
     const card = logCard(j.siteName, w, ip, customers);
     const after = Math.round((now - j.lastAt) / 60000);
     if (got) {
@@ -331,7 +379,7 @@ async function runLogJobs(now) {
       const header = [
         'Ekalavya — miner log', card, '',
         'Serial: ' + ((w && w.serial) || '—'),
-        'Automatic restarts today: ' + j.restarts + ' (last at ' + new Date(j.lastAt).toISOString().replace('T', ' ').slice(0, 16) + ' UTC)',
+        'Automatic restarts: ' + j.restarts + ' (last at ' + new Date(j.lastAt).toISOString().replace('T', ' ').slice(0, 16) + ' UTC)',
         'Fetched: ' + new Date(now).toISOString().replace('T', ' ').slice(0, 16) + ' UTC — ' + after + ' min after the last restart',
         'Status when fetched: ' + status,
         '', logCheck.fileBlock(diag.findings, result.snapshot),
@@ -379,17 +427,17 @@ function machineCard(siteName, w, ip, customers) {
 async function tick() {
   await Promise.all([loadSettings(), loadOverrides()]);
   const now = Date.now();
-  await loadLogJobs();
+  await Promise.all([loadLogJobs(), loadState()]);
   try { await runLogJobs(now); } catch (e) { console.error('[AUTO-RESTART] log job error:', e.message); }
   // forget machines that stopped appearing in polls (unreachable, moved)
   zero.forEach((e, k) => { if (now - e.lastSeen > FORGET_AFTER_MS) zero.delete(k); });
 
   // Anything switched on at all? The default, or at least one machine's own setting.
   const ownOn = Object.values(overrides).filter(o => o && o.mode === 'on');
-  if (!settings.enabled && !ownOn.length) return;
+  if (!settings.enabled && !ownOn.length) { saveState(); return; }
   const shortest = Math.min(settings.enabled ? settings.minutes : Infinity, ...ownOn.map(o => o.minutes));
   const candidates = [...zero.entries()].filter(([, e]) => now - e.since >= shortest * 60 * 1000);
-  if (!candidates.length) return;
+  if (!candidates.length) { saveState(); return; }
 
   const agents = new Map(agentMgr.getAgents().map(a => [a.farm_id, a]));
   const workers = await db.loadWorkers();
@@ -436,12 +484,12 @@ async function tick() {
       const label = w ? `${w.name || w.ip} (${e.ip})` : e.ip;
       if (w && w.disabled) continue;                         // in repair
       if (w && w.last_action === 'sleep') continue;          // put to sleep on purpose
-      const recent = (history.get(k) || []).filter(t => now - t < DAY_MS);
-      history.set(k, recent);
+      const recent = history.get(k) || [];
       if (recent.length >= cfg.max_per_day) {
-        if (!gaveUpNotified.get(k) || now - gaveUpNotified.get(k) > DAY_MS) {
-          gaveUpNotified.set(k, now);
-          note({ site: siteName, machine: label, action: 'gave-up', detail: `${recent.length} automatic restarts in 24h` });
+        // Used all its restarts: left for a person until it hashes again for an hour.
+        if (!gaveUpNotified.has(k)) {
+          gaveUpNotified.set(k, now); stateDirty = true;
+          note({ site: siteName, machine: label, action: 'gave-up', detail: `${recent.length} automatic restarts used — no more until it hashes again` });
         }
         continue;
       }
@@ -451,29 +499,31 @@ async function tick() {
       let result;
       try { result = await agentMgr.sendActionRequest(farmId, e.ip, 'reboot', { brand: w && w.brand, model: w && w.model }); }
       catch (err) { result = { ok: false, error: err.message }; }
-      recent.push(now); history.set(k, recent);
+      recent.push(now); history.set(k, recent); stateDirty = true;
       graceTil.set(k, now + Math.max(cfg.minutes * 60 * 1000, MIN_BOOT_GRACE_MS));
       e.since = now;                                          // needs another full wait before counting again
       if (result && result.ok) {
-        console.log(`[AUTO-RESTART] ✓ ${siteName}: rebooted ${label} — 0 hashrate for ${mins} min (restart ${recent.length}/${cfg.max_per_day} today${own})`);
-        note({ site: siteName, machine: label, action: 'restarted', detail: `0 hashrate for ${mins} min · ${recent.length}/${cfg.max_per_day} today${own}` });
+        console.log(`[AUTO-RESTART] ✓ ${siteName}: rebooted ${label} — 0 hashrate for ${mins} min (restart ${recent.length}/${cfg.max_per_day}${own})`);
+        note({ site: siteName, machine: label, action: 'restarted', detail: `0 hashrate for ${mins} min · restart ${recent.length}/${cfg.max_per_day}${own}` });
       } else {
         const why = (result && result.error) || 'no reply';
         console.log(`[AUTO-RESTART] ✗ ${siteName}: reboot of ${label} failed — ${why}`);
         note({ site: siteName, machine: label, action: 'failed', detail: why });
       }
-      // Its last restart for today (even one that failed) → the one group
-      // message about this machine: its log, 10 minutes from now.
-      if (recent.length >= cfg.max_per_day && w) {
+      // Its last restart (even one that failed) → the one group message
+      // about this failure: its log, 10 minutes from now. Only on reaching
+      // the limit exactly, so it can't repeat within the same failure.
+      if (recent.length === cfg.max_per_day && w) {
         logJobs.set(k, { farmId, siteName, workerId: w.id, ip: e.ip, due: now + LOG_AFTER_MS, restarts: recent.length, lastAt: now });
         saveLogJobs();
-        console.log(`[AUTO-RESTART] ${siteName}: ${label} used its last restart for today — its log goes to Telegram in ${LOG_AFTER_MS / 60000} min`);
+        console.log(`[AUTO-RESTART] ${siteName}: ${label} used its last restart — its log goes to Telegram in ${LOG_AFTER_MS / 60000} min`);
       }
     }
     // No Telegram message per restart: the group only hears about a machine
     // once, when it has used its last restart (the log post, 10 min later).
     // Every restart is still listed under Settings › Auto-restart › recent actions.
   }
+  saveState();
 }
 
 let timer = null, running = false;
@@ -482,7 +532,7 @@ function start() {
   try { telegram = require('./alerts').sendTelegramAlert; telegramDoc = require('./alerts').sendTelegramDocument; } catch (e) {}
   Promise.all([loadSettings(), loadOverrides()]).then(([s, o]) => {
     const vals = Object.values(o), on = vals.filter(x => x.mode === 'on').length, off = vals.filter(x => x.mode === 'off').length;
-    console.log(`[AUTO-RESTART] default ${s.enabled ? 'ON' : 'off'} — ${s.minutes} min at 0 hashrate, max ${s.max_per_day}/machine/day` +
+    console.log(`[AUTO-RESTART] default ${s.enabled ? 'ON' : 'off'} — ${s.minutes} min at 0 hashrate, max ${s.max_per_day} restarts per machine, then left for a person` +
                 (vals.length ? `; own setting on ${vals.length} machine(s): ${on} on, ${off} off` : '') + ' (change in Settings or on a machine\'s page)');
   });
   timer = setInterval(() => {
@@ -494,4 +544,4 @@ function start() {
 
 module.exports = { start, tick, observePoll, getSettings, saveSettings, loadSettings, getLog,
                    loadOverrides, listOverrides, getMachine, setMachines,
-                   _state: { zero, history, graceTil, seenAt, logJobs, reloadLogJobs: () => { logJobsLoaded = false; } } };
+                   _state: { zero, history, graceTil, seenAt, logJobs, okSince, gaveUpNotified, learnedMac, reloadLogJobs: () => { logJobsLoaded = false; }, reloadState: () => { stateLoaded = false; } } };
