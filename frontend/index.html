@@ -1324,7 +1324,7 @@ details.setup[open] summary .chev{transform:rotate(90deg);}
       <!-- Auto-restart machines stuck at 0 hashrate -->
       <div class="panel" id="autoRestartPanel">
         <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-refresh"/></svg>Auto-Restart</div>
-          <span class="tip" tabindex="0" data-tip="Reboots a machine that still answers but has been at 0 hashrate for the time set. Never touches machines in repair or asleep. If a big part of a site drops to 0 at once (pool, network or power), nothing is restarted and Telegram is told instead.<br><br>This is the default for every machine; a machine can have its own setting on its page, or several at once from Workers &rarr; Auto-Restart.">i</span>
+          <span class="tip" tabindex="0" data-tip="Reboots a machine that still answers but has been at 0 hashrate for the time set. After its last restart it&rsquo;s left for a person (its log goes to Telegram) until it hashes again for an hour. Never touches machines in repair or asleep. If a big part of a site drops to 0 at once (pool, network or power), nothing is restarted and Telegram is told instead.<br><br>This is the default for every machine; a machine can have its own setting on its page, or several at once from Workers &rarr; Auto-Restart.">i</span>
           <span class="badge" id="arBadge" style="margin-left:auto">Off</span></div>
         <div class="sb">
           <div class="swrow"><span class="lbl">Restart machines automatically</span>
@@ -1333,8 +1333,8 @@ details.setup[open] summary .chev{transform:rotate(90deg);}
             <label class="slb" for="arMinutes">After</label>
             <input class="si num" id="arMinutes" type="number" min="5" max="1440" step="1" inputmode="numeric">
             <span class="slb">min at 0 hashrate &middot; max</span>
-            <input class="si num" id="arMax" type="number" min="1" max="20" step="1" inputmode="numeric" aria-label="Restarts per machine per day">
-            <span class="slb">/ day</span>
+            <input class="si num" id="arMax" type="number" min="1" max="20" step="1" inputmode="numeric" aria-label="Restarts per machine">
+            <span class="slb">restarts</span>
             <button class="btn btn-sm" id="arSave" onclick="saveAutoRestart()">Save</button>
           </div>
           <div id="arStatus" class="shint">Loading…</div>
@@ -1632,7 +1632,7 @@ details.setup[open] summary .chev{transform:rotate(90deg);}
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
     <label for="bulkArMax" style="font-size:12.5px;color:var(--mute)">At most</label>
     <input class="si" id="bulkArMax" type="number" min="1" max="20" step="1" style="width:80px;text-align:center" inputmode="numeric">
-    <span style="font-size:12.5px;color:var(--mute)">restarts per day</span>
+    <span style="font-size:12.5px;color:var(--mute)">restarts, then left for a person</span>
   </div>
 </div>
 <div id="bulkArHint" style="margin-top:10px;font-size:11.5px;color:var(--mute);line-height:1.5"></div>
@@ -1824,7 +1824,7 @@ details.setup[open] summary .chev{transform:rotate(90deg);}
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
           <label for="ctrlArMax" style="font-size:12.5px;color:var(--mute)">At most</label>
           <input class="si" id="ctrlArMax" type="number" min="1" max="20" step="1" style="width:80px;text-align:center" inputmode="numeric">
-          <span style="font-size:12.5px;color:var(--mute)">restarts per day</span>
+          <span style="font-size:12.5px;color:var(--mute)">restarts, then left for a person</span>
         </div>
       </div>
       <div id="ctrlArHint" style="margin-top:10px;font-size:11.5px;color:var(--mute);line-height:1.5"></div>
