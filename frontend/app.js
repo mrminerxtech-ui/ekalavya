@@ -4502,7 +4502,7 @@ function renderAutoRestart(d) {
   if (st) {
     st.style.color = 'var(--mute)';
     st.textContent = d.enabled
-      ? 'On — rebooted after ' + d.minutes + ' min at 0 hashrate, at most ' + d.max_per_day + '× a day.'
+      ? 'On — rebooted after ' + d.minutes + ' min at 0 hashrate, at most ' + d.max_per_day + ' restarts, then left for a person until it hashes again for 1 h.'
       : 'Off — machines with their own setting still follow it.';
   }
   arDefault = { enabled: !!d.enabled, minutes: d.minutes, max_per_day: d.max_per_day };
@@ -4533,9 +4533,9 @@ function saveAutoRestart() {
   const en = document.getElementById('arEnabled'), mi = document.getElementById('arMinutes'), mx = document.getElementById('arMax');
   const body = { enabled: !!(en && en.checked), minutes: parseInt(mi && mi.value, 10), max_per_day: parseInt(mx && mx.value, 10) };
   if (!(body.minutes >= 5 && body.minutes <= 1440)) { toast('Minutes must be between 5 and 1440', 'var(--warn)'); return; }
-  if (!(body.max_per_day >= 1 && body.max_per_day <= 20)) { toast('Restarts per day must be between 1 and 20', 'var(--warn)'); return; }
+  if (!(body.max_per_day >= 1 && body.max_per_day <= 20)) { toast('Restarts must be between 1 and 20', 'var(--warn)'); return; }
   if (body.enabled && !confirm('Machines at 0 hashrate for ' + body.minutes + ' minutes will be rebooted automatically (at most '
-      + body.max_per_day + '× a day each). Switch this on?')) return;
+      + body.max_per_day + ' times each, then left for a person). Switch this on?')) return;
   const token = localStorage.getItem('ekl_token') || '';
   fetch(API_BASE + '/api/alerts/auto-restart', {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token }, body: JSON.stringify(body)
@@ -4578,8 +4578,8 @@ function lcFillMachines() {
 function loadLogRules() {
   lcFillMachines();
   authFetch('/api/alerts/log-rules').then(function(d){
-    if (!d || !d.ok) { const b = document.getElementById('lcBadge'); if (b) b.textContent = '—'; return; }
-    lcRules = { builtin: d.builtin, custom: d.custom }; lcBadge();
+    if (!d || !d.ok || !Array.isArray(d.builtin)) { const b = document.getElementById('lcBadge'); if (b) b.textContent = '—'; return; }
+    lcRules = { builtin: d.builtin, custom: Array.isArray(d.custom) ? d.custom : [] }; lcBadge();
   });
 }
 function lcFindMachine(v) {
@@ -4656,7 +4656,7 @@ function openLogRules() {
     renderLogRules(); openSheet('logRulesSheet');
   };
   if (lcRules) go();
-  else authFetch('/api/alerts/log-rules').then(function(d){ if (d && d.ok) { lcRules = { builtin: d.builtin, custom: d.custom }; lcBadge(); go(); } else toast('✗ Could not load the rules', 'var(--red)'); });
+  else authFetch('/api/alerts/log-rules').then(function(d){ if (d && d.ok && Array.isArray(d.builtin)) { lcRules = { builtin: d.builtin, custom: d.custom }; lcBadge(); go(); } else toast('✗ Could not load the rules', 'var(--red)'); });
 }
 function renderLogRules() {
   const cl = document.getElementById('lcCustomList'), bl = document.getElementById('lcBuiltinList');
@@ -4709,7 +4709,7 @@ let arMachineWid = null;       // machine the panel section was loaded for
 function arDefaultText() {
   if (!arDefault) return 'the default on the Settings page';
   return arDefault.enabled
-    ? 'the default: ON — restart after ' + arDefault.minutes + ' min at 0 hashrate, at most ' + arDefault.max_per_day + '× a day'
+    ? 'the default: ON — restart after ' + arDefault.minutes + ' min at 0 hashrate, at most ' + arDefault.max_per_day + ' restarts'
     : 'the default: OFF — not restarted automatically';
 }
 function arPickMode(p, mode) {
@@ -4737,7 +4737,7 @@ function arReadForm(p) {
     body.minutes = parseInt((document.getElementById(p + 'Minutes') || {}).value, 10);
     body.max_per_day = parseInt((document.getElementById(p + 'Max') || {}).value, 10);
     if (!(body.minutes >= 5 && body.minutes <= 1440)) { toast('Minutes must be between 5 and 1440', 'var(--warn)'); return null; }
-    if (!(body.max_per_day >= 1 && body.max_per_day <= 20)) { toast('Restarts per day must be between 1 and 20', 'var(--warn)'); return null; }
+    if (!(body.max_per_day >= 1 && body.max_per_day <= 20)) { toast('Restarts must be between 1 and 20', 'var(--warn)'); return null; }
   }
   return body;
 }
@@ -4752,7 +4752,7 @@ function postAutoRestartMachines(ids, body) {
 }
 function arModeWords(b) {
   return b.mode === 'default' ? 'follows the default' : b.mode === 'off' ? 'auto-restart OFF'
-    : 'own setting: ' + b.minutes + ' min, max ' + b.max_per_day + '/day';
+    : 'own setting: ' + b.minutes + ' min, max ' + b.max_per_day + ' restarts';
 }
 
 function loadMachineAutoRestart(wid) {
@@ -4774,7 +4774,9 @@ function loadMachineAutoRestart(wid) {
     }
     const bits = [];
     if (d.zero_minutes !== null && d.zero_minutes !== undefined) bits.push('At 0 hashrate for ' + d.zero_minutes + ' min now');
-    bits.push(d.restarts_today + ' automatic restart' + (d.restarts_today === 1 ? '' : 's') + ' in the last 24 h');
+    const used = (d.restarts !== undefined ? d.restarts : d.restarts_today) || 0;
+    bits.push(d.left_for_person ? used + ' automatic restarts used — left for a person until it hashes again for 1 h'
+      : used + ' of ' + d.max_per_day + ' automatic restarts used');
     if (d.mode !== 'default' && d.set_at) bits.push('set by ' + (d.set_by || '?') + ' on ' + new Date(d.set_at).toLocaleString());
     if (info) info.textContent = bits.join(' · ');
   });
@@ -4827,7 +4829,7 @@ function renderArMachines(list) {
         return '<div style="display:flex;align-items:center;gap:10px;font-size:11.5px;padding:5px 0;border-top:1px solid var(--b1)">'
           + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(m.name || m.ip || '')
           + ' <span style="color:var(--mute)">' + escHtml([site(m.farm_id), m.ip].filter(Boolean).join(' · ')) + '</span></span>'
-          + '<span style="white-space:nowrap;color:' + (on ? 'var(--green)' : 'var(--warn)') + '">' + (on ? 'On · ' + m.minutes + ' min · ' + m.max_per_day + '/day' : 'Off') + '</span>'
+          + '<span style="white-space:nowrap;color:' + (on ? 'var(--green)' : 'var(--warn)') + '">' + (on ? 'On · ' + m.minutes + ' min · max ' + m.max_per_day : 'Off') + '</span>'
           + '<button class="abtn" type="button" title="Follow the default again" onclick="arResetMachine(\'' + escAttr(m.worker_id) + '\')">Use default</button>'
           + '</div>';
       }).join('') + '</div>';
