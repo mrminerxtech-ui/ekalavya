@@ -106,4 +106,29 @@ router.post('/log-rules/test', authMiddleware, staffOnly, async (req, res) => {
              caption: logCheck.captionList(d.findings), log_tail: machine ? text.slice(-200000) : undefined });
 });
 
+// ── Telegram alert rules (what goes to the group) ──────────────────
+const tgRules = require('../services/alertRules');
+
+// GET /api/alerts/telegram-rules → { ok, rules, defaults, telegram, alarm_at }
+router.get('/telegram-rules', authMiddleware, staffOnly, async (req, res) => {
+  const rules = await tgRules.loadRules(true);
+  await alerts.loadAlarmSetting();
+  res.json({ ok: true, rules, defaults: tgRules.DEFAULTS, telegram: tgRules.telegramConfigured(), alarm_at: alerts.getAlarmSettings().alarm_at });
+});
+
+// POST /api/alerts/telegram-rules  { overheat:{on,temp,min}, hashdrop:{on,pct}, recovery:{on}, summary:{on,time}, autorestart_log:{on}, autorestart_paused:{on} }
+router.post('/telegram-rules', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+  const who = (req.user && (req.user.name || req.user.id)) || 'unknown';
+  const r = await tgRules.saveRules(req.body || {}, who);
+  if (!r.ok) return res.status(400).json(r);
+  res.json({ ok: true, rules: r.rules, defaults: tgRules.DEFAULTS, telegram: tgRules.telegramConfigured(), alarm_at: alerts.getAlarmSettings().alarm_at });
+});
+
+// POST /api/alerts/telegram-rules/test → posts one test message to the group
+router.post('/telegram-rules/test', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+  const who = (req.user && (req.user.name || req.user.id)) || 'unknown';
+  const r = await tgRules.sendTest(who);
+  res.status(r.ok ? 200 : 400).json(r);
+});
+
 module.exports = router;
