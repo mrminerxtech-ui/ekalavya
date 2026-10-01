@@ -3019,7 +3019,7 @@ function showPage(n){
   // Render the page's content when it opens
   try {
     if(n==='dashboard')     { renderDash(); }
-    if(n==='settings')      { loadSiteAlarmSetting(); loadAutoRestart(); loadLogRules(); }
+    if(n==='settings')      { loadSiteAlarmSetting(); loadAutoRestart(); loadTgRules(); loadLogRules(); }
     if(n==='workers')       { renderWorkers(); attachSortHandlers(); }
     if(n==='agents')        { renderAgents(); populateDropdowns(); loadFarms(); }
     if(n==='customers')     { renderCustomers(); }
@@ -4549,6 +4549,75 @@ function saveAutoRestart() {
   })
   .catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
 }
+
+// ── Telegram alert rules (Settings page) ───────────────────────────
+// What goes to the group: site alarm (fixed), overheating, hashrate drop,
+// back-to-normal, auto-restart log / paused, daily summary.
+function tgSet(id, v) { const el = document.getElementById(id); if (!el) return; if (el.type === 'checkbox') el.checked = !!v; else if (document.activeElement !== el) el.value = v; }
+function tgDim() {
+  document.querySelectorAll('#tgRulesPanel .tg-row:not(.tg-fixed)').forEach(function(r){
+    const t = r.querySelector('input[type=checkbox]'); r.classList.toggle('off', !!t && !t.checked);
+  });
+}
+function renderTgRules(d) {
+  const r = d.rules || {};
+  tgSet('tgOh', r.overheat && r.overheat.on); tgSet('tgOhTemp', r.overheat && r.overheat.temp); tgSet('tgOhMin', r.overheat && r.overheat.min);
+  tgSet('tgHd', r.hashdrop && r.hashdrop.on); tgSet('tgHdPct', r.hashdrop && r.hashdrop.pct);
+  tgSet('tgRec', r.recovery && r.recovery.on);
+  tgSet('tgArLog', r.autorestart_log && r.autorestart_log.on);
+  tgSet('tgArPause', r.autorestart_paused && r.autorestart_paused.on);
+  tgSet('tgSum', r.summary && r.summary.on); tgSet('tgSumTime', r.summary && r.summary.time);
+  const a = document.getElementById('tgAlarmAt'); if (a && d.alarm_at) a.textContent = d.alarm_at;
+  const b = document.getElementById('tgBadge');
+  if (b) { b.textContent = d.telegram ? 'Connected' : 'Not set up'; b.className = 'badge ' + (d.telegram ? 'bgn' : 'brn'); }
+  const st = document.getElementById('tgStatus');
+  if (st && !d.telegram) { st.style.color = 'var(--warn)'; st.textContent = 'Telegram isn\'t set up on the server — add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in Railway.'; }
+  tgDim();
+}
+function loadTgRules() {
+  authFetch('/api/alerts/telegram-rules').then(function(d){
+    if (!d || !d.ok || !d.rules) { const b = document.getElementById('tgBadge'); if (b) b.textContent = '—'; return; }
+    renderTgRules(d);
+  });
+}
+function tgPost(path, body) {
+  const token = localStorage.getItem('ekl_token') || '';
+  return fetch(API_BASE + path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token }, body: JSON.stringify(body || {}) })
+    .then(function(r){ return r.json().catch(function(){ return { ok: false, error: 'HTTP ' + r.status }; })
+      .then(function(d){ if (r.status === 403) d = { ok: false, error: 'Only an admin or manager can change this' }; return d; }); });
+}
+function saveTgRules() {
+  const v = function(id){ const el = document.getElementById(id); return el ? el.value : ''; };
+  const c = function(id){ const el = document.getElementById(id); return !!(el && el.checked); };
+  const body = {
+    overheat: { on: c('tgOh'), temp: parseInt(v('tgOhTemp'), 10), min: parseInt(v('tgOhMin'), 10) },
+    hashdrop: { on: c('tgHd'), pct: parseInt(v('tgHdPct'), 10) },
+    recovery: { on: c('tgRec') },
+    autorestart_log: { on: c('tgArLog') },
+    autorestart_paused: { on: c('tgArPause') },
+    summary: { on: c('tgSum'), time: v('tgSumTime') || '09:00' },
+  };
+  if (!(body.overheat.temp >= 50 && body.overheat.temp <= 150)) { toast('Overheating temperature: 50 to 150 °C', 'var(--warn)'); return; }
+  if (!(body.overheat.min >= 1)) { toast('Overheating: at least 1 machine', 'var(--warn)'); return; }
+  if (!(body.hashdrop.pct >= 5 && body.hashdrop.pct <= 90)) { toast('Hashrate drop: 5 to 90 %', 'var(--warn)'); return; }
+  const btn = document.getElementById('tgSave'); if (btn) btn.disabled = true;
+  tgPost('/api/alerts/telegram-rules', body).then(function(d){
+    if (!d || !d.ok) { toast('✗ ' + ((d && d.error) || 'Could not save'), 'var(--red)'); return; }
+    renderTgRules(d);
+    const st = document.getElementById('tgStatus'); if (st && d.telegram) { st.style.color = 'var(--green)'; st.textContent = '✓ Saved.'; }
+    toast('✓ Telegram alerts saved', 'var(--green)');
+  }).catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); })
+    .then(function(){ if (btn) btn.disabled = false; });
+}
+function sendTgTest() {
+  const btn = document.getElementById('tgTest'); if (btn) btn.disabled = true;
+  tgPost('/api/alerts/telegram-rules/test').then(function(d){
+    if (!d || !d.ok) { toast('✗ ' + ((d && d.error) || 'Could not send'), 'var(--red)'); return; }
+    toast('✓ Test message sent to the Telegram group', 'var(--green)');
+  }).catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); })
+    .then(function(){ if (btn) btn.disabled = false; });
+}
+document.addEventListener('change', function(e){ if (e.target && e.target.closest && e.target.closest('#tgRulesPanel') && e.target.type === 'checkbox') tgDim(); });
 
 // ── Log checks (Settings page) ──────────────────────────────────────
 // Known error lines in a miner's log + the miner's own fan / chip numbers
