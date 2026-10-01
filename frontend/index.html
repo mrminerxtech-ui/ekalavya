@@ -1321,12 +1321,22 @@ details.setup[open] summary .chev{transform:rotate(90deg);}
       <!-- Site alarm: phone call + Telegram when N machines are offline at one site -->
       <div class="panel" id="siteAlarmPanel">
         <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-bell"/></svg>Site Alarm</div>
-          <span class="tip" tabindex="0" data-tip="Phones the on-call numbers and posts to Telegram when this many machines are offline at one site, confirmed on two checks in a row (about 6 minutes). Machines in repair or asleep don&rsquo;t count.">i</span></div>
+          <span class="tip" tabindex="0" data-tip="Phones the on-call numbers and posts to Telegram when this many machines at one site have each been offline for the minutes set, without a break &mdash; a machine that drops for a poll and comes straight back doesn&rsquo;t count. Each site is called at most once in the minutes set below. Machines in repair or asleep don&rsquo;t count.">i</span></div>
         <div class="sb">
           <div class="srow">
             <label class="slb" for="siteAlarmAt">Call when</label>
             <input class="si num" id="siteAlarmAt" type="number" min="1" max="1000" step="1" inputmode="numeric">
-            <span class="slb">or more are offline at one site</span>
+            <span class="slb">or more machines at one site</span>
+          </div>
+          <div class="srow">
+            <label class="slb" for="siteAlarmDelay">have each been offline for</label>
+            <input class="si num" id="siteAlarmDelay" type="number" min="1" max="240" step="1" inputmode="numeric">
+            <span class="slb">min</span>
+          </div>
+          <div class="srow">
+            <label class="slb" for="siteAlarmRepeat">At most one call per site every</label>
+            <input class="si num" id="siteAlarmRepeat" type="number" min="5" max="1440" step="1" inputmode="numeric">
+            <span class="slb">min</span>
             <button class="btn btn-sm" id="siteAlarmSave" onclick="saveSiteAlarmSetting()">Save</button>
           </div>
           <div id="siteAlarmStatus" class="shint">Loading…</div>
