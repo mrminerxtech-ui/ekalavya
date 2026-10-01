@@ -4457,8 +4457,8 @@ let histState = { wid: null, hours: 168, points: [], hoverX: null };
 // Telegram). Stored on the server; the alarm picks a change up within
 // one check (~3 min).
 function siteAlarmStatusText(d) {
-  return 'Next alarm after 5 more go down, or once the site is back to ' + d.rearm_at + ' or fewer.'
-    + (d.alarm_at === d.default_alarm_at ? ' Default.' : '');
+  return 'Calls when ' + d.alarm_at + '+ machines have been offline ' + (d.delay_min || 10) + '+ min. After a call: again only if 5 more go down, at most every '
+    + (d.repeat_min || 60) + ' min; a fresh alarm once the site is back to ' + d.rearm_at + ' or fewer.';
 }
 function loadSiteAlarmSetting() {
   const st = document.getElementById('siteAlarmStatus');
@@ -4466,6 +4466,10 @@ function loadSiteAlarmSetting() {
     if (!d || !d.ok) { if (st) st.textContent = 'Could not load the current setting.'; return; }
     const inp = document.getElementById('siteAlarmAt');
     if (inp && document.activeElement !== inp) inp.value = d.alarm_at;
+    const dl = document.getElementById('siteAlarmDelay');
+    if (dl && document.activeElement !== dl) dl.value = d.delay_min || 10;
+    const rp = document.getElementById('siteAlarmRepeat');
+    if (rp && document.activeElement !== rp) rp.value = d.repeat_min || 60;
     if (st) { st.style.color = 'var(--mute)'; st.textContent = siteAlarmStatusText(d); }
   });
 }
@@ -4473,19 +4477,23 @@ function saveSiteAlarmSetting() {
   const inp = document.getElementById('siteAlarmAt');
   const st  = document.getElementById('siteAlarmStatus');
   const n   = parseInt(inp && inp.value, 10);
+  const dl  = parseInt((document.getElementById('siteAlarmDelay') || {}).value, 10);
+  const rp  = parseInt((document.getElementById('siteAlarmRepeat') || {}).value, 10);
   if (!(n >= 1 && n <= 1000)) { toast('Enter a whole number of machines between 1 and 1000', 'var(--warn)'); return; }
+  if (!(dl >= 1 && dl <= 240)) { toast('Minutes offline: 1 to 240', 'var(--warn)'); return; }
+  if (!(rp >= 5 && rp <= 1440)) { toast('Minutes between calls: 5 to 1440', 'var(--warn)'); return; }
   const token = localStorage.getItem('ekl_token') || '';
   fetch(API_BASE + '/api/alerts/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-    body: JSON.stringify({ alarm_at: n })
+    body: JSON.stringify({ alarm_at: n, delay_min: dl, repeat_min: rp })
   })
   .then(function(r){ return r.json().catch(function(){ return { ok: false, error: 'HTTP ' + r.status }; })
     .then(function(d){ if (r.status === 403) d = { ok: false, error: 'Only an admin or manager can change this' }; return d; }); })
   .then(function(d){
     if (!d || !d.ok) { toast('✗ ' + ((d && d.error) || 'Could not save'), 'var(--red)'); return; }
     if (st) { st.style.color = 'var(--green)'; st.textContent = '✓ Saved. ' + siteAlarmStatusText(d); }
-    toast('✓ Site alarm set to ' + d.alarm_at + ' machines', 'var(--green)');
+    toast('✓ Site alarm: ' + d.alarm_at + '+ machines offline for ' + d.delay_min + '+ min', 'var(--green)');
   })
   .catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
 }
