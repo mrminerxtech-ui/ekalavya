@@ -22,10 +22,12 @@ router.get('/settings', authMiddleware, staffOnly, async (req, res) => {
   res.json({ ok: true, ...alerts.getAlarmSettings() });
 });
 
-// POST /api/alerts/settings  { alarm_at: 15 }
+// POST /api/alerts/settings  { alarm_at: 15, delay_min: 10, repeat_min: 60 }
 router.post('/settings', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
   const who = (req.user && (req.user.name || req.user.id)) || 'unknown';
-  const r = await alerts.setAlarmAt((req.body || {}).alarm_at, who);
+  const b = req.body || {};
+  await alerts.loadAlarmSetting();   // fields left out keep their saved value
+  const r = await alerts.setAlarmAt({ alarm_at: b.alarm_at, delay_min: b.delay_min, repeat_min: b.repeat_min }, who);
   if (!r.ok) return res.status(400).json(r);
   res.json(r);
 });
