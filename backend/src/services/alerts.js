@@ -569,7 +569,11 @@ async function checkSiteOfflineCounts() {
         // Now a dip to 8–10 just lowers the "alerted at" level (so it
         // takes 5 more machines down to alarm again), and only a real
         // recovery to rearmAt() (alarm number − 4) or fewer starts a fresh alarm cycle.
-        if (counts.offline <= rearmAt()) await db.clearSiteAlertState(farmId);
+        if (counts.offline <= rearmAt()) {
+          await db.clearSiteAlertState(farmId);
+          // one "back to normal" message (Settings › Telegram Alerts › recovery)
+          try { await require('./alertRules').siteRecovered(farmName, `${counts.offline} of ${counts.total} machines offline now (alarmed at ${prev}).`); } catch (e) {}
+        }
         else if (counts.offline < prev) await db.setSiteAlertState(farmId, counts.offline);
       }
       continue;
@@ -667,9 +671,10 @@ function start() {
   }
   if (!callMeBotConfigured()) console.log('[ALERT] CallMeBot calls OFF — CALLMEBOT_USERS not set');
   if (process.env.ALERT_TEST_CALL === '1') sendTestCalls().catch(e => console.error('[ALERT] Test call error:', e.message));
+  if (siteAlertingConfigured()) { try { require('./alertRules').start(); } catch (e) { console.error('[TG-RULES] not started:', e.message); } }
   checkSiteOfflineCounts().catch(e => console.error('[ALERT]', e.message));
   siteAlertTimer = setInterval(() => { checkSiteOfflineCounts().catch(e => console.error('[ALERT]', e.message)); }, CHECK_EVERY_MS);
 }
 
 module.exports = { sendTelegramDocument, raiseAlert, sendSlackAlert, sendTelegramAlert, checkWorkerThresholds, start, checkSiteOfflineCounts, twimlHandler,
-                   getAlarmSettings, setAlarmAt, loadAlarmSetting };
+                   getAlarmSettings, setAlarmAt, loadAlarmSetting, countPhysicalMachines };
