@@ -154,30 +154,48 @@ async function checkWorkerThresholds(worker) {
 // a change applies within one check (~3 min) with no redeploy. 11 keeps
 // the original rule ("more than 10").
 const DEFAULT_ALARM_AT = 11;
+// A machine only counts once it has been offline for DELAY minutes without
+// a break (Settings: "for N min"). Fast agent polling flips machines
+// offline for a cycle now and then; counting those phoned everyone over
+// machines that were back a minute later (2026-10-01). And a site is
+// called at most once per REPEAT minutes, however its count moves.
+const DEFAULT_DELAY_MIN  = 10;
+const DEFAULT_REPEAT_MIN = 60;
 const ALARM_SETTING_KEY = 'site_alarm_offline';
-let alarmAt = DEFAULT_ALARM_AT;
+let alarmAt = DEFAULT_ALARM_AT, delayMin = DEFAULT_DELAY_MIN, repeatMin = DEFAULT_REPEAT_MIN;
 const rearmAt = () => Math.max(0, alarmAt - 4);   // must recover to this many offline (or fewer) before a fresh alarm
 async function loadAlarmSetting() {
   try {
     const v = await db.getSetting(ALARM_SETTING_KEY);
     const n = parseInt(v && v.alarm_at, 10);
     if (n >= 1 && n <= 1000) alarmAt = n;
+    const d = parseInt(v && v.delay_min, 10);
+    if (d >= 1 && d <= 240) delayMin = d;
+    const r = parseInt(v && v.repeat_min, 10);
+    if (r >= 5 && r <= 1440) repeatMin = r;
   } catch (e) { /* keep the current value */ }
 }
 function getAlarmSettings() {
-  return { alarm_at: alarmAt, rearm_at: rearmAt(), default_alarm_at: DEFAULT_ALARM_AT };
+  return { alarm_at: alarmAt, rearm_at: rearmAt(), delay_min: delayMin, repeat_min: repeatMin,
+           default_alarm_at: DEFAULT_ALARM_AT, default_delay_min: DEFAULT_DELAY_MIN, default_repeat_min: DEFAULT_REPEAT_MIN };
 }
-async function setAlarmAt(n, by) {
-  n = parseInt(n, 10);
+// setAlarmAt(11, by) as before, or setAlarmAt({ alarm_at, delay_min, repeat_min }, by)
+async function setAlarmAt(v, by) {
+  const o = (v && typeof v === 'object') ? v : { alarm_at: v };
+  const n = parseInt(o.alarm_at, 10);
   if (!(n >= 1 && n <= 1000)) return { ok: false, error: 'Enter a whole number of machines between 1 and 1000' };
-  const saved = await db.setSetting(ALARM_SETTING_KEY, { alarm_at: n }, by);
+  const d = o.delay_min === undefined ? delayMin : parseInt(o.delay_min, 10);
+  if (!(d >= 1 && d <= 240)) return { ok: false, error: 'Minutes offline must be between 1 and 240' };
+  const r = o.repeat_min === undefined ? repeatMin : parseInt(o.repeat_min, 10);
+  if (!(r >= 5 && r <= 1440)) return { ok: false, error: 'Minutes between calls must be between 5 and 1440' };
+  const saved = await db.setSetting(ALARM_SETTING_KEY, { alarm_at: n, delay_min: d, repeat_min: r }, by);
   if (!saved) return { ok: false, error: 'Could not save the setting' };
-  const was = alarmAt;
-  alarmAt = n;
-  console.log(`[ALERT] Site alarm changed: ${was} → ${n} machines offline at one site${by ? ' (by ' + by + ')' : ''}`);
+  const was = `${alarmAt} for ${delayMin} min, every ${repeatMin} min`;
+  alarmAt = n; delayMin = d; repeatMin = r;
+  console.log(`[ALERT] Site alarm changed: ${was} → ${n} machines offline for ${d} min at one site, at most one call per site every ${r} min${by ? ' (by ' + by + ')' : ''}`);
   return { ok: true, ...getAlarmSettings() };
 }
-const CHECK_EVERY_MS    = 3 * 60 * 1000;   // how often to re-check every site
+const CHECK_EVERY_MS    = 60 * 1000;       // how often to re-check every site (each minute, so "offline for N min" is accurate)
 
 function siteAlertingConfigured() {
   return !!(TELEGRAM_TOKEN && TELEGRAM_CHAT);
@@ -513,7 +531,7 @@ function countPhysicalMachines(workers) {
   });
 
   for (const [fid, m] of Object.entries(groups)) {
-    const c = { offline: 0, total: 0, offlineList: [], records: 0 };
+    const c = { offline: 0, total: 0, offlineList: [], offlineKeys: [], records: 0 };
     for (const recs of m.values()) {
       c.records += recs.length;
       if (recs.some(r => r.status === 'online' || r.status === 'warn')) { c.total++; continue; }
@@ -523,6 +541,9 @@ function countPhysicalMachines(workers) {
       c.offline++;
       const r = recs.find(x => x.name && x.name !== x.ip) || recs[0];
       c.offlineList.push(r.name && r.name !== r.ip ? `${r.name} (${r.ip || '?'})` : (r.ip || r.id || '?'));
+      // stable identity of this machine across checks (for "offline for N minutes")
+      const hw = recs.map(x => normHw('mac', x.mac)).find(Boolean) || recs.map(x => normHw('sn', x.serial)).find(Boolean);
+      c.offlineKeys.push(hw || ('rec:' + (recs[0].id || recs[0].ip)));
     }
     byFarm[fid] = c;
   }
@@ -540,7 +561,9 @@ function offlineListText(counts, max = 12) {
 }
 const startedAt       = Date.now();
 const lastSeenAgent   = new Map();   // farm_id -> last time we saw it connected
-const overLastCheck   = new Map();   // farm_id -> offline count at the previous check (if over threshold)
+const downSince       = new Map();   // "farm|machine" -> since when it has been offline without a break
+const lastCallAt      = new Map();   // "farm|down" / "farm|gone" -> when this site last alarmed (call + Telegram)
+const calmSince       = new Map();   // farm_id -> since when it has been back at/below the re-arm level
 
 // ── The actual per-site check, run on a timer by start() below ─────
 async function checkSiteOfflineCounts() {
@@ -548,11 +571,20 @@ async function checkSiteOfflineCounts() {
   const workers = await db.loadWorkers();
   const agents  = agentMgr.getAgents();
   const now = Date.now();
+  const delayMs = delayMin * 60 * 1000, repeatMs = repeatMin * 60 * 1000;
   agents.forEach(a => lastSeenAgent.set(a.farm_id, now));
 
   const byFarm = countPhysicalMachines(workers);
   const farmNames = {};
   workers.forEach(w => { const fid = w.farm_id || 'unassigned'; if (w.farm && !farmNames[fid]) farmNames[fid] = w.farm; });
+
+  // How long has each machine been offline without a break? A machine seen
+  // online at any check starts again from zero.
+  const offNow = new Set();
+  for (const [farmId, counts] of Object.entries(byFarm)) {
+    (counts.offlineKeys || []).forEach(k => { const key = farmId + '|' + k; offNow.add(key); if (!downSince.has(key)) downSince.set(key, now); });
+  }
+  for (const key of [...downSince.keys()]) if (!offNow.has(key)) downSince.delete(key);
 
   for (const [farmId, counts] of Object.entries(byFarm)) {
     const agent = agents.find(a => a.farm_id === farmId);
@@ -560,65 +592,72 @@ async function checkSiteOfflineCounts() {
     if (farmId === 'unassigned') continue;   // not a real site
     const prev = await db.getSiteAlertState(farmId);
 
-    if (counts.offline < alarmAt) {
-      overLastCheck.delete(farmId);
+    // Only machines offline for the set minutes count.
+    const longList = [];
+    (counts.offlineKeys || []).forEach((k, i) => { if (now - (downSince.get(farmId + '|' + k) || now) >= delayMs) longList.push(counts.offlineList[i]); });
+    const down = longList.length;
+
+    if (down < alarmAt) {
       if (prev !== null) {
-        // Only re-arm once the site has CLEARLY recovered. Alhayer sat at
-        // 10–11 offline all evening: every dip to 10 used to reset the
-        // alarm and the next 11 alarmed again — five identical messages.
-        // Now a dip to 8–10 just lowers the "alerted at" level (so it
-        // takes 5 more machines down to alarm again), and only a real
-        // recovery to rearmAt() (alarm number − 4) or fewer starts a fresh alarm cycle.
-        if (counts.offline <= rearmAt()) {
-          await db.clearSiteAlertState(farmId);
-          // one "back to normal" message (Settings › Telegram Alerts › recovery)
-          try { await require('./alertRules').siteRecovered(farmName, `${counts.offline} of ${counts.total} machines offline now (alarmed at ${prev}).`); } catch (e) {}
+        // Only re-arm once the site has CLEARLY recovered (alarm number − 4
+        // or fewer) and stayed there a while; a dip that comes straight back
+        // just lowers the "alerted at" level.
+        if (down <= rearmAt()) {
+          if (!calmSince.has(farmId)) calmSince.set(farmId, now);
+          if (now - calmSince.get(farmId) >= Math.min(delayMs, 10 * 60 * 1000)) {
+            calmSince.delete(farmId);
+            await db.clearSiteAlertState(farmId);
+            console.log(`[ALERT] ${farmName}: back to normal — ${down} machine(s) offline ${delayMin}+ min`);
+            // one "back to normal" message (Settings › Telegram Alerts › recovery)
+            try { await require('./alertRules').siteRecovered(farmName, `${counts.offline} of ${counts.total} machines offline now (alarmed at ${prev}).`); } catch (e) {}
+          }
+        } else {
+          calmSince.delete(farmId);
+          if (down < prev) await db.setSiteAlertState(farmId, down);
         }
-        else if (counts.offline < prev) await db.setSiteAlertState(farmId, counts.offline);
       }
       continue;
     }
+    calmSince.delete(farmId);
 
     // Is this site's agent settled enough for the numbers to mean anything?
     let agentGone = false;
     if (agent) {
       if (now - new Date(agent.connected_at).getTime() < AGENT_SETTLE_MS) {
-        console.log(`[ALERT] ${farmName}: ${counts.offline} offline, but its agent only just (re)connected — waiting before alarming`);
-        overLastCheck.delete(farmId);
+        console.log(`[ALERT] ${farmName}: ${down} offline, but its agent only just (re)connected — waiting before alarming`);
         continue;
       }
     } else {
       const seen = lastSeenAgent.get(farmId) || startedAt;
-      if (now - seen < AGENT_GONE_MS) { overLastCheck.delete(farmId); continue; }   // just dropped — may be a blip
+      if (now - seen < Math.max(AGENT_GONE_MS, delayMs)) continue;   // just dropped — may be a blip
       agentGone = true;
     }
 
-    // Two checks in a row, counted at the LOWER of the two, so a single
-    // bad reading can neither trigger an alarm nor inflate the count the
-    // next one is compared against.
-    const before = overLastCheck.get(farmId);
-    overLastCheck.set(farmId, counts.offline);
-    if (before === undefined) {
-      console.log(`[ALERT] ${farmName}: ${counts.offline} offline — confirming on the next check before alarming`);
-      continue;
-    }
-    const confirmed = Math.min(before, counts.offline);
-
     // Already alerted: follow improvements down silently, and only
     // re-alert once it's clearly WORSE than that, not just for staying bad.
-    if (prev !== null && confirmed < prev) { await db.setSiteAlertState(farmId, confirmed); continue; }
-    if (prev !== null && confirmed < prev + WORSE_BY) continue;
+    if (prev !== null && down < prev) { await db.setSiteAlertState(farmId, down); continue; }
+    if (prev !== null && down < prev + WORSE_BY) continue;
+
+    // At most one alarm per site per REPEAT minutes, whatever the count does.
+    // "Site unreachable" (power / internet lost) is its own alarm: an earlier
+    // offline-count call doesn't hold it back.
+    const kind = farmId + '|' + (agentGone ? 'gone' : 'down');
+    const last = lastCallAt.get(kind);
+    if (last && now - last < repeatMs) {
+      console.log(`[ALERT] ${farmName}: ${down} offline ${delayMin}+ min — already alarmed ${Math.round((now - last) / 60000)} min ago, next alarm allowed in ${Math.ceil((repeatMs - (now - last)) / 60000)} min`);
+      continue;
+    }
 
     const text = agentGone
-      ? `${farmName} is unreachable: its farm agent has been disconnected for over ${AGENT_GONE_MS / 60000} minutes, so all ${confirmed} of its machines show offline. The site may have lost power or internet.`
-      : `${confirmed} of ${counts.total} machines are offline at ${farmName} (excluding disabled), confirmed on two checks. Alarm set at ${alarmAt}.`
-        + offlineListText(counts);
+      ? `${farmName} is unreachable: its farm agent has been disconnected for over ${Math.max(AGENT_GONE_MS, delayMs) / 60000} minutes, so all ${down} of its machines show offline. The site may have lost power or internet.`
+      : `${down} of ${counts.total} machines have been offline for ${delayMin}+ minutes at ${farmName} (excluding disabled). Alarm set at ${alarmAt}.`
+        + offlineListText({ offlineList: longList });
     const spoken = agentGone
       ? `Warning. ${farmName} is not reachable. The site may have lost power or internet. Please check.`
-      : `Warning. ${confirmed} machines are offline at ${farmName}. Please be warned.`;
-    counts.offline = confirmed;   // what gets recorded as "alerted at" below
+      : `Warning. ${down} machines have been offline for ${delayMin} minutes at ${farmName}. Please check.`;
 
-    console.log(`[ALERT] ${farmName}: ${confirmed} offline (alarm at ${alarmAt}${agentGone ? ', agent unreachable' : ''}) — sending alerts`);
+    console.log(`[ALERT] ${farmName}: ${down} offline for ${delayMin}+ min (alarm at ${alarmAt}${agentGone ? ', agent unreachable' : ''}) — sending alerts`);
+    lastCallAt.set(kind, now);
     // Fire both channels together — the phone call is the one that
     // actually gets heard with no tap required, Telegram is the
     // always-on record even if a call goes unanswered.
@@ -628,7 +667,7 @@ async function checkSiteOfflineCounts() {
       sendCallMeBotAlert(spoken),
     ]);
     if (!voiceOk) await sendTelegramAlert(text, 'critical');   // fall back to the existing text-alert function above
-    await db.setSiteAlertState(farmId, counts.offline);
+    await db.setSiteAlertState(farmId, down);
   }
 }
 
@@ -655,7 +694,8 @@ function start() {
     phoneCallConfigured()    && `Twilio call (${TWILIO_TO.length} number(s))`,
     callMeBotConfigured()    && `CallMeBot call (${CALLMEBOT_USERS.join(', ')})`,
   ].filter(Boolean).join(' + ');
-  console.log(`[ALERT] Site offline-count alerting active via ${channels} — checking every ${CHECK_EVERY_MS / 60000}m, alarm at ${alarmAt}+ offline at one site (excluding disabled).`);
+  loadAlarmSetting().finally(() =>
+    console.log(`[ALERT] Site offline-count alerting active via ${channels} — checking every ${CHECK_EVERY_MS / 60000}m, alarm at ${alarmAt}+ machines offline for ${delayMin}+ min at one site (excluding disabled), at most one alarm per site every ${repeatMin} min.`));
   // Say plainly when a call channel is off, so a missing or misspelt
   // variable shows up in the startup log instead of as a silent no-call
   // during a real outage (which is how the Twilio mix-up went unnoticed).
