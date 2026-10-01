@@ -788,6 +788,18 @@ details.setup[open] summary .chev{transform:rotate(90deg);}
 .swrow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:2px 0;}
 .swrow .lbl{font:600 13px/1.3 var(--font);color:var(--txt);display:flex;align-items:center;}
 .ph .tip{margin-left:6px;}
+.tg-rules{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 22px;}
+@media (max-width:900px){.tg-rules{grid-template-columns:1fr;}}
+.tg-row{display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1px solid var(--b1);}
+.tg-rules>.tg-row:nth-child(-n+2){border-top:0;}
+@media (max-width:900px){.tg-rules>.tg-row:nth-child(2){border-top:1px solid var(--b1);}}
+.tg-ico{font-size:17px;width:24px;text-align:center;flex-shrink:0;}
+.tg-txt{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;}
+.tg-txt b{font:600 13px/1.3 var(--font);color:var(--txt);}
+.tg-sub,.tg-in{font:500 12px/1.6 var(--font);color:var(--mute);}
+.tg-in .si{height:28px;padding:2px 6px;margin:0 2px;}
+.tg-in .num{width:58px;}
+.tg-row.off .tg-txt{opacity:.5;}
 </style>
 </head>
 <body>
@@ -1340,6 +1352,45 @@ details.setup[open] summary .chev{transform:rotate(90deg);}
           <div id="arStatus" class="shint">Loading…</div>
           <div id="arMachines" style="margin-top:10px"></div>
           <div id="arLog" style="margin-top:10px"></div>
+        </div>
+      </div>
+
+      <!-- Telegram alert rules: what goes to the group -->
+      <div class="panel span2" id="tgRulesPanel">
+        <div class="ph"><div class="phd"><svg class="ic sm"><use href="#i-bell"/></svg>Telegram Alerts</div>
+          <span class="tip" tabindex="0" data-tip="What the Telegram group gets. Each problem is confirmed on two checks in a row (about 6 minutes), sent once, and sent again only if it gets clearly worse. Machines in repair, asleep, or on a farm whose PC is disconnected are not judged here.">i</span>
+          <span class="badge" id="tgBadge" style="margin-left:auto">…</span></div>
+        <div class="sb">
+          <div class="tg-rules">
+            <div class="tg-row tg-fixed"><span class="tg-ico">🚨</span>
+              <div class="tg-txt"><b>Site down</b><span class="tg-sub"><span id="tgAlarmAt">11</span>+ machines offline or farm PC unreachable &middot; calls too &middot; set in Site Alarm</span></div>
+              <span class="badge bgn">Always on</span></div>
+            <div class="tg-row"><span class="tg-ico">🔥</span>
+              <div class="tg-txt"><b>Overheating</b><span class="tg-in"><input class="si num" id="tgOhMin" type="number" min="1" max="1000" inputmode="numeric" aria-label="Machines"> or more machines at one farm at
+                <input class="si num" id="tgOhTemp" type="number" min="50" max="150" inputmode="numeric" aria-label="Temperature"> &deg;C or hotter</span></div>
+              <label class="toggle"><input type="checkbox" id="tgOh"><span class="tsldr"></span></label></div>
+            <div class="tg-row"><span class="tg-ico">📉</span>
+              <div class="tg-txt"><b>Hashrate drop</b><span class="tg-in">running machines at one farm make
+                <input class="si num" id="tgHdPct" type="number" min="5" max="90" inputmode="numeric" aria-label="Percent"> % less than usual</span></div>
+              <label class="toggle"><input type="checkbox" id="tgHd"><span class="tsldr"></span></label></div>
+            <div class="tg-row"><span class="tg-ico">✅</span>
+              <div class="tg-txt"><b>Back to normal</b><span class="tg-sub">one message when a site alarm, overheating or hashrate drop is over</span></div>
+              <label class="toggle"><input type="checkbox" id="tgRec"><span class="tsldr"></span></label></div>
+            <div class="tg-row"><span class="tg-ico">📄</span>
+              <div class="tg-txt"><b>Log after the last restart</b><span class="tg-sub">a machine used all its automatic restarts: its log + likely problem</span></div>
+              <label class="toggle"><input type="checkbox" id="tgArLog"><span class="tsldr"></span></label></div>
+            <div class="tg-row"><span class="tg-ico">⏸</span>
+              <div class="tg-txt"><b>Auto-restart paused</b><span class="tg-sub">a big part of a farm at 0 hashrate at once (pool, network or power)</span></div>
+              <label class="toggle"><input type="checkbox" id="tgArPause"><span class="tsldr"></span></label></div>
+            <div class="tg-row"><span class="tg-ico">🗓</span>
+              <div class="tg-txt"><b>Daily summary</b><span class="tg-in">every day at <input class="si" id="tgSumTime" type="time" style="width:110px" aria-label="Time"> Dubai time &middot; online, hashrate, repairs per farm</span></div>
+              <label class="toggle"><input type="checkbox" id="tgSum"><span class="tsldr"></span></label></div>
+          </div>
+          <div class="srow" style="margin-top:12px">
+            <button class="btn btn-sm btn-g" id="tgSave" onclick="saveTgRules()">Save</button>
+            <button class="btn btn-sm" id="tgTest" onclick="sendTgTest()"><svg class="ic sm"><use href="#i-bell"/></svg>Send test message</button>
+          </div>
+          <div id="tgStatus" class="shint"></div>
         </div>
       </div>
 
