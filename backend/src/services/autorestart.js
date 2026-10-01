@@ -404,6 +404,8 @@ async function runLogJobs(now) {
 }
 
 function tell(text, title) { try { telegram && telegram(text, title ? 'plain' : 'warn', title); } catch (e) {} }
+// Settings › Telegram Alerts can switch these two group posts off.
+function ruleOn(key) { try { return require('./alertRules').isOn(key); } catch (e) { return true; } }
 
 // One Telegram message per machine, in the layout the team uses:
 //   Farm : / Customer: / Worker: / Sl.no: / IP:
@@ -472,7 +474,7 @@ async function tick() {
                     `this looks like a pool, network or power problem, so they are NOT being restarted automatically.`;
         console.log('[AUTO-RESTART] ' + msg);
         note({ site: siteName, action: 'skipped-site', detail: `${zeroNow}/${reachable} at 0 hashrate` });
-        tell('Auto-restart paused: ' + msg);
+        if (ruleOn('autorestart_paused')) tell('Auto-restart paused: ' + msg);
       }
       continue;
     }
@@ -513,7 +515,7 @@ async function tick() {
       // Its last restart (even one that failed) → the one group message
       // about this failure: its log, 10 minutes from now. Only on reaching
       // the limit exactly, so it can't repeat within the same failure.
-      if (recent.length === cfg.max_per_day && w) {
+      if (recent.length === cfg.max_per_day && w && ruleOn('autorestart_log')) {
         logJobs.set(k, { farmId, siteName, workerId: w.id, ip: e.ip, due: now + LOG_AFTER_MS, restarts: recent.length, lastAt: now });
         saveLogJobs();
         console.log(`[AUTO-RESTART] ${siteName}: ${label} used its last restart — its log goes to Telegram in ${LOG_AFTER_MS / 60000} min`);
@@ -542,6 +544,14 @@ function start() {
   }, TICK_MS);
 }
 
-module.exports = { start, tick, observePoll, getSettings, saveSettings, loadSettings, getLog,
+// For the daily summary: restarts in the last 24 h, machines left for a person.
+function summary() {
+  const now = Date.now();
+  let restarts24h = 0;
+  history.forEach(arr => { restarts24h += arr.filter(t => now - t < DAY_MS).length; });
+  return { restarts24h, leftForPerson: [...gaveUpNotified.keys()].filter(k => history.has(k)).length };
+}
+
+module.exports = { start, tick, summary, observePoll, getSettings, saveSettings, loadSettings, getLog,
                    loadOverrides, listOverrides, getMachine, setMachines,
                    _state: { zero, history, graceTil, seenAt, logJobs, okSince, gaveUpNotified, learnedMac, reloadLogJobs: () => { logJobsLoaded = false; }, reloadState: () => { stateLoaded = false; } } };
