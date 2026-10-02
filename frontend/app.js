@@ -4998,6 +4998,32 @@ function renderRaSummary() {
     + pollPill();
 }
 
+// Remote Access › Add a farm PC › Download agent: the current agent folder
+// as one .zip, built by the server from where the agents update themselves.
+function downloadAgent() {
+  const btn = document.getElementById('agentDlBtn');
+  const token = localStorage.getItem('ekl_token') || '';
+  if (btn) btn.disabled = true;
+  toast('Preparing the agent download…', 'var(--cyan)');
+  fetch(API_BASE + '/api/agents/download', { headers: { 'Authorization': 'Bearer ' + token } })
+    .then(function(r){
+      if (!r.ok) return r.json().catch(function(){ return {}; }).then(function(d){ throw new Error(d.error || ('HTTP ' + r.status)); });
+      const cd = r.headers.get('Content-Disposition') || '', ver = r.headers.get('X-Agent-Version') || '';
+      const m = cd.match(/filename="?([^";]+)"?/);
+      const name = (m && m[1]) || ('ekalavya-agent' + (ver ? '-v' + ver : '') + '.zip');
+      return r.blob().then(function(b){ return { blob: b, name: name }; });
+    })
+    .then(function(f){
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(f.blob); a.download = f.name;
+      document.body.appendChild(a); a.click();
+      setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+      toast('✓ ' + f.name + ' downloaded — unzip it on the farm PC and run SETUP-WINDOWS.bat', 'var(--green)');
+    })
+    .catch(function(e){ toast('✗ Could not download the agent: ' + e.message, 'var(--red)'); })
+    .then(function(){ if (btn) btn.disabled = false; });
+}
+
 // How often the agents poll the machines — one setting for all farms.
 const POLL_CHOICES = [[30, '30 s'], [60, '1 min'], [120, '2 min'], [180, '3 min'], [300, '5 min'], [600, '10 min']];
 function pollPill() {
