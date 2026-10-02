@@ -2614,6 +2614,36 @@ function loadFleetFromBackend(cb) {
             if (!lc) customers.push(bc);
             else Object.assign(lc, bc); // keep miners[]/portal/email in sync too
           });
+          // Stale copies that exist ONLY on this device: a record under an
+          // id the server doesn't have, at the same farm + IP as a machine
+          // the server does have (same hardware as far as anyone can tell).
+          // The server refuses to store these (routes/fleet.js), the id match
+          // above never reaches them, so they sat here for ever as "offline"
+          // machines — inflating this device's totals (Alhayer 101 here, 96
+          // on the server) and answering "Worker not found" to Remove,
+          // Disable and every other action. They are dropped; a customer
+          // assigned only on the copy moves to the real record.
+          {
+            const atServer = new Map();
+            d.workers.forEach(bw => { if (bw && bw.ip) atServer.set((bw.farm_id || '') + '|' + bw.ip, bw); });
+            const stale = [];
+            workers = workers.filter(lw => {
+              if (!lw || serverIds.has(lw.id) || !lw.ip) return true;
+              const real = atServer.get((lw.farm_id || '') + '|' + lw.ip);
+              if (!real || identityConflict(lw, real, true)) return true;
+              stale.push({ id: lw.id, real: real.id, cid: lw.cid });
+              return false;
+            });
+            if (stale.length) {
+              stale.forEach(x => {
+                const keep = workers.find(w => w.id === x.real);
+                if (keep && x.cid && !keep.cid) keep.cid = x.cid;
+                customers.forEach(c => { if (Array.isArray(c.miners) && c.miners.indexOf(x.id) !== -1) c.miners = c.miners.map(id => id === x.id ? x.real : id).filter((id, i, a) => a.indexOf(id) === i); });
+              });
+              updated += stale.length;
+              console.log('[FLEET] Dropped ' + stale.length + ' stale local copy/copies of machines the server already has');
+            }
+          }
           if (added > 0 || updated > 0) {
             saveFleet();
             _fleetHash = ''; _workersHash = '';
@@ -5919,6 +5949,17 @@ function doAction(action, wid){
         try { refreshCtrl(); } catch(e) {}
         try { renderAll(); } catch(e) {}
       }
+    } else if (action === 'delete' && /not found/i.test(d.error || '')) {
+      // The server has no such record — it only exists on this device
+      // (an old local copy). Removing it here is all there is to do.
+      workers = workers.filter(function(x){ return x.id !== w.id; });
+      customers.forEach(function(c){ if (Array.isArray(c.miners)) c.miners = c.miners.filter(function(x){ return x !== w.id; }); });
+      saveFleet(); _workersHash = ''; _fleetHash = '';
+      try { closeCtrl(); } catch(e) {}
+      try { renderAll(); } catch(e) { renderWorkers(); }
+      toast('✓ ' + w.name + ' removed (it was only on this device)', 'var(--green)');
+    } else if (/worker not found/i.test(d.error || '')) {
+      toast('✗ ' + w.name + ' is not on the server — it is an old copy on this device. Use Remove to clear it.', 'var(--red)');
     } else {
       toast('✗ ' + (d.error || 'Failed'), 'var(--red)');
     }
