@@ -1,8 +1,9 @@
 {
-  "version": "1.1.46",
-  "released_at": "2026-10-02T08:37:15Z",
+  "version": "1.1.47",
+  "released_at": "2026-10-02T19:57:54Z",
   "min_node_version": "16.0.0",
   "changelog": [
+    "Polling gap is confirmed and self-healing. The agent now reports the gap it is using in every heartbeat (and at once when it changes), so the server can see a farm that missed the setting and send it again; and it polls once immediately after the gap changes, so the farm card shows the new gap straight away instead of after the first (possibly long) gap has passed.",
     "Polling gap set in the app. The time between two polls of the machines is now chosen in Remote Access (Poll every 30 s / 1 / 2 / 3 / 5 / 10 min), one setting for all farms: the server sends it when the agent connects (welcome.poll_sec) and whenever it is changed (set_poll), the running poll timer is restarted with the new gap straight away, and the value is kept in .farm.json so an agent restart uses it at once. Until one is set in the app the agent keeps POLL_MS from .env, else 30 s. Each poll report now includes the gap in use (poll_stats.poll_sec), shown on the farm card. The heartbeat to the server is separate and unchanged, so a farm stays online between polls.",
     "Log check support: when the backend fetches a miner's log after its last automatic restart, the agent now also sends the miner's fan speeds (RPM per fan) and chips found per hashboard, read from /cgi-bin/stats.cgi (fan[], chain[].asic_num, eeprom_loaded) or the cgminer 'stats' command (fanN, chain_acnN). The backend uses them to write messages like 'Fan 2 = 0 RPM — change fan 2' or 'Chain 1 = 55 chips detected (other chains 76) — check hashboard' next to the log in Telegram. Only when asked (with_snapshot); the manual Download Logs is unchanged.",
     "Re-release of v1.1.43 (same code) so every PC updates: v1.1.43 hadn't reached the farm PCs. Includes the IP-range fixes (networks bigger than /24 and continuous ranges across networks polled in full; the farm's machine networks polled automatically; poll report shown per farm in Remote Access).",
@@ -30,8 +31,8 @@
   "files": [
     {
       "name": "agent.js",
-      "sha256": "b3b6d84d55196f079007497c6bca6d11304947d9e78270fdeecdd9f3916a5574",
-      "size": 124424
+      "sha256": "5a8b611bb5f24dd60df918c60a054be949e73397e880949b99cef14c6c4dc89a",
+      "size": 124835
     },
     {
       "name": "agent-guard.js",
