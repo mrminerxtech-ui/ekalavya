@@ -85,7 +85,7 @@ function writeFarmFile() {
   // written to a temp file and renamed, so a power cut mid-write can't leave it half-written
   try {
     const fsx = require('fs'), tmp = FARM_FILE + '.tmp';
-    fsx.writeFileSync(tmp, JSON.stringify({ farm_id: FARM_ID, farm_name: FARM_NAME, subnets: APP_SUBNETS, known_subnets: KNOWN_SUBNETS, saved_at: new Date().toISOString() }, null, 2));
+    fsx.writeFileSync(tmp, JSON.stringify({ farm_id: FARM_ID, farm_name: FARM_NAME, subnets: APP_SUBNETS, known_subnets: KNOWN_SUBNETS, poll_sec: APP_POLL_SEC || undefined, saved_at: new Date().toISOString() }, null, 2));
     fsx.renameSync(tmp, FARM_FILE);
   } catch (e) {}
 }
@@ -177,7 +177,21 @@ const PC_ID = process.env.EKL_PC_ID || pcIdentity();
 function installedVersion() {
   try { return JSON.parse(require('fs').readFileSync(require('path').join(__dirname, '.manifest-installed.json'), 'utf8')).version || '1.0.0'; } catch (e) { return '1.0.0'; }
 }
-const POLL_MS   = parseInt(process.env.POLL_MS || '30000');
+// Gap between polls of the machines. Set in the app (Remote Access › Poll
+// every …) for all farms: the server sends it on connect ('welcome') and
+// when it is changed ('set_poll'); it is kept in .farm.json so a restart
+// uses it at once. Until the app has set one: POLL_MS from .env, else 30 s.
+let APP_POLL_SEC = (() => { const f = readFarmFile(); const n = f && parseInt(f.poll_sec, 10); return n >= 30 && n <= 1800 ? n : 0; })();
+let POLL_MS     = APP_POLL_SEC ? APP_POLL_SEC * 1000 : parseInt(process.env.POLL_MS || '30000');
+function applyPollSec(sec) {
+  const n = parseInt(sec, 10);
+  if (!(n >= 30 && n <= 1800)) return;
+  if (APP_POLL_SEC === n && POLL_MS === n * 1000) return;
+  APP_POLL_SEC = n; POLL_MS = n * 1000;
+  console.log(`[CONFIG] Polling the machines every ${n >= 60 ? (n / 60) + ' min' : n + ' s'} (set in the app)`);
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = setInterval(pollMiners, POLL_MS); }
+  writeFarmFile();
+}
 const CGPORT    = parseInt(process.env.CGMINER_PORT || '4028');
 
 // ── One agent per PC ────────────────────────────────────────
@@ -1545,7 +1559,7 @@ async function doPollMiners() {
   }
   // What this PC actually polls — shown for the farm in Remote Access.
   send({ type: 'poll_stats', subnets: SUBNETS, from: SUBNETS_FROM, addresses: ips.length, found: live.length,
-         cycle_ms: Date.now() - started, detected: LOCAL_NET.subnets, at: new Date().toISOString() });
+         poll_sec: Math.round(POLL_MS / 1000), cycle_ms: Date.now() - started, detected: LOCAL_NET.subnets, at: new Date().toISOString() });
 }
 
 // ── Send ───────────────────────────────────────────────────
@@ -2224,7 +2238,8 @@ function connect() {
         if (msg.farm_id) FARM_ID = msg.farm_id;
         if (msg.farm_name) FARM_NAME = msg.farm_name;
         applySubnets(Array.isArray(msg.subnets) ? msg.subnets : undefined, Array.isArray(msg.known_subnets) ? msg.known_subnets : undefined);
-        console.log(`[INFO] This PC runs farm "${FARM_NAME || FARM_ID}" — polling ${SUBNETS.join(', ')} (${SUBNETS_FROM})`);
+        if (msg.poll_sec) applyPollSec(msg.poll_sec);
+        console.log(`[INFO] This PC runs farm "${FARM_NAME || FARM_ID}" — polling ${SUBNETS.join(', ')} (${SUBNETS_FROM}) every ${Math.round(POLL_MS / 1000)} s`);
         writeFarmFile();
         startFarmWork();
       } else if (msg.type === 'pending') {
@@ -2244,6 +2259,8 @@ function connect() {
         FARM_NAME = msg.farm_name || FARM_NAME;
         console.log(`[INFO] Farm renamed in the app: "${FARM_NAME}"`);
         writeFarmFile();
+      } else if (msg.type === 'set_poll') {
+        applyPollSec(msg.poll_sec);
       } else if (msg.type === 'set_subnets') {
         applySubnets(Array.isArray(msg.subnets) ? msg.subnets : undefined, Array.isArray(msg.known_subnets) ? msg.known_subnets : undefined);
         writeFarmFile();
