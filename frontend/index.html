@@ -1180,7 +1180,8 @@ details.setup[open] summary .chev{transform:rotate(90deg);}
         <details class="setup" id="raSetup">
           <summary><svg class="ic sm"><use href="#i-plus"/></svg>Add a farm PC<svg class="ic sm chev"><use href="#i-chevron"/></svg></summary>
           <div class="steps">
-            <div class="step"><span class="n">1</span><b>Copy the agent</b>Download the <code>agent</code> folder to the farm PC, e.g. <code>C:\ekalavya-agent</code>.</div>
+            <div class="step"><span class="n">1</span><b>Download the agent</b>Unzip it on the farm PC, e.g. <code>C:\ekalavya-agent</code>.
+              <div style="margin-top:10px"><button class="btn btn-sm btn-g" id="agentDlBtn" onclick="downloadAgent()"><svg class="ic sm"><use href="#i-download"/></svg>Download agent (.zip)</button></div></div>
             <div class="step"><span class="n">2</span><b>Run setup</b>Double-click <code>SETUP-WINDOWS.bat</code>. No settings to type &mdash; it runs in the background and updates itself.</div>
             <div class="step"><span class="n">3</span><b>Choose its farm</b>The PC appears here under <b style="display:inline;color:var(--warn)">New agents</b>. Pick its farm or type a new name.</div>
           </div>
