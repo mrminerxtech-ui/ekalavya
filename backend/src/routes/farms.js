@@ -2,6 +2,7 @@
 // FARMS ROUTE  /api/farms  — see services/farms.js
 // ------------------------------------------------------------
 // GET    /api/farms                   farms (name, machines, PCs) + PCs waiting for a farm
+// POST   /api/farms/poll              { poll_sec }  seconds between polls, all agents
 // POST   /api/farms/assign            { pc_id, farm_id | new_farm_name }  put a PC on a farm
 // POST   /api/farms/:id/rename        { name }
 // POST   /api/farms/:id/merge         { into }   move all machines + PCs, remove this farm
@@ -63,7 +64,7 @@ async function overview() {
              polling: (agentNow && agentNow.poll_stats) || null,              // what its agent polls right now
              networks: networksOf(id, workers) };                              // machines per /24: total / online
   }).sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  return { ok: true, farms: list, pending: farms.listPending() };
+  return { ok: true, farms: list, pending: farms.listPending(), poll_sec: farms.pollSec(), poll_default_sec: farms.POLL_DEFAULT_SEC };
 }
 
 router.get('/', authMiddleware, staffOnly, async (req, res) => {
@@ -82,6 +83,16 @@ function kickPc(pcId, payload, pendingWs) {
   }
   sockets.forEach(ws => { try { ws.send(JSON.stringify(payload)); ws.close(4010, 'Farm assigned'); } catch (e) {} });
 }
+
+// How often agents poll their machines — one setting for every farm.
+// POST /api/farms/poll  { poll_sec: 180 }
+router.post('/poll', authMiddleware, canChange, async (req, res) => {
+  const r = await farms.setPollSec((req.body || {}).poll_sec, who(req));
+  if (!r.ok) return res.status(400).json(r);
+  // tell every connected agent now; older agents ignore it and keep 30 s
+  agentMgr.getAgents().forEach(a => agentMgr.sendToAgent(a.farm_id, { type: 'set_poll', poll_sec: r.poll_sec }));
+  res.json({ ok: true, ...(await overview()) });
+});
 
 router.post('/assign', authMiddleware, canChange, async (req, res) => {
   const b = req.body || {};
