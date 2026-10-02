@@ -230,6 +230,17 @@ router.post('/enable', authMiddleware, requireRole('admin','manager','technician
 // ── Delete from fleet (POST, matches the frontend's doAction()
 // calling convention — separate from any REST-style DELETE route) ──
 router.post('/delete', authMiddleware, requireRole('admin'), async (req, res) => {
+  // A record the server doesn't have can still sit on a device (an old
+  // local copy). Asking to remove it used to answer "Worker not found"
+  // and leave it there for good. Removing something that is already gone
+  // is a success: record the deletion (so no device pushes it back) and
+  // say so.
+  const id = req.body.worker_id || req.params.id;
+  if (id && !(await db.getWorkerById(id))) {
+    await db.deleteWorker(id);
+    console.log(`[ACTIONS] Remove ${id}: not on the server (a device's old copy) — deletion recorded`);
+    return res.json({ ok: true, action: 'delete', message: 'Removed (it was only on this device)' });
+  }
   const w = await getWorkerOr404(req, res); if (!w) return;
   // Deletion must be an explicit, targeted removal — not achieved by
   // simply omitting the worker from a bulk save. saveWorkers() now
