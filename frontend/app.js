@@ -3149,7 +3149,14 @@ function cleanBrandModel(val){
   return s;
 }
 
+// Until the agent list has actually loaded, nothing is known about the
+// agents — so nothing is claimed: each machine shows the status the server
+// last recorded for it. (It used to count as "every agent offline", which
+// painted the whole fleet red — 0 online, 261 offline — whenever that one
+// request was slow or failed, while Remote Access showed everything online.)
+let agentsKnown = false;
 function isAgentOnline(farmId){
+  if (!agentsKnown) return true;
   const a = agents.find(function(x){ return x.id === farmId; });
   return !!(a && a.online);
 }
@@ -3403,10 +3410,42 @@ function fetchAgents(){
           lastSeen: a.last_seen_ago || 'Just now',
           lastPoll: a.last_seen_ago || 'Just now',
         }));
+        agentsKnown = true; agentsFailCount = 0;
         updateAgentUI();
+        // which agents are online changed (or just became known) → redraw
+        // the machine statuses that depend on it straight away
+        const sig = agents.map(function(x){ return x.id + (x.online ? '+' : '-'); }).sort().join('|');
+        if (sig !== agentsSig) { agentsSig = sig; try { _fleetHash = ''; _workersHash = ''; renderDash(); renderWorkers(); } catch (e) {} }
       }
     })
-    .catch(err => console.warn('[EKL] fetchAgents failed:', err.message));
+    .catch(err => {
+      console.warn('[EKL] fetchAgents failed:', err.message);
+      // Second source: the farm list (Remote Access) knows which farms
+      // have an agent online. Then try the agent list again shortly.
+      agentsFailCount++;
+      agentsFromFarms(true);
+      if (agentsFailCount <= 5) setTimeout(fetchAgents, 5000);
+    });
+}
+let agentsFailCount = 0, agentsSig = null;
+// Build / refresh the agent list from the farm list when the agent list
+// itself could not be loaded.
+function agentsFromFarms(fetchIfNeeded) {
+  if (agentsKnown && agentsFailCount === 0) return;
+  const use = function(farms){
+    if (!Array.isArray(farms) || !farms.length) return;
+    agents = farms.map(function(f){
+      const pc = (f.pcs || []).find(function(p){ return p.online; }) || (f.pcs || [])[0] || {};
+      return { id: f.farm_id, name: f.name || f.farm_id, subnet: (f.subnets || []).join(', ') || '(auto)', host: pc.hostname || 'unknown',
+               ver: pc.version || '1.0.0', online: !!f.online, count: f.machines || 0, lastSeen: f.online ? 'Just now' : '—', lastPoll: f.online ? 'Just now' : '—' };
+    });
+    agentsKnown = true;
+    try { updateAgentUI(); } catch (e) {}
+    try { _fleetHash = ''; _workersHash = ''; renderDash(); renderWorkers(); } catch (e) {}
+  };
+  if (typeof farmsState !== 'undefined' && farmsState.farms && farmsState.farms.length) return use(farmsState.farms);
+  if (!fetchIfNeeded || (typeof isCustomer !== 'undefined' && isCustomer)) return;
+  authFetch('/api/farms').then(function(d){ if (d && d.ok) use(d.farms); });
 }
 
 function updateAgentUI(){
