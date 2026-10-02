@@ -263,9 +263,22 @@ router.use('/:farmId/:ip', async (req, res) => {
   // back into whatever format it originally came in as (Express already
   // parsed it into an object) — a miner's login form expects urlencoded
   // "user=root&pass=root", NOT the JSON stringification of that object.
-  let bodyToSend = null;
+  let bodyToSend = null, bodyEncoding = null;
   const reqContentType = req.headers['content-type'] || '';
-  if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body && Object.keys(req.body).length > 0) {
+  // Anything that isn't JSON or a form (Braiins OS's gRPC-web calls are
+  // binary protobuf, application/grpc-web+proto) is left unread by the
+  // body parsers, so it was never forwarded and the miner got an empty
+  // request. It's read here as raw bytes and passed through untouched.
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) && !req._body && typeof req.on === 'function') {
+    const raw = await new Promise(resolve => {
+      const chunks = []; let n = 0;
+      req.on('data', c => { n += c.length; if (n <= 10 * 1024 * 1024) chunks.push(c); });
+      req.on('end', () => resolve(Buffer.concat(chunks)));
+      req.on('error', () => resolve(Buffer.alloc(0)));
+    });
+    if (raw.length) { bodyToSend = raw.toString('base64'); bodyEncoding = 'base64'; }
+  }
+  if (!bodyToSend && ['POST', 'PUT', 'PATCH'].includes(req.method) && req.body && Object.keys(req.body).length > 0) {
     if (reqContentType.includes('application/json')) {
       bodyToSend = JSON.stringify(req.body);
     } else if (reqContentType.includes('urlencoded') || !reqContentType) {
@@ -289,10 +302,12 @@ router.use('/:farmId/:ip', async (req, res) => {
   if (minerCookie) fwdHeaders.cookie = minerCookie;
   if (req.headers.authorization) fwdHeaders.authorization = req.headers.authorization;
   if (req.headers.accept) fwdHeaders.accept = req.headers.accept;
+  // gRPC-web (Braiins OS) request metadata
+  ['x-grpc-web', 'x-user-agent', 'grpc-timeout'].forEach(h => { if (req.headers[h]) fwdHeaders[h] = req.headers[h]; });
 
   try {
     const result = await agentMgr.sendWebuiRequest(
-      farmId, ip, req.method, minerPath, fwdHeaders, bodyToSend
+      farmId, ip, req.method, minerPath, fwdHeaders, bodyToSend, bodyEncoding ? { body_encoding: bodyEncoding } : undefined
     );
 
     // result: { status, headers, body, encoding }
@@ -305,9 +320,14 @@ router.use('/:farmId/:ip', async (req, res) => {
     const declaredType = (result.headers && result.headers['content-type']) || '';
     const pathOnly      = minerPath.split('?')[0].toLowerCase();
     const looksLikeJs   = pathOnly.endsWith('.js');
-    const isJs          = looksLikeJs || declaredType.includes('javascript');
-    const isCss         = !isJs && (pathOnly.endsWith('.css') || declaredType.includes('text/css'));
-    const isHtml        = !isJs && !isCss && (declaredType.includes('text/html') || (!declaredType && (pathOnly === '/' || pathOnly.endsWith('/') || pathOnly.endsWith('.html'))));
+    // A gRPC-web call (Braiins OS) is binary protobuf whatever the reply's
+    // label says — never rewritten as a page, script or stylesheet. (A reply
+    // with no Content-Type used to be taken for HTML and "fixed up", which
+    // destroys it.)
+    const reqIsGrpc     = /^application\/grpc/i.test(reqContentType);
+    const isJs          = !reqIsGrpc && (looksLikeJs || declaredType.includes('javascript'));
+    const isCss         = !reqIsGrpc && !isJs && (pathOnly.endsWith('.css') || declaredType.includes('text/css'));
+    const isHtml        = !reqIsGrpc && !isJs && !isCss && (declaredType.includes('text/html') || (!declaredType && (pathOnly === '/' || pathOnly.endsWith('/') || pathOnly.endsWith('.html'))));
 
     // Falling back to text/html for ANY file the miner didn't label was
     // actively harmful: helmet sends X-Content-Type-Options: nosniff, and
@@ -328,12 +348,16 @@ router.use('/:farmId/:ip', async (req, res) => {
       '.map': 'application/json',
     };
     const ext = (pathOnly.match(/\.[a-z0-9]+$/) || [''])[0];
-    const contentType = declaredType
+    const contentType = (reqIsGrpc && !/grpc/i.test(declaredType)) ? reqContentType.split(';')[0]
+      : declaredType
       || EXT_TYPES[ext]
       || (pathOnly === '/' || pathOnly.endsWith('/') ? 'text/html' : 'application/octet-stream');
     let bodyBuf = result.encoding === 'base64'
       ? Buffer.from(result.body || '', 'base64')
       : Buffer.from(result.body || '', 'utf8');
+    if (reqIsGrpc && (result.status || 200) === 200) {
+      bodyBuf = ensureGrpcWebTrailer(bodyBuf, /grpc-web-text/i.test(contentType), result.headers || {}, minerPath, ip);
+    }
 
     // Make the miner's own links, forms, and scripts work by relying
     // on the browser's NATURAL relative-URL resolution, instead of
@@ -608,6 +632,16 @@ router.use('/:farmId/:ip', async (req, res) => {
       });
     }
 
+    // gRPC-web status. A call that fails (or a "trailers-only" reply)
+    // carries its result in grpc-status / grpc-message headers; dropping
+    // them made the browser report "missing trailer" (Braiins OS: "Miner
+    // info: missing trailer") instead of the real result.
+    if (result.headers) {
+      Object.keys(result.headers).forEach(h => {
+        if (/^grpc-/i.test(h) && result.headers[h] != null) res.set(h, String(result.headers[h]));
+      });
+    }
+
     // Redirects (e.g. after submitting the miner's own login form)
     // need the same leading-slash strip so the browser follows them
     // back into our tunnel folder instead of escaping to our own
@@ -624,6 +658,46 @@ router.use('/:farmId/:ip', async (req, res) => {
     res.status(504).send(tunnelErrorPage(e.message));
   }
 });
+
+// ── gRPC-web replies must end with a "trailer" frame ────────────────
+// A gRPC-web reply is a run of frames: 1 flag byte + 4 length bytes +
+// data. The last one (flag 0x80) is the trailer and carries grpc-status;
+// the page's client refuses a reply without it ("missing trailer" —
+// Braiins OS: "Miner info: missing trailer", empty Hashboards). Through
+// the tunnel some replies arrive with their message intact but the status
+// only in the HTTP headers/trailers, or nowhere. When the frames are
+// complete and there is no trailer frame, one is added: from the miner's
+// own grpc-status if it sent one, else "0" for a complete message on a
+// 200 reply. A reply whose frames are cut short is passed through as it
+// is — that really is a broken reply.
+const grpcNoted = new Map();
+function ensureGrpcWebTrailer(buf, isText, headers, path, ip) {
+  let bin = buf;
+  if (isText) { try { bin = Buffer.from(buf.toString('latin1').replace(/\s+/g, ''), 'base64'); } catch (e) { return buf; } }
+  let off = 0, data = 0, trailer = false;
+  while (off < bin.length) {
+    if (off + 5 > bin.length) return buf;                       // cut short
+    const flag = bin[off], len = bin.readUInt32BE(off + 1);
+    if (off + 5 + len > bin.length) return buf;                 // cut short
+    if (flag & 0x80) trailer = true; else data++;
+    off += 5 + len;
+  }
+  if (trailer) return buf;
+  const hdr = k => { const v = headers[k]; return v == null ? null : String(Array.isArray(v) ? v[0] : v); };
+  let status = hdr('grpc-status');
+  if (status == null && data > 0) status = '0';
+  if (status == null) return buf;                               // nothing to go on
+  const msg = hdr('grpc-message');
+  const text = Buffer.from('grpc-status:' + status + '\r\n' + (msg ? 'grpc-message:' + msg + '\r\n' : ''), 'utf8');
+  const head = Buffer.alloc(5); head[0] = 0x80; head.writeUInt32BE(text.length, 1);
+  const out = Buffer.concat([bin, head, text]);
+  const key = ip + path, now = Date.now();
+  if (!grpcNoted.has(key) || now - grpcNoted.get(key) > 10 * 60 * 1000) {
+    grpcNoted.set(key, now); if (grpcNoted.size > 500) grpcNoted.clear();
+    console.log(`[WEBUI] grpc ${path} (ip=${ip}): reply had ${data} message(s) and no trailer frame (grpc-status ${hdr('grpc-status') == null ? 'not sent' : hdr('grpc-status')}) — trailer added`);
+  }
+  return isText ? Buffer.from(out.toString('base64'), 'latin1') : out;
+}
 
 function tunnelErrorPage(message) {
   return `<!DOCTYPE html><html><head><meta charset="utf-8">
