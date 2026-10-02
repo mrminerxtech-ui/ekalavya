@@ -1946,7 +1946,9 @@ function handleWebuiProxyRequestNow(msg) {
                  'set-cookie': res.headers['set-cookie'] || null },
                  // gRPC-web status/message (Braiins OS); a call's result lives here
                  // when the reply has no body, and dropping it showed "missing trailer"
-                 ...Object.keys(res.headers).filter(h => /^grpc-/i.test(h)).map(h => ({ [h]: res.headers[h] }))),
+                 ...Object.keys(res.headers).filter(h => /^grpc-/i.test(h)).map(h => ({ [h]: res.headers[h] })),
+                 // …or in HTTP trailers (sent after the body) — same thing, later
+                 ...Object.keys(res.trailers || {}).filter(h => /^grpc-/i.test(h)).map(h => ({ [h]: res.trailers[h] }))),
       body: isText ? buf.toString('utf8') : buf.toString('base64'),
       encoding: isText ? 'utf8' : 'base64',
     });
@@ -1993,6 +1995,7 @@ function handleWebuiProxyRequestNow(msg) {
     if (headers && headers.cookie) options.headers['Cookie'] = headers.cookie;
     if (headers && headers.accept) options.headers['Accept'] = headers.accept;
     ['x-grpc-web', 'x-user-agent', 'grpc-timeout'].forEach(h => { if (headers && headers[h]) options.headers[h] = headers[h]; });
+    if (isGrpc) options.headers['TE'] = 'trailers';   // ask for the call's status even where it travels as a trailer
     // gRPC reads Authorization as its own login token: our root/root Basic
     // header there is an invalid token, so it's left off gRPC calls.
     if (!authHeader) delete options.headers['Authorization'];
