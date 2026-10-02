@@ -1896,6 +1896,18 @@ function agentFor(ip) {
   return a;
 }
 
+// How each miner's web server wants to be asked. Most take our request as
+// it is ('auth': with the root/root login header). Some reset the
+// connection instead — seen on AvalonMiner (Canaan): "read ECONNRESET" on
+// every try, so the page never opened. For those the request is retried
+// the way a browser would send it ('plain': no login header of ours, a
+// browser User-Agent), then over HTTPS ('https'). Whatever works is
+// remembered per miner, so later files go straight there.
+const webuiStyle = new Map();   // ip -> 'plain' | 'https'
+const WEBUI_STYLES = ['auth', 'plain', 'https'];
+const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
+const insecureHttps = new https.Agent({ rejectUnauthorized: false, keepAlive: false, maxSockets: 2 });
+
 function handleWebuiProxyRequestNow(msg) {
   return new Promise(resolveQueue => {
   const { request_id, ip, method, path: reqPath, headers } = msg;
@@ -1956,9 +1968,10 @@ function handleWebuiProxyRequestNow(msg) {
   // phase 1 = retry with a freshly issued challenge
   // phase 2 = last retry; a 401 after this is passed through to the browser
   function attempt(authHeader, phase, freshConnection) {
+    const overTls = style === 'https';
     const options = {
-      hostname: ip, port: 80, path: reqPath || '/', method: method || 'GET',
-      headers: { 'Authorization': authHeader },
+      hostname: ip, port: overTls ? 443 : 80, path: reqPath || '/', method: method || 'GET',
+      headers: { 'Authorization': authHeader, 'User-Agent': (headers && headers['user-agent']) || BROWSER_UA, 'Accept': '*/*', 'Accept-Encoding': 'identity' },
       timeout: 8000,
       // A retry after a dropped connection deliberately does NOT reuse
       // the pooled socket. These miners' web servers handle keep-alive
@@ -1966,10 +1979,13 @@ function handleWebuiProxyRequestNow(msg) {
       // already be dead at the miner's end, and every request handed to
       // it fails the same way. Retrying on a brand-new connection
       // sidesteps a stale pooled socket entirely.
-      agent: freshConnection
-        ? new http.Agent({ keepAlive: false, maxSockets: 1 })
+      agent: overTls ? insecureHttps
+        : (freshConnection || style !== 'auth') ? new http.Agent({ keepAlive: false, maxSockets: 1 })
         : agentFor(ip),
     };
+    // 'plain' / 'https': ask like a browser — without OUR root/root login
+    // header (a login the page or a Digest challenge supplies still goes).
+    if (style !== 'auth' && authHeader === DEFAULT_BASIC && !pageAuth) authHeader = null;
     if (body) options.headers['Content-Length'] = Buffer.byteLength(body);
     if (headers && headers['content-type']) options.headers['Content-Type'] = headers['content-type'];
     // The miner page's own session (cookie) and accept header go through
@@ -1981,7 +1997,11 @@ function handleWebuiProxyRequestNow(msg) {
     // header there is an invalid token, so it's left off gRPC calls.
     if (!authHeader) delete options.headers['Authorization'];
 
-    const req = http.request(options, res => {
+    const req = (overTls ? https : http).request(options, res => {
+      if (style !== 'auth' && webuiStyle.get(ip) !== style) {
+        webuiStyle.set(ip, style);
+        console.log(`[WEBUI] ${ip} answers ${style === 'https' ? 'over HTTPS (port 443)' : 'only when asked like a browser (no root/root header)'} — remembered for this miner`);
+      }
       if (res.statusCode === 401 && phase < 2 && res.headers['www-authenticate']) {
         const wa = res.headers['www-authenticate'];
         res.resume(); // drain this response, we're retrying
@@ -2020,14 +2040,30 @@ function handleWebuiProxyRequestNow(msg) {
         setTimeout(() => attempt(authHeader, phase, true), 300 * connRetries);
         return;
       }
-      console.log(`[WEBUI] ✗ ${reqPath} → giving up: ${e.code || ''} ${e.message}`);
-      sendError(502, 'Cannot reach miner (' + (e.code || 'error') + '): ' + e.message);
+      // Still refused the same way: ask differently (browser-style, then
+      // HTTPS). A miner that is simply unreachable fails these at once too.
+      const next = WEBUI_STYLES[WEBUI_STYLES.indexOf(style) + 1];
+      if (transient && next && !/EHOSTUNREACH|ETIMEDOUT/i.test(e.message || '')) {
+        tried.push(style + ': ' + (e.code || e.message));
+        console.log(`[WEBUI] ${ip}${reqPath} → ${e.code || e.message} with "${style}" requests — trying "${next}"`);
+        style = next; connRetries = 1;          // one fresh-connection retry within the new style
+        setTimeout(() => attempt(authHeader, phase, true), 200);
+        return;
+      }
+      tried.push(style + ': ' + (e.code || e.message));
+      if (webuiStyle.get(ip) === style) webuiStyle.delete(ip);   // what worked before no longer does — start over next time
+      console.log(`[WEBUI] ✗ ${ip}${reqPath} → giving up: ${tried.join(' · ')}`);
+      sendError(502, 'Cannot reach miner (' + (e.code || 'error') + '): ' + e.message
+        + (tried.length > 1 ? '\nTried: ' + tried.join(' · ') + '\nThe miner\'s web page did not answer on port 80 or 443 from the farm PC.' : ''));
     });
     req.on('timeout', () => { req.destroy(); sendError(504, 'Miner did not respond in time'); });
     if (body) req.write(body);
     req.end();
   }
   let connRetries = 0;
+  let style = webuiStyle.get(ip) || 'auth';
+  const tried = [];
+  const DEFAULT_BASIC = 'Basic ' + Buffer.from(REQUEST_USER + ':' + REQUEST_PASS).toString('base64');
 
   // A miner page that logs in with its own token (Authorization header)
   // must have that header reach the miner untouched. It used to be
