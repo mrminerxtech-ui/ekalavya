@@ -1,8 +1,9 @@
 {
-  "version": "1.1.48",
-  "released_at": "2026-10-02T21:15:24Z",
+  "version": "1.1.49",
+  "released_at": "2026-10-02T21:27:49Z",
   "min_node_version": "16.0.0",
   "changelog": [
+    "Web UI tunnel, Braiins OS: the dashboard showed 'Miner info: missing trailer' and an empty Hashboards list. Braiins OS pages talk to the miner with gRPC-web; when the miner puts the call's end-of-reply status (grpc-status / grpc-message) in HTTP trailers instead of in the reply body, the agent used to drop it. Those trailers are now passed on to the server, and gRPC requests are sent with 'TE: trailers' so the miner is allowed to send them. Other miners are unchanged.",
     "Web UI tunnel: open miners whose web server resets our request (seen on AvalonMiner: 'Cannot reach miner (ECONNRESET): read ECONNRESET' on every try). Every request now carries a browser User-Agent; if a miner still resets the connection after the usual fresh-connection retries, the request is repeated the way a browser sends it (without the agent's own root/root login header) and then over HTTPS on port 443 (self-signed certificates accepted). The style that works is remembered per miner so later files go straight there, and the agent log says what it learnt. When nothing answers, the error lists what was tried. Antminer / Braiins behaviour is unchanged.",
     "Polling gap is confirmed and self-healing. The agent now reports the gap it is using in every heartbeat (and at once when it changes), so the server can see a farm that missed the setting and send it again; and it polls once immediately after the gap changes, so the farm card shows the new gap straight away instead of after the first (possibly long) gap has passed.",
     "Polling gap set in the app. The time between two polls of the machines is now chosen in Remote Access (Poll every 30 s / 1 / 2 / 3 / 5 / 10 min), one setting for all farms: the server sends it when the agent connects (welcome.poll_sec) and whenever it is changed (set_poll), the running poll timer is restarted with the new gap straight away, and the value is kept in .farm.json so an agent restart uses it at once. Until one is set in the app the agent keeps POLL_MS from .env, else 30 s. Each poll report now includes the gap in use (poll_stats.poll_sec), shown on the farm card. The heartbeat to the server is separate and unchanged, so a farm stays online between polls.",
@@ -32,8 +33,8 @@
   "files": [
     {
       "name": "agent.js",
-      "sha256": "c4e4fd870214b4185fd62454a2b555a7fb4c956fa776c28329f562db14e104f1",
-      "size": 127594
+      "sha256": "b6dc769fe72e583f54666aa40239d1a2d5c11b46b526da36a39f7082964d6072",
+      "size": 127920
     },
     {
       "name": "agent-guard.js",
