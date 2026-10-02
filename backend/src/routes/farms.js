@@ -62,6 +62,7 @@ async function overview() {
              subnets: (reg.farms[id] && reg.farms[id].subnets) || [],          // typed in the app ([] = automatic)
              known_subnets: farms.knownSubnetsFor(id, workers),               // networks its machines are on
              polling: (agentNow && agentNow.poll_stats) || null,              // what its agent polls right now
+             poll_sec_agent: (agentNow && (agentNow.poll_sec || (agentNow.poll_stats && agentNow.poll_stats.poll_sec))) || null,   // gap the agent says it uses
              networks: networksOf(id, workers) };                              // machines per /24: total / online
   }).sort((a, b) => String(a.name).localeCompare(String(b.name)));
   return { ok: true, farms: list, pending: farms.listPending(), poll_sec: farms.pollSec(), poll_default_sec: farms.POLL_DEFAULT_SEC };
