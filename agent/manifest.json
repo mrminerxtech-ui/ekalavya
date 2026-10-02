@@ -1,8 +1,9 @@
 {
-  "version": "1.1.45",
-  "released_at": "2026-09-29T10:24:11Z",
+  "version": "1.1.46",
+  "released_at": "2026-10-02T08:37:15Z",
   "min_node_version": "16.0.0",
   "changelog": [
+    "Polling gap set in the app. The time between two polls of the machines is now chosen in Remote Access (Poll every 30 s / 1 / 2 / 3 / 5 / 10 min), one setting for all farms: the server sends it when the agent connects (welcome.poll_sec) and whenever it is changed (set_poll), the running poll timer is restarted with the new gap straight away, and the value is kept in .farm.json so an agent restart uses it at once. Until one is set in the app the agent keeps POLL_MS from .env, else 30 s. Each poll report now includes the gap in use (poll_stats.poll_sec), shown on the farm card. The heartbeat to the server is separate and unchanged, so a farm stays online between polls.",
     "Log check support: when the backend fetches a miner's log after its last automatic restart, the agent now also sends the miner's fan speeds (RPM per fan) and chips found per hashboard, read from /cgi-bin/stats.cgi (fan[], chain[].asic_num, eeprom_loaded) or the cgminer 'stats' command (fanN, chain_acnN). The backend uses them to write messages like 'Fan 2 = 0 RPM — change fan 2' or 'Chain 1 = 55 chips detected (other chains 76) — check hashboard' next to the log in Telegram. Only when asked (with_snapshot); the manual Download Logs is unchanged.",
     "Re-release of v1.1.43 (same code) so every PC updates: v1.1.43 hadn't reached the farm PCs. Includes the IP-range fixes (networks bigger than /24 and continuous ranges across networks polled in full; the farm's machine networks polled automatically; poll report shown per farm in Remote Access).",
     "Fix machines on a farm's second network showing offline. IP ranges were cut short: a network bigger than /24 (10.0.0.0/23, /22) was only polled for its first 254 addresses, and a continuous range such as 192.168.70.1-192.168.73.254 only covered its first network (the end address was read as just its last number). Ranges now cover everything up to 4,096 addresses each, and also accept 192.168.70-73.* for several whole networks; overlapping ranges are polled once. Unless ranges are set in the app, the agent now polls LOCAL_SUBNET plus every network the farm's machines are on (sent by the server, refreshed every 5 minutes), so a farm spread over several networks is never half-polled; with neither, the PC's own networks. Polling knocks on 128 addresses at a time before reading the machines that answer 25 at a time, so more networks don't stretch the cycle. After each cycle the agent reports what it polled (ranges, where they came from, addresses, cycle time, machines found) — shown per farm in Remote Access.",
@@ -29,8 +30,8 @@
   "files": [
     {
       "name": "agent.js",
-      "sha256": "fa48fb3760319ea4cf06b4bbccfaac29dc5466f8b90a127c4053fac65f99523a",
-      "size": 123274
+      "sha256": "b3b6d84d55196f079007497c6bca6d11304947d9e78270fdeecdd9f3916a5574",
+      "size": 124424
     },
     {
       "name": "agent-guard.js",
