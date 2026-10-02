@@ -189,8 +189,16 @@ function applyPollSec(sec) {
   if (APP_POLL_SEC === n && POLL_MS === n * 1000) return;
   APP_POLL_SEC = n; POLL_MS = n * 1000;
   console.log(`[CONFIG] Polling the machines every ${n >= 60 ? (n / 60) + ' min' : n + ' s'} (set in the app)`);
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = setInterval(pollMiners, POLL_MS); }
+  if (pollTimer) {
+    clearInterval(pollTimer); pollTimer = setInterval(pollMiners, POLL_MS);
+    // poll once now, so the app shows the new gap straight away instead of
+    // after the first (possibly long) gap has passed
+    setTimeout(pollMiners, 1500);
+  }
   writeFarmFile();
+  // tell the server at once which gap is in use (it re-sends the setting
+  // to any agent whose answer doesn't match)
+  try { send({ type: 'heartbeat', farm_id: FARM_ID, poll_sec: n }); } catch (e) {}
 }
 const CGPORT    = parseInt(process.env.CGMINER_PORT || '4028');
 
@@ -2206,7 +2214,7 @@ function connect() {
         try { ws.terminate(); } catch(e) {}
       }
     }, 10000);
-    heartbeatMsgInterval = setInterval(() => send({ type:'heartbeat', farm_id:FARM_ID }), 8000);
+    heartbeatMsgInterval = setInterval(() => send({ type:'heartbeat', farm_id:FARM_ID, poll_sec: Math.round(POLL_MS / 1000) }), 8000);
     // Ping every 8s; only reconnect if truly unresponsive for 32s
     pingInterval = setInterval(heartbeatPing, 8000);
     // Polling starts once the server says which farm this is ('welcome');
