@@ -160,6 +160,8 @@ function registerAgent(ws, info) {
         // or else the networks it detects itself
         subnets:   info.subnets || [],
         known_subnets: info.known_subnets || [],
+        // seconds between polls of the machines (Remote Access › Poll every …)
+        poll_sec:  (() => { try { return require('./farms').pollSecSet(); } catch (e) { return undefined; } })(),
       }));
     }
   } catch(e) {}
@@ -234,7 +236,7 @@ function handleAgentMessage(farmId, msg) {
     // many addresses, how long a cycle takes) — shown per farm in the app.
     if (msg.type === 'poll_stats') {
       agent.poll_stats = { subnets: (msg.subnets || []).slice(0, 64), from: String(msg.from || ''), addresses: msg.addresses | 0,
-                           found: msg.found | 0, cycle_ms: msg.cycle_ms | 0, detected: (msg.detected || []).slice(0, 16), at: msg.at || new Date().toISOString() };
+                           found: msg.found | 0, cycle_ms: msg.cycle_ms | 0, poll_sec: msg.poll_sec | 0, detected: (msg.detected || []).slice(0, 16), at: msg.at || new Date().toISOString() };
       return;
     }
 
