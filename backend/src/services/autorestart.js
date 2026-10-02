@@ -438,7 +438,12 @@ async function tick() {
   await Promise.all([loadLogJobs(), loadState()]);
   try { await runLogJobs(now); } catch (e) { console.error('[AUTO-RESTART] log job error:', e.message); }
   // forget machines that stopped appearing in polls (unreachable, moved)
-  zero.forEach((e, k) => { if (now - e.lastSeen > FORGET_AFTER_MS) zero.delete(k); });
+  // (longer than the polling gap set in the app, or every machine would be
+  // forgotten between two polls and never reach its minutes at 0)
+  let pollMs = 30000;
+  try { pollMs = require('./farms').pollSec() * 1000; } catch (e) {}
+  const forgetMs = Math.max(FORGET_AFTER_MS, pollMs * 2.5);
+  zero.forEach((e, k) => { if (now - e.lastSeen > forgetMs) zero.delete(k); });
 
   // Anything switched on at all? The default, or at least one machine's own setting.
   const ownOn = Object.values(overrides).filter(o => o && o.mode === 'on');
