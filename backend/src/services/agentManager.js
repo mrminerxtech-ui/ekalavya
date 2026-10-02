@@ -227,6 +227,23 @@ function handleAgentMessage(farmId, msg) {
     agent.last_seen   = new Date().toISOString();
     agent.miner_count = msg.miner_count || msg.miners?.length || agent.miner_count;
 
+    // Polling gap the agent says it is using (every heartbeat from agent
+    // v1.1.47, every poll report from v1.1.46). If it isn't the gap set in
+    // the app, the setting is sent again — a message lost while the agent
+    // was reconnecting or restarting no longer leaves a farm on the old gap.
+    if (msg.poll_sec > 0) agent.poll_sec = msg.poll_sec | 0;
+    if ((msg.type === 'heartbeat' || msg.type === 'poll_stats') && agent.poll_sec) {
+      let want;
+      try { want = require('./farms').pollSecSet(); } catch (e) {}
+      const now = Date.now();
+      if (want && agent.poll_sec !== want && now - (agent.poll_push_at || 0) > 20000 && agent.ws.readyState === 1) {
+        agent.poll_push_at = now;
+        agent.poll_pushes = (agent.poll_pushes || 0) + 1;
+        if (agent.poll_pushes <= 3 || agent.poll_pushes % 30 === 0) console.log(`[AGENT] ${agent.farm_name}: polling every ${agent.poll_sec}s, setting is ${want}s — sending it again`);
+        try { agent.ws.send(JSON.stringify({ type: 'set_poll', poll_sec: want })); } catch (e) {}
+      } else if (want && agent.poll_sec === want) agent.poll_pushes = 0;
+    }
+
     // Heartbeat — reply to agent
     if (msg.type === 'heartbeat' && agent.ws.readyState === 1) {
       try { agent.ws.send(JSON.stringify({ type: 'heartbeat_ack' })); } catch(e) {}
