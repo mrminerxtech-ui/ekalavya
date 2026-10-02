@@ -317,7 +317,7 @@ function renderAgents() {
     if (farmById(aid)) return openRanges(aid);
     const self = this;
     authFetch('/api/farms').then(function(d){
-      if (d && d.ok) { farmsState = { farms: d.farms || [], pending: d.pending || [] }; if (farmById(aid)) return openRanges(aid); }
+      if (d && d.ok) { farmsState = { farms: d.farms || [], pending: d.pending || [], poll_sec: d.poll_sec || farmsState.poll_sec }; if (farmById(aid)) return openRanges(aid); }
       openAgentConfig(aid, self.dataset.name, self.dataset.subnet);
     });
   }); });
@@ -4931,7 +4931,7 @@ function loadFarms() {
   const pg = document.getElementById('page-agents');
   authFetch('/api/farms').then(function(d){
     if (!d || !d.ok) { const fl = document.getElementById('farmsList'); if (fl && !farmsState.farms.length) fl.innerHTML = '<div style="color:var(--mute);font-size:12px">Could not load farms.</div>'; return; }
-    farmsState = { farms: d.farms || [], pending: d.pending || [] };
+    farmsState = { farms: d.farms || [], pending: d.pending || [], poll_sec: d.poll_sec || 30 };
     renderFarmsPanel(); renderPendingAgents();
   });
 }
@@ -4964,7 +4964,37 @@ function renderRaSummary() {
   el.innerHTML = '<span class="pill"><b>' + farms.length + '</b> farms</span>'
     + '<span class="pill"><span class="sdot ' + (pcsOn === pcs && pcs ? 'on' : 'off') + '"></span><b>' + pcsOn + '/' + pcs + '</b> agents online</span>'
     + '<span class="pill"><b>' + online + '/' + machines + '</b> machines online</span>'
-    + (farmsState.pending.length ? '<span class="pill" style="border-color:rgba(251,191,36,.45);color:#fcd34d"><b style="color:#fcd34d">' + farmsState.pending.length + '</b> waiting for a farm</span>' : '');
+    + (farmsState.pending.length ? '<span class="pill" style="border-color:rgba(251,191,36,.45);color:#fcd34d"><b style="color:#fcd34d">' + farmsState.pending.length + '</b> waiting for a farm</span>' : '')
+    + pollPill();
+}
+
+// How often the agents poll the machines — one setting for all farms.
+const POLL_CHOICES = [[30, '30 s'], [60, '1 min'], [120, '2 min'], [180, '3 min'], [300, '5 min'], [600, '10 min']];
+function pollPill() {
+  const cur = farmsState.poll_sec || 30;
+  const dd = document.getElementById('pollSel');
+  if (dd && document.activeElement === dd) return dd.closest('.pill').outerHTML;     // don't rebuild it under the user's finger
+  const opts = POLL_CHOICES.slice();
+  if (!opts.some(function(o){ return o[0] === cur; })) opts.push([cur, cur >= 60 ? (cur / 60) + ' min' : cur + ' s']);
+  opts.sort(function(a, b){ return a[0] - b[0]; });
+  return '<label class="pill" title="Gap between two polls of the machines, for every farm. A longer gap means less traffic to the miners; the dashboard, alarms and auto-restart then see a change up to that much later.">Poll every '
+    + '<select id="pollSel" class="poll-sel" onchange="savePollGap(this.value)">'
+    + opts.map(function(o){ return '<option value="' + o[0] + '"' + (o[0] === cur ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('')
+    + '</select></label>';
+}
+function savePollGap(v) {
+  const sec = parseInt(v, 10);
+  const token = localStorage.getItem('ekl_token') || '';
+  fetch(API_BASE + '/api/farms/poll', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token }, body: JSON.stringify({ poll_sec: sec }) })
+    .then(function(r){ return r.json().catch(function(){ return { ok: false, error: 'HTTP ' + r.status }; }).then(function(d){ if (r.status === 403) d = { ok: false, error: 'Only an admin or manager can change this' }; return d; }); })
+    .then(function(d){
+      const dd = document.getElementById('pollSel'); if (dd) dd.blur();
+      if (!d || !d.ok) { toast('✗ ' + ((d && d.error) || 'Could not save'), 'var(--red)'); renderRaSummary(); return; }
+      farmsState = { farms: d.farms || farmsState.farms, pending: d.pending || [], poll_sec: d.poll_sec };
+      renderFarmsPanel();
+      toast('✓ Agents now poll every ' + (sec >= 60 ? (sec / 60) + ' min' : sec + ' s'), 'var(--green)');
+    })
+    .catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
 }
 
 function renderFarmsPanel() {
@@ -5012,7 +5042,7 @@ function farmCard(f, dup) {
       + ((ag && ag.agent_version) || pc.version ? ' &middot; v' + escHtml((ag && ag.agent_version) || pc.version) : '') + (pc.older_agent ? ' &middot; update pending' : '') + '</span></div>'
     : '<div class="fc-line"><svg class="ic sm"><use href="#i-monitor"/></svg><span class="t">No agent PC</span></div>';
   const pollTxt = p
-    ? (p.subnets || []).length + ' range' + ((p.subnets || []).length === 1 ? '' : 's') + ' &middot; ' + p.addresses + ' addresses &middot; ' + Math.round((p.cycle_ms || 0) / 1000) + ' s cycle'
+    ? (p.subnets || []).length + ' range' + ((p.subnets || []).length === 1 ? '' : 's') + ' &middot; ' + p.addresses + ' addresses &middot; ' + Math.round((p.cycle_ms || 0) / 1000) + ' s cycle' + (p.poll_sec ? ' &middot; every ' + (p.poll_sec >= 60 ? (p.poll_sec / 60) + ' min' : p.poll_sec + ' s') : '')
     : (set ? 'Custom ranges' : 'Automatic ranges');
   const pollTip = p ? (p.subnets || []).join(', ') + ' (' + (p.from || '') + ') · ' + p.found + ' found last cycle'
     : (set ? f.subnets.join(', ') : 'LOCAL_SUBNET + the networks this farm’s machines are on') + (f.online ? ' · agents from v1.1.43 report exactly what they poll' : '');
@@ -5207,7 +5237,7 @@ function farmApi(method, path, body) {
     .then(function(d){ if (r.status === 403) d = { ok: false, error: 'Only an admin or manager can change farms' }; return d; }); })
   .then(function(d){
     if (!d || !d.ok) { toast('✗ ' + ((d && d.error) || 'Could not save'), 'var(--red)'); return null; }
-    if (d.farms) { farmsState = { farms: d.farms, pending: d.pending || [] }; renderFarmsPanel(); renderPendingAgents(); }
+    if (d.farms) { farmsState = { farms: d.farms, pending: d.pending || [], poll_sec: d.poll_sec || farmsState.poll_sec }; renderFarmsPanel(); renderPendingAgents(); }
     // names / farms of machines changed on the server — bring them in
     try { fetchAgents(); } catch (e) {}
     try { loadFleetFromBackend(function(){ try { _fleetHash = ''; renderWorkers(); renderDash(); } catch (e) {} }); } catch (e) {}
