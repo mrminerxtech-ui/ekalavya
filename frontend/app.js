@@ -25,6 +25,11 @@ const CC = ['#e74c3c','#3498db','#2ecc71','#9b59b6','#e67e22','#1abc9c','#f39c12
 let isCustomer = false, currentUser = null, activeWid = null;
 let loginTab = 'admin';
 let agents = [], workers = [], customers = [];
+// Low-hashing benchmark (used by the very first render, so declared up here —
+// further down it threw "Cannot access '_hashBench' before initialization"
+// and the Workers list failed to draw on page load).
+const LOW_HASH_PCT = 15, LOW_HASH_MIN_COHORT = 3;
+let _hashBench = new Map();
 // Declared here (not down near its other filter-by-site code) because
 // renderWorkers() -> refreshAgentFilterOptions() reads it, and renderWorkers()
 // can run very early (e.g. from a fast-resolving backend load callback) —
@@ -4423,8 +4428,8 @@ function setWF(val, btnEl){
 // more below the MEDIAN of the same model across the fleet right now.
 // Compared only within a model with at least 3 machines running — below
 // that there's no trustworthy benchmark, so nothing is flagged.
-const LOW_HASH_PCT = 15, LOW_HASH_MIN_COHORT = 3;
-let _hashBench = new Map();
+// (LOW_HASH_PCT, LOW_HASH_MIN_COHORT and _hashBench are declared at the top of
+// the file: the first render runs before this point is reached.)
 
 function hashModelKey(w) {
   const raw = ((w.brand || '') + ' ' + (w.model || '')).toLowerCase();
