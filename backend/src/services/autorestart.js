@@ -368,7 +368,8 @@ async function runLogJobs(now) {
     const status = zero.has(k) ? 'still at 0 hashrate'
                  : (w && w.status === 'offline') ? 'offline since the restart'
                  : (w && Number(w.hashrate) > 0) ? 'hashing again' : 'still at 0 hashrate';
-    const title = `📄 Log after ${j.restarts} automatic restarts — ${status}`;
+    // colour dot: red while it's still down, green if the last restart brought it back
+    const title = `${status === 'hashing again' ? '🟢' : '🔴'} Log after ${j.restarts} automatic restarts — ${status}`;
     const card = logCard(j.siteName, w, ip, customers);
     const after = Math.round((now - j.lastAt) / 60000);
     if (got) {
@@ -403,6 +404,11 @@ async function runLogJobs(now) {
   if (changed) saveLogJobs();
 }
 
+// Markdown message (bold title, colour dot, points); plain text if the formatted sender isn't available.
+function tellMd(md, plain) {
+  try { const a = require('./alerts'); if (a.sendTelegramMarkdown) { Promise.resolve(a.sendTelegramMarkdown(md)).catch(() => {}); return; } } catch (e) {}
+  tell(plain);
+}
 function tell(text, title) { try { telegram && telegram(text, title ? 'plain' : 'warn', title); } catch (e) {} }
 // Settings › Telegram Alerts can switch these two group posts off.
 function ruleOn(key) { try { return require('./alertRules').isOn(key); } catch (e) { return true; } }
@@ -473,8 +479,10 @@ async function tick() {
         const msg = `${siteName}: ${zeroNow} of ${reachable} reachable machines are at 0 hashrate at once — ` +
                     `this looks like a pool, network or power problem, so they are NOT being restarted automatically.`;
         console.log('[AUTO-RESTART] ' + msg);
+        const mdEsc = v => String(v).replace(/([_*`\[])/g, '\\$1');
+        const md = `🟠 *Auto-restart paused — ${mdEsc(siteName)}*\n🟠 At 0 hashrate: *${zeroNow}* of ${reachable} reachable machines\n• Looks like a pool, network or power problem\n• Nothing is restarted automatically`;
         note({ site: siteName, action: 'skipped-site', detail: `${zeroNow}/${reachable} at 0 hashrate` });
-        if (ruleOn('autorestart_paused')) tell('Auto-restart paused: ' + msg);
+        if (ruleOn('autorestart_paused')) tellMd(md, 'Auto-restart paused: ' + msg);
       }
       continue;
     }
