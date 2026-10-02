@@ -12,7 +12,26 @@ const WEBHOOK = process.env.ALERT_WEBHOOK_URL;
 const TELEGRAM_TOKEN  = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT   = process.env.TELEGRAM_CHAT_ID;
 
-const LEVEL_EMOJI = { critical: '🔴', warn: '🟡', info: '🔵' };
+// Telegram can't colour text, so the colour is a dot: red = offline /
+// critical, orange = warning, green = online / back to normal.
+const LEVEL_EMOJI = { critical: '🔴', warn: '🟠', ok: '🟢', info: '🔵' };
+const esc = v => String(v == null ? '' : v).replace(/([_*`\[])/g, '\\$1');   // for text placed inside a Markdown message
+
+// Send a message that is ALREADY Markdown (bold site names, points). If
+// Telegram rejects the formatting, the same text goes out plain rather
+// than the alert being lost.
+async function sendTelegramMarkdown(text) {
+  if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT) return false;
+  const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
+  const body = String(text).slice(0, 4000);
+  try { await axios.post(url, { chat_id: TELEGRAM_CHAT, text: body, parse_mode: 'Markdown' }, { timeout: 8000 }); return true; }
+  catch (e) {
+    const why = (e.response && e.response.data && e.response.data.description) || e.message;
+    console.error('[ALERT] Telegram (formatted) failed:', why, '— sending plain');
+    try { await axios.post(url, { chat_id: TELEGRAM_CHAT, text: body.replace(/\\([_*`\[])/g, '$1').replace(/\*/g, '') }, { timeout: 8000 }); return true; }
+    catch (e2) { console.error('[ALERT] Telegram failed:', e2.message); return false; }
+  }
+}
 
 /**
  * Send a Slack-compatible webhook alert
@@ -416,7 +435,8 @@ async function sendSiteVoiceAlert(spokenText, caption) {
   const nl = '\r\n';
   const parts = [
     Buffer.from(`--${boundary}${nl}Content-Disposition: form-data; name="chat_id"${nl}${nl}${TELEGRAM_CHAT}${nl}`),
-    Buffer.from(`--${boundary}${nl}Content-Disposition: form-data; name="caption"${nl}${nl}${caption}${nl}`),
+    Buffer.from(`--${boundary}${nl}Content-Disposition: form-data; name="caption"${nl}${nl}${String(caption).slice(0, 1020)}${nl}`),
+    Buffer.from(`--${boundary}${nl}Content-Disposition: form-data; name="parse_mode"${nl}${nl}Markdown${nl}`),
     Buffer.from(`--${boundary}${nl}Content-Disposition: form-data; name="title"${nl}${nl}Site Alert${nl}`),
     Buffer.from(`--${boundary}${nl}Content-Disposition: form-data; name="audio"; filename="alert.mp3"${nl}Content-Type: audio/mpeg${nl}${nl}`),
     audio,
@@ -556,8 +576,8 @@ function countPhysicalMachines(workers) {
 function offlineListText(counts, max = 12) {
   const l = counts.offlineList || [];
   if (!l.length) return '';
-  const shown = l.slice(0, max).map(s => String(s).slice(0, 40));
-  return '\nOffline: ' + shown.join(', ') + (l.length > max ? ` … +${l.length - max} more` : '');
+  const shown = l.slice(0, max).map(s => '• ' + esc(String(s).slice(0, 40)));
+  return '\n\nOffline machines:\n' + shown.join('\n') + (l.length > max ? `\n… +${l.length - max} more` : '');
 }
 const startedAt       = Date.now();
 const lastSeenAgent   = new Map();   // farm_id -> last time we saw it connected
@@ -609,7 +629,7 @@ async function checkSiteOfflineCounts() {
             await db.clearSiteAlertState(farmId);
             console.log(`[ALERT] ${farmName}: back to normal — ${down} machine(s) offline ${delayMin}+ min`);
             // one "back to normal" message (Settings › Telegram Alerts › recovery)
-            try { await require('./alertRules').siteRecovered(farmName, `${counts.offline} of ${counts.total} machines offline now (alarmed at ${prev}).`); } catch (e) {}
+            try { await require('./alertRules').siteRecovered(farmName, { offline: counts.offline, total: counts.total, alarmedAt: prev }); } catch (e) {}
           }
         } else {
           calmSince.delete(farmId);
@@ -649,8 +669,8 @@ async function checkSiteOfflineCounts() {
     }
 
     const text = agentGone
-      ? `${farmName} is unreachable: its farm agent has been disconnected for over ${Math.max(AGENT_GONE_MS, delayMs) / 60000} minutes, so all ${down} of its machines show offline. The site may have lost power or internet.`
-      : `${down} of ${counts.total} machines have been offline for ${delayMin}+ minutes at ${farmName} (excluding disabled). Alarm set at ${alarmAt}.`
+      ? `🔴 *Site unreachable — ${esc(farmName)}*\n🔴 Farm PC disconnected for ${Math.max(AGENT_GONE_MS, delayMs) / 60000}+ min\n🔴 Offline: *${down}* of ${counts.total} machines\nThe site may have lost power or internet.`
+      : `🔴 *Site alarm — ${esc(farmName)}*\n🔴 Offline: *${down}* of ${counts.total} machines (${delayMin}+ min)\n🟢 Online: ${Math.max(0, counts.total - counts.offline)}`
         + offlineListText({ offlineList: longList });
     const spoken = agentGone
       ? `Warning. ${farmName} is not reachable. The site may have lost power or internet. Please check.`
@@ -666,7 +686,7 @@ async function checkSiteOfflineCounts() {
       sendPhoneCallAlert(spoken),
       sendCallMeBotAlert(spoken),
     ]);
-    if (!voiceOk) await sendTelegramAlert(text, 'critical');   // fall back to the existing text-alert function above
+    if (!voiceOk) await sendTelegramMarkdown(text);   // voice note failed → the same text as a normal message
     await db.setSiteAlertState(farmId, down);
   }
 }
@@ -716,5 +736,5 @@ function start() {
   siteAlertTimer = setInterval(() => { checkSiteOfflineCounts().catch(e => console.error('[ALERT]', e.message)); }, CHECK_EVERY_MS);
 }
 
-module.exports = { sendTelegramDocument, raiseAlert, sendSlackAlert, sendTelegramAlert, checkWorkerThresholds, start, checkSiteOfflineCounts, twimlHandler,
+module.exports = { sendTelegramMarkdown, esc, sendTelegramDocument, raiseAlert, sendSlackAlert, sendTelegramAlert, checkWorkerThresholds, start, checkSiteOfflineCounts, twimlHandler,
                    getAlarmSettings, setAlarmAt, loadAlarmSetting, countPhysicalMachines };
