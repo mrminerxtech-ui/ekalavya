@@ -92,13 +92,17 @@ function getRules() { return rules; }
 function telegramConfigured() { return !!(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID); }
 
 // ── Sending ────────────────────────────────────────────────────────
-let sender = null;   // (text, level, title) — alerts.sendTelegramAlert, resolved lazily (circular require)
-function send(title, text) {
+let sender = null;   // (markdownText) — alerts.sendTelegramMarkdown, resolved lazily (circular require)
+// Messages are Markdown: bold title with a colour dot (🔴 offline / critical,
+// 🟠 warning, 🟢 online / back to normal), then points. Names go through esc().
+function send(markdown) {
   try {
-    const fn = sender || require('./alerts').sendTelegramAlert;
-    return Promise.resolve(fn(text, 'plain', title)).catch(() => {});
+    const fn = sender || require('./alerts').sendTelegramMarkdown;
+    return Promise.resolve(fn(markdown)).catch(() => {});
   } catch (e) { return Promise.resolve(); }
 }
+const esc = v => String(v == null ? '' : v).replace(/([_*`\[])/g, '\\$1');
+const head = (dot, title, farm) => `${dot} *${esc(title)}${farm ? ' — ' + esc(farm) : ''}*`;
 
 // ── State ──────────────────────────────────────────────────────────
 // st.overheat[farm] = { active, since, sentCount, pending }   pending = count seen at the previous check
@@ -132,13 +136,15 @@ const UNIT = { 'h/s': 1, 'kh/s': 1e3, 'mh/s': 1e6, 'gh/s': 1e9, 'th/s': 1e12, 'p
 function unitOf(w) { const u = String(w.hr_unit || 'TH/s').trim().toLowerCase(); return UNIT[u] ? u : 'th/s'; }
 function toBase(w) { return (Number(w.hashrate) || 0) * UNIT[unitOf(w)]; }
 function fmtRate(hs, unitKey) {
-  // show in the group's own unit, stepped up when large (12,000 TH/s → 12.0 PH/s)
+  // TH/s totals step up (12,000 TH/s → 12.0 PH/s); GH/s machines (Scrypt …)
+  // stay in GH/s, the unit those are quoted in.
   const order = ['h/s', 'kh/s', 'mh/s', 'gh/s', 'th/s', 'ph/s', 'eh/s'];
   let i = order.indexOf(unitKey); if (i < 0) i = 4;
   let v = hs / UNIT[order[i]];
-  while (v >= 1000 && i < order.length - 1) { i++; v /= 1000; }
+  if (unitKey !== 'gh/s') while (v >= 1000 && i < order.length - 1) { i++; v /= 1000; }
   const lbl = order[i].toUpperCase().replace('/S', '/s');
-  return (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2)) + ' ' + lbl;
+  const num = v >= 1000 ? Math.round(v).toLocaleString('en-US') : v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2);
+  return num + ' ' + lbl;
 }
 const running = w => w && !w.disabled && (w.status === 'online' || w.status === 'warn') && w.last_action !== 'sleep';
 const label = w => (w.name && w.name !== w.ip ? `${w.name} (${w.ip || '?'})` : (w.ip || w.id || '?'));
@@ -180,10 +186,10 @@ async function checkOverheat(workers, names) {
       const worse = s.active;
       if (!s.active) { s.active = true; s.since = Date.now(); }
       s.sentCount = confirmed; s.clearPending = null;
-      const list = hot.slice(0, 10).map(w => `${label(w)} ${Math.round(Number(w.temp))} °C`).join('\n') + (hot.length > 10 ? `\n… +${hot.length - 10} more` : '');
+      const list = hot.slice(0, 10).map(w => `• ${esc(label(w))} — ${Math.round(Number(w.temp))} °C`).join('\n') + (hot.length > 10 ? `\n… +${hot.length - 10} more` : '');
       console.log(`[TG-RULES] ${names[fid] || fid}: ${confirmed} machine(s) at ${r.temp}°C+ — ${worse ? 'worse, sending again' : 'sending'}`);
-      await send(`🔥 Overheating${worse ? ' — getting worse' : ''} — ${confirmed} machine${confirmed === 1 ? '' : 's'} at ${r.temp} °C or more`,
-        `Farm : ${names[fid] || fid}\n${list}`);
+      await send(head(worse ? '🔴' : '🟠', worse ? 'Overheating, getting worse' : 'Overheating', names[fid] || fid)
+        + `\n${worse ? '🔴' : '🟠'} *${confirmed}* machine${confirmed === 1 ? '' : 's'} at ${r.temp} °C or more\n${list}`);
     } else {
       s.pending = null;
       if (s.active) {
@@ -192,7 +198,8 @@ async function checkOverheat(workers, names) {
         const since = s.since;
         st.overheat[fid] = { active: false }; stateDirty = true;
         console.log(`[TG-RULES] ${names[fid] || fid}: overheating over`);
-        if (rules.recovery.on && r.on) await send('✅ Overheating over', `Farm : ${names[fid] || fid}\n${hot.length ? hot.length + ' machine(s) still at ' + r.temp + ' °C+ (below the limit of ' + r.min + ')' : 'No machine at ' + r.temp + ' °C or more'} · lasted ${lasted(since)}`);
+        if (rules.recovery.on && r.on) await send(head('🟢', 'Back to normal', names[fid] || fid)
+          + `\n🟢 Overheating is over\n• ${hot.length ? hot.length + ' machine(s) still at ' + r.temp + ' °C+ (limit ' + r.min + ')' : 'No machine at ' + r.temp + ' °C or more'}\n• Lasted ${lasted(since)}`);
       } else if (!byFarm[fid] || !byFarm[fid].length) delete st.overheat[fid];
     }
   }
@@ -251,10 +258,10 @@ async function checkHashdrop(workers, names, now) {
       if (!s.active) { s.active = true; s.since = now; }
       s.sentPct = confirmed; s.clearPending = null;
       const top = g.machines.sort((a, b) => (b.b - b.x) - (a.b - a.x)).slice(0, 6)
-        .map(m => `${label(m.w)} ${fmtRate(m.b, g.unit)} → ${fmtRate(m.x, g.unit)}`).join('\n');
+        .map(m => `• ${esc(label(m.w))} — ${fmtRate(m.b, g.unit)} → ${fmtRate(m.x, g.unit)}`).join('\n');
       console.log(`[TG-RULES] ${name}: running machines ${confirmed}% below usual — ${worse ? 'worse, sending again' : 'sending'}`);
-      await send(`📉 Hashrate drop${worse ? ' — getting worse' : ''} — running machines ${confirmed}% below usual`,
-        `Farm : ${name}\nNow ${fmtRate(g.cur, g.unit)} · usual ${fmtRate(g.base, g.unit)} (${g.n} machines running)` + (top ? `\nMost down:\n${top}` : ''));
+      await send(head(worse ? '🔴' : '🟠', worse ? 'Hashrate drop, getting worse' : 'Hashrate drop', name)
+        + `\n${worse ? '🔴' : '🟠'} Running machines are *${confirmed}%* below usual\n• Now: ${fmtRate(g.cur, g.unit)}\n• Usual: ${fmtRate(g.base, g.unit)}\n• Machines running: ${g.n}` + (top ? `\n\nMost down:\n${top}` : ''));
     } else {
       s.pending = null;
       if (s.active) {
@@ -263,7 +270,8 @@ async function checkHashdrop(workers, names, now) {
         const since = s.since;
         st.hashdrop[key] = { active: false }; stateDirty = true;
         console.log(`[TG-RULES] ${name}: hashrate back to normal`);
-        if (rules.recovery.on && r.on) await send('✅ Hashrate back to normal', `Farm : ${name}\nNow ${fmtRate(g.cur, g.unit)} · usual ${fmtRate(g.base, g.unit)} · lasted ${lasted(since)}`);
+        if (rules.recovery.on && r.on) await send(head('🟢', 'Back to normal', name)
+          + `\n🟢 Hashrate is back to usual\n• Now: ${fmtRate(g.cur, g.unit)}\n• Usual: ${fmtRate(g.base, g.unit)}\n• Lasted ${lasted(since)}`);
       } else delete st.hashdrop[key];
     }
   }
@@ -273,33 +281,75 @@ async function checkHashdrop(workers, names, now) {
 async function siteRecovered(farmName, info) {
   await loadRules();
   if (!rules.recovery.on) return;
-  await send('✅ Site back to normal', `Farm : ${farmName}\n${info}`);
+  const i = info || {};
+  await send(head('🟢', 'Site back to normal', farmName)
+    + `\n🟢 Online: *${Math.max(0, (i.total || 0) - (i.offline || 0))}* of ${i.total || 0} machines`
+    + (i.offline ? `\n🔴 Offline: ${i.offline}` : '')
+    + (i.alarmedAt != null ? `\n• Alarm was at ${i.alarmedAt} offline` : ''));
 }
 
 // ── Daily summary ─────────────────────────────────────────────────
+// One block per site: bold name, then points; a blank line between sites.
+//   *Alhayer*
+//   🟢 Online: 94 of 95
+//   🔴 Offline: 1
+//   🟠 In repair: 1
+//   ⚡ Power: 312 kW
+//   ⛏ Hashrate: 4.56 PH/s (SHA-256)
+//   🌡 Hottest: 84 °C
 async function buildSummary(workers, names) {
   let counts = {};
   try { counts = require('./alerts').countPhysicalMachines(workers) || {}; } catch (e) {}
+  let agentsOn = null;
+  try { agentsOn = new Set(require('./agentManager').getAgents().map(a => a.farm_id)); } catch (e) {}
+  const up = w => running(w) && (!agentsOn || agentsOn.has(w.farm_id));
+  let power = {};
+  try { const sp = require('./sitePower'); power = await sp.bySite(workers.filter(up)); } catch (e) {}
+  const fmtPower = w => { try { return require('./sitePower').fmtPower(w); } catch (e) { return Math.round(w / 1000) + ' kW'; } };
   const farms = Object.keys(names).filter(f => f && f !== 'unassigned').sort((a, b) => String(names[a]).localeCompare(String(names[b])));
-  const lines = farms.map(fid => {
+  let tOn = 0, tAll = 0, tW = 0, tUnknown = 0;
+  const blocks = farms.map(fid => {
     const ws = workers.filter(w => w && w.farm_id === fid);
     const c = counts[fid] || { total: ws.filter(w => !w.disabled).length, offline: ws.filter(w => !w.disabled && !running(w)).length };
+    const gone = agentsOn && !agentsOn.has(fid);
+    const offline = gone ? c.total : c.offline, online = c.total - offline;
     const repair = ws.filter(w => w.disabled).length;
+    const asleep = ws.filter(w => !w.disabled && w.status === 'sleeping').length;
     const byUnit = {};
-    ws.filter(running).forEach(w => { const u = unitOf(w); byUnit[u] = (byUnit[u] || 0) + toBase(w); });
-    const rate = Object.entries(byUnit).filter(([, v]) => v > 0).map(([u, v]) => fmtRate(v, u)).join(' + ') || '—';
-    const hottest = ws.filter(running).reduce((m, w) => Math.max(m, Number(w.temp) > 0 && Number(w.temp) < 200 ? Number(w.temp) : 0), 0);
-    return `${names[fid]}: ${c.total - c.offline}/${c.total} online · ${rate}` + (repair ? ` · ${repair} in repair` : '') + (hottest ? ` · hottest ${Math.round(hottest)} °C` : '');
+    ws.filter(up).forEach(w => { const u = unitOf(w); const g = byUnit[u] || (byUnit[u] = { hs: 0, algos: new Set() }); g.hs += toBase(w); if (w.algo) g.algos.add(String(w.algo)); });
+    const hottest = ws.filter(up).reduce((m, w) => Math.max(m, Number(w.temp) > 0 && Number(w.temp) < 200 ? Number(w.temp) : 0), 0);
+    const p = power[fid] || { watts: 0, unknown: 0 };
+    tOn += online; tAll += c.total; tW += p.watts; tUnknown += p.unknown;
+    const L = [`*${esc(names[fid])}*`];
+    if (gone) L.push('🔴 Farm PC not connected');
+    L.push(`${online ? '🟢' : '🔴'} Online: *${online}* of ${c.total}`);
+    if (offline) L.push(`🔴 Offline: *${offline}*`);
+    if (repair) L.push(`🟠 In repair: ${repair}`);
+    if (asleep) L.push(`🟠 Asleep: ${asleep}`);
+    L.push(`⚡ Power: ${fmtPower(p.watts)}` + (p.unknown ? ` (${p.unknown} machine${p.unknown === 1 ? '' : 's'} not counted)` : ''));
+    const rates = Object.entries(byUnit).filter(([, g]) => g.hs > 0).sort((a, b) => UNIT[b[0]] - UNIT[a[0]]);
+    if (!rates.length) L.push('⛏ Hashrate: —');
+    rates.forEach(([u, g]) => L.push(`⛏ Hashrate: ${fmtRate(g.hs, u)}` + (g.algos.size ? ` (${esc([...g.algos].join(', '))})` : '')));
+    if (hottest) L.push(`🌡 Hottest: ${Math.round(hottest)} °C`);
+    return L.join('\n');
   });
-  let ar = '';
+  const total = ['*All sites*', `${tOn === tAll ? '🟢' : '🟠'} Online: *${tOn}* of ${tAll}`];
+  if (tAll - tOn) total.push(`🔴 Offline: *${tAll - tOn}*`);
+  total.push(`⚡ Power: ${fmtPower(tW)}` + (tUnknown ? ` (${tUnknown} not counted)` : ''));
+  blocks.push(total.join('\n'));
   try {
     const s = require('./autorestart').summary();
-    if (s) ar = `\nAuto-restart, last 24 h: ${s.restarts24h} restart${s.restarts24h === 1 ? '' : 's'}` + (s.leftForPerson ? ` · ${s.leftForPerson} machine${s.leftForPerson === 1 ? '' : 's'} left for a person` : '');
+    if (s) {
+      const L = ['*Auto-restart (last 24 h)*', `• Restarts: ${s.restarts24h}`];
+      if (s.leftForPerson) L.push(`🟠 Left for a person: *${s.leftForPerson}* machine${s.leftForPerson === 1 ? '' : 's'}`);
+      blocks.push(L.join('\n'));
+    }
   } catch (e) {}
   const open = [];
-  Object.entries(st.overheat).forEach(([fid, s]) => { if (s.active) open.push(`🔥 ${names[fid] || fid} overheating`); });
-  Object.entries(st.hashdrop).forEach(([k, s]) => { if (s.active) open.push(`📉 ${names[k.split('|')[0]] || k} hashrate ${s.sentPct}% down`); });
-  return lines.join('\n') + ar + (open.length ? '\nStill open: ' + open.join(' · ') : '');
+  Object.entries(st.overheat).forEach(([fid, s]) => { if (s.active) open.push(`🟠 ${esc(names[fid] || fid)}: overheating`); });
+  Object.entries(st.hashdrop).forEach(([k, s]) => { if (s.active) open.push(`🟠 ${esc(names[k.split('|')[0]] || k)}: hashrate ${s.sentPct}% below usual`); });
+  if (open.length) blocks.push(['*Open problems*', ...open].join('\n'));
+  return blocks.join('\n\n');
 }
 async function checkSummary(workers, names, now) {
   const r = rules.summary;
@@ -310,7 +360,7 @@ async function checkSummary(workers, names, now) {
   if (d.minutes < at || d.minutes > at + 60) return;          // only within the hour after the set time
   st.summaryDate = d.date; stateDirty = true; saveState(true);
   console.log(`[TG-RULES] Daily summary (${d.date} ${r.time} Dubai)`);
-  await send(`🗓 Daily summary — ${d.pretty}`, await buildSummary(workers, names));
+  await send(`🗓 *Daily summary — ${d.pretty}*\n\n` + await buildSummary(workers, names));
 }
 
 // ── The check ─────────────────────────────────────────────────────
@@ -341,15 +391,15 @@ async function sendTest(by) {
   if (!telegramConfigured()) return { ok: false, error: 'Telegram is not set up on the server (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)' };
   await loadRules();
   const on = [];
-  if (rules.overheat.on) on.push(`🔥 ${rules.overheat.min}+ machines at ${rules.overheat.temp} °C`);
-  if (rules.hashdrop.on) on.push(`📉 hashrate ${rules.hashdrop.pct}% below usual`);
-  if (rules.recovery.on) on.push('✅ back-to-normal messages');
-  if (rules.summary.on) on.push(`🗓 daily summary at ${rules.summary.time}`);
-  if (rules.autorestart_log.on) on.push('📄 log after the last automatic restart');
-  if (rules.autorestart_paused.on) on.push('⏸ auto-restart paused (site-wide 0 hashrate)');
+  if (rules.overheat.on) on.push(`🟠 Overheating: ${rules.overheat.min}+ machines at ${rules.overheat.temp} °C`);
+  if (rules.hashdrop.on) on.push(`🟠 Hashrate drop: ${rules.hashdrop.pct}% below usual`);
+  if (rules.recovery.on) on.push('🟢 Back to normal');
+  if (rules.summary.on) on.push(`🗓 Daily summary at ${rules.summary.time}`);
+  if (rules.autorestart_log.on) on.push('🔴 Log after a machine\'s last automatic restart');
+  if (rules.autorestart_paused.on) on.push('🟠 Auto-restart paused (site-wide 0 hashrate)');
   let alarmAt = null;
   try { alarmAt = require('./alerts').getAlarmSettings().alarm_at; } catch (e) {}
-  await send('✅ Test message — Ekalavya alerts', `Sent from Settings by ${by || '?'}.\nThis group gets:\n🚨 site down: ${alarmAt || '?'}+ machines offline or farm PC unreachable\n` + on.join('\n'));
+  await send(head('🟢', 'Test message — Ekalavya alerts') + `\nSent from Settings by ${esc(by || '?')}.\n\n*This group gets*\n🔴 Site down: ${alarmAt || '?'}+ machines offline or farm PC unreachable\n` + on.join('\n'));
   return { ok: true };
 }
 
