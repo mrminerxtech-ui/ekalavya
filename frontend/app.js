@@ -5068,6 +5068,18 @@ function downloadAgent() {
     .then(function(){ if (btn) btn.disabled = false; });
 }
 
+// "· every 3 min" on a farm card: the gap its agent says it is using. If
+// that is not the gap set above, it says so (the server keeps re-sending the
+// setting; an agent older than v1.1.46 can't take it at all).
+function pollGapNote(f, p) {
+  const fmt = function(s){ return s >= 60 ? (s / 60) + ' min' : s + ' s'; };
+  const used = f.poll_sec_agent || (p && p.poll_sec) || 0;
+  const want = farmsState.poll_sec || 30;
+  if (!used) return want !== 30 ? ' &middot; <span style="color:var(--warn)" title="This agent has not said which polling gap it uses. Either it has not polled since it connected (wait one cycle), or it runs a version older than v1.1.46, which always polls every 30 s — then restart it on its PC: pm2 restart ekl-agent.">gap not confirmed</span>' : '';
+  if (used !== want) return ' &middot; <span style="color:var(--warn)" title="The setting is being sent to this agent again; it should switch within a minute.">every ' + fmt(used) + ' &rarr; ' + fmt(want) + '&hellip;</span>';
+  return ' &middot; every ' + fmt(used);
+}
+
 // How often the agents poll the machines — one setting for all farms.
 const POLL_CHOICES = [[30, '30 s'], [60, '1 min'], [120, '2 min'], [180, '3 min'], [300, '5 min'], [600, '10 min']];
 function pollPill() {
@@ -5142,7 +5154,7 @@ function farmCard(f, dup) {
       + ((ag && ag.agent_version) || pc.version ? ' &middot; v' + escHtml((ag && ag.agent_version) || pc.version) : '') + (pc.older_agent ? ' &middot; update pending' : '') + '</span></div>'
     : '<div class="fc-line"><svg class="ic sm"><use href="#i-monitor"/></svg><span class="t">No agent PC</span></div>';
   const pollTxt = p
-    ? (p.subnets || []).length + ' range' + ((p.subnets || []).length === 1 ? '' : 's') + ' &middot; ' + p.addresses + ' addresses &middot; ' + Math.round((p.cycle_ms || 0) / 1000) + ' s cycle' + (p.poll_sec ? ' &middot; every ' + (p.poll_sec >= 60 ? (p.poll_sec / 60) + ' min' : p.poll_sec + ' s') : '')
+    ? (p.subnets || []).length + ' range' + ((p.subnets || []).length === 1 ? '' : 's') + ' &middot; ' + p.addresses + ' addresses &middot; ' + Math.round((p.cycle_ms || 0) / 1000) + ' s cycle' + pollGapNote(f, p)
     : (set ? 'Custom ranges' : 'Automatic ranges');
   const pollTip = p ? (p.subnets || []).join(', ') + ' (' + (p.from || '') + ') · ' + p.found + ' found last cycle'
     : (set ? f.subnets.join(', ') : 'LOCAL_SUBNET + the networks this farm’s machines are on') + (f.online ? ' · agents from v1.1.43 report exactly what they poll' : '');
