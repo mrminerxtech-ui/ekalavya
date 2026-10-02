@@ -237,6 +237,24 @@ async function setSubnets(fid, subnets, by) {
 }
 function subnetsFor(fid) { return (reg && reg.farms[fid] && reg.farms[fid].subnets) || []; }
 
+// How often agents poll their machines (Remote Access › Poll every …).
+// One setting for all farms, kept in the registry as `poll_sec`; sent to
+// each agent when it connects and pushed when changed. 30 s = the agent's
+// built-in default.
+const POLL_DEFAULT_SEC = 30, POLL_MIN_SEC = 30, POLL_MAX_SEC = 1800;
+function pollSecSet() { const n = parseInt(reg && reg.poll_sec, 10); return n >= POLL_MIN_SEC && n <= POLL_MAX_SEC ? n : undefined; }   // undefined = never set in the app
+function pollSec() { const n = parseInt(reg && reg.poll_sec, 10); return n >= POLL_MIN_SEC && n <= POLL_MAX_SEC ? n : POLL_DEFAULT_SEC; }
+async function setPollSec(sec, by) {
+  await load();
+  const n = parseInt(sec, 10);
+  if (!(n >= POLL_MIN_SEC && n <= POLL_MAX_SEC)) return { ok: false, error: `Polling gap must be between ${POLL_MIN_SEC} seconds and ${POLL_MAX_SEC / 60} minutes` };
+  const was = pollSec();
+  reg.poll_sec = n;
+  await persist();
+  console.log(`[FARMS] Agents poll every ${n >= 60 ? n / 60 + ' min' : n + ' s'} (was ${was >= 60 ? was / 60 + ' min' : was + ' s'})${by ? ' by ' + by : ''}`);
+  return { ok: true, poll_sec: n };
+}
+
 // Networks (as /24s) this farm's machine records sit on. Sent to the
 // farm's agent so it always polls every network its machines are on,
 // even when no IP ranges were typed in — a farm spread over two networks
@@ -271,4 +289,4 @@ function noteKnownSent(fid, list) { lastKnownSent.set(fid, (list || []).join(','
 function snapshot() { return reg ? JSON.parse(JSON.stringify(reg)) : blank(); }
 
 module.exports = { load, resolveAgent, suggestFarm, addPending, removePending, listPending, assignAgent, renameFarm,
-                   mergeFarm, deleteFarm, forgetAgent, farmName, snapshot, setSubnets, subnetsFor, knownSubnetsFor, startKnownSubnetSync, noteKnownSent, _pending: pending, _reset: () => { reg = null; pending.clear(); } };
+                   mergeFarm, deleteFarm, forgetAgent, farmName, snapshot, pollSec, pollSecSet, setPollSec, POLL_DEFAULT_SEC, setSubnets, subnetsFor, knownSubnetsFor, startKnownSubnetSync, noteKnownSent, _pending: pending, _reset: () => { reg = null; pending.clear(); } };
