@@ -2169,6 +2169,23 @@ function handleWebuiProxyRequestNow(msg) {
         webuiStyle.set(ip, style);
         console.log(`[WEBUI] ${ip} answers ${style === 'https' ? 'over HTTPS (port 443)' : 'only when asked like a browser (no root/root header)'} — remembered for this miner`);
       }
+      // "Use https" (WhatsMiner: every http request is answered with a
+      // redirect to https://<its own address>/…). Remember it for this
+      // miner and ask again over https at once, instead of handing the
+      // browser an address it cannot reach from outside the farm.
+      if (!overTls && res.statusCode >= 301 && res.statusCode <= 308 && res.headers.location && httpsHops < 1) {
+        const lm = String(res.headers.location).match(/^https:\/\/([^\/?#:]+)(?::443)?(\/[^#]*)?/i);
+        if (lm && lm[1] === ip) {
+          httpsHops++;
+          style = 'https'; connRetries = 0;
+          if (webuiStyle.get(ip) !== 'https') {
+            webuiStyle.set(ip, 'https');
+            console.log(`[WEBUI] ${ip} sends its pages to https — using HTTPS (port 443) for this miner from now on`);
+          }
+          const sameFile = (lm[2] || '/') === (reqPath || '/');
+          if (sameFile) { res.resume(); return attempt(authHeader, phase, true); }
+        }
+      }
       if (res.statusCode === 401 && phase < 2 && res.headers['www-authenticate']) {
         const wa = res.headers['www-authenticate'];
         res.resume(); // drain this response, we're retrying
@@ -2244,7 +2261,7 @@ function handleWebuiProxyRequestNow(msg) {
     if (body) req.write(body);
     req.end();
   }
-  let connRetries = 0;
+  let connRetries = 0, httpsHops = 0;
   let style = webuiStyle.get(ip) || 'auth';
   const tried = [];
   const DEFAULT_BASIC = 'Basic ' + Buffer.from(REQUEST_USER + ':' + REQUEST_PASS).toString('base64');
