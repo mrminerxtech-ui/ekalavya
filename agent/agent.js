@@ -1935,6 +1935,13 @@ function handleWebuiProxyRequestNow(msg) {
     // The extension check runs FIRST and wins over a misleading
     // Content-Type — see ALWAYS_BINARY_EXT above.
     const isText = !ALWAYS_BINARY_EXT.test(reqPath || '') && /text|json|javascript|xml|css/i.test(contentType);
+    // Text (scripts, styles, pages, readings) is packed with gzip when the
+    // server says it can unpack it: about a quarter of the size on the
+    // farm's uplink. Pictures and fonts are already packed.
+    let gz = null;
+    if (msg.accept_gzip && isText && buf.length > 1024) {
+      try { gz = require('zlib').gzipSync(buf, { level: 6 }); } catch (e) { gz = null; }
+    }
     send({
       type: 'webui_proxy_response',
       request_id,
@@ -1949,8 +1956,9 @@ function handleWebuiProxyRequestNow(msg) {
                  ...Object.keys(res.headers).filter(h => /^grpc-/i.test(h)).map(h => ({ [h]: res.headers[h] })),
                  // …or in HTTP trailers (sent after the body) — same thing, later
                  ...Object.keys(res.trailers || {}).filter(h => /^grpc-/i.test(h)).map(h => ({ [h]: res.trailers[h] }))),
-      body: isText ? buf.toString('utf8') : buf.toString('base64'),
+      body: gz ? gz.toString('base64') : isText ? buf.toString('utf8') : buf.toString('base64'),
       encoding: isText ? 'utf8' : 'base64',
+      gzip: gz ? true : undefined,
     });
     resolveQueue();
   }
@@ -2025,7 +2033,9 @@ function handleWebuiProxyRequestNow(msg) {
       res.on('end', () => sendResponse(res, Buffer.concat(chunks)));
     });
 
+    let timedOut = false;
     req.on('error', e => {
+      if (timedOut) return;   // already handled by the timeout below
       // A miner whose web server is momentarily busy refuses or resets
       // the connection instead of queuing it. That is transient, but it
       // used to surface immediately as a 502 — which is what the
@@ -2059,7 +2069,20 @@ function handleWebuiProxyRequestNow(msg) {
       sendError(502, 'Cannot reach miner (' + (e.code || 'error') + '): ' + e.message
         + (tried.length > 1 ? '\nTried: ' + tried.join(' · ') + '\nThe miner\'s web page did not answer on port 80 or 443 from the farm PC.' : ''));
     });
-    req.on('timeout', () => { req.destroy(); sendError(504, 'Miner did not respond in time'); });
+    req.on('timeout', () => {
+      timedOut = true; req.destroy();
+      // A kept-open connection that the miner has silently dropped (it
+      // rebooted, or was idle too long) swallows the request and nothing
+      // comes back. Ask once more on a brand-new connection before giving up.
+      if (!freshConnection && style === 'auth' && connRetries === 0) {
+        connRetries++; minerHttpAgents.delete(ip);
+        console.log(`[WEBUI] ${ip}${reqPath} → no answer in 8 s on a kept-open connection — asking again on a new one`);
+        attempt(authHeader, phase, true);
+        return;
+      }
+      console.log(`[WEBUI] ✗ ${ip}${reqPath} → no answer in 8 s (port ${overTls ? 443 : 80})`);
+      sendError(504, 'Miner did not respond in time');
+    });
     if (body) req.write(body);
     req.end();
   }
