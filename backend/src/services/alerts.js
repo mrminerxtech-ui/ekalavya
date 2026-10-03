@@ -184,6 +184,7 @@ const ALARM_SETTING_KEY = 'site_alarm_offline';
 let alarmAt = DEFAULT_ALARM_AT, delayMin = DEFAULT_DELAY_MIN, repeatMin = DEFAULT_REPEAT_MIN;
 const rearmAt = () => Math.max(0, alarmAt - 4);   // must recover to this many offline (or fewer) before a fresh alarm
 async function loadAlarmSetting() {
+  try { await loadCallNumbers(); } catch (e) {}
   try {
     const v = await db.getSetting(ALARM_SETTING_KEY);
     const n = parseInt(v && v.alarm_at, 10);
@@ -239,8 +240,61 @@ const TWILIO_AUTH = process.env.TWILIO_AUTH_TOKEN;
 const TWILIO_FROM = process.env.TWILIO_FROM_NUMBER;
 const TWILIO_TO   = (process.env.TWILIO_ALERT_NUMBERS || '').split(',').map(s => s.trim()).filter(Boolean);
 
+// Who gets called. The numbers are typed in the app (Settings › Site
+// Alarm) and stored on the server (app_settings "alert_call_numbers");
+// while that list is empty, TWILIO_ALERT_NUMBERS from Railway is used, so
+// nothing changes for a setup that never opens the page.
+const CALL_NUMBERS_KEY = 'alert_call_numbers';
+const MAX_CALL_NUMBERS = 10;
+let savedCallNumbers = [];
+function callNumbers() { return savedCallNumbers.length ? savedCallNumbers : TWILIO_TO; }
+function callServiceReady() { return !!(TWILIO_SID && TWILIO_AUTH && TWILIO_FROM); }
+// "+971 54 350 1976", "00971543501976", "971-54-3501976" → "+971543501976"
+function cleanPhone(v) {
+  let t = String(v == null ? '' : v).trim().replace(/[\s\-().]/g, '');
+  if (t.startsWith('00')) t = '+' + t.slice(2);
+  if (/^[1-9]\d{7,14}$/.test(t)) t = '+' + t;
+  return /^\+[1-9]\d{7,14}$/.test(t) ? t : null;
+}
+async function loadCallNumbers() {
+  try {
+    const v = await db.getSetting(CALL_NUMBERS_KEY);
+    const list = Array.isArray(v && v.numbers) ? v.numbers.map(cleanPhone).filter(Boolean) : [];
+    savedCallNumbers = [...new Set(list)].slice(0, MAX_CALL_NUMBERS);
+  } catch (e) { /* keep the current list */ }
+}
+function getCallNumbers() {
+  return { numbers: savedCallNumbers.slice(), from_server_setting: savedCallNumbers.length ? [] : TWILIO_TO.slice(),
+           calling: callNumbers().slice(), service_ready: callServiceReady(), max: MAX_CALL_NUMBERS };
+}
+async function setCallNumbers(list, by) {
+  if (!Array.isArray(list)) return { ok: false, error: 'Send the numbers as a list' };
+  const out = [];
+  for (const raw of list) {
+    if (raw == null || String(raw).trim() === '') continue;
+    const n = cleanPhone(raw);
+    if (!n) return { ok: false, error: '"' + String(raw).trim().slice(0, 30) + '" is not a phone number — write it with the country code, e.g. +971501234567' };
+    if (!out.includes(n)) out.push(n);
+  }
+  if (out.length > MAX_CALL_NUMBERS) return { ok: false, error: 'At most ' + MAX_CALL_NUMBERS + ' numbers' };
+  const saved = await db.setSetting(CALL_NUMBERS_KEY, { numbers: out }, by);
+  if (!saved) return { ok: false, error: 'Could not save the numbers' };
+  savedCallNumbers = out;
+  console.log(`[ALERT] Call numbers changed${by ? ' by ' + by : ''}: ${out.length ? out.join(', ') : 'list emptied — using TWILIO_ALERT_NUMBERS (' + (TWILIO_TO.length || 'none') + ')'}`);
+  return { ok: true, ...getCallNumbers() };
+}
+// One test call to every number on the list (the "Test call" button).
+async function sendTestCallNow(by) {
+  await loadCallNumbers();
+  if (!callServiceReady()) return { ok: false, error: 'Phone calls are not set up on the server yet' };
+  if (!callNumbers().length) return { ok: false, error: 'Add a phone number first' };
+  console.log(`[ALERT] Test call requested${by ? ' by ' + by : ''} → ${callNumbers().join(', ')}`);
+  const r = await sendPhoneCallAlert('This is a test call from Ekalavya. Site alert calls are working.', true);
+  return r.placed > 0 ? { ok: true, ...r } : { ok: false, error: (r.failed[0] && r.failed[0].error) || 'No call could be placed', ...r };
+}
+
 function phoneCallConfigured() {
-  return !!(TWILIO_SID && TWILIO_AUTH && TWILIO_FROM && TWILIO_TO.length);
+  return !!(callServiceReady() && callNumbers().length);
 }
 
 // Speaks the alert twice with a short pause between — someone answering
@@ -303,8 +357,9 @@ function twimlHandler(req, res) {
 }
 
 // Calls every configured admin number.
-async function sendPhoneCallAlert(spokenText) {
-  if (!phoneCallConfigured()) return false;
+async function sendPhoneCallAlert(spokenText, detailed) {
+  if (!phoneCallConfigured()) return detailed ? { placed: 0, total: 0, failed: [] } : false;
+  const TWILIO_TO = callNumbers();   // the list as it is right now
   const url = twimlUrlFor(spokenText);
   const script = url ? { Url: url } : { Twiml: buildAlertTwiml(spokenText) };
   if (!url) console.log('[ALERT] No public address known (set PUBLIC_BASE_URL) — sending the message inline, which Twilio trial accounts refuse');
@@ -320,14 +375,17 @@ async function sendPhoneCallAlert(spokenText) {
       }
     );
   }));
+  const failed = [];
   results.forEach((r, i) => {
     if (r.status === 'rejected') {
-      console.error(`[ALERT] Twilio call to ${TWILIO_TO[i]} failed:`, r.reason?.response?.data?.message || r.reason.message);
+      const why = r.reason?.response?.data?.message || r.reason.message;
+      failed.push({ number: TWILIO_TO[i], error: why });
+      console.error(`[ALERT] Twilio call to ${TWILIO_TO[i]} failed:`, why);
     }
   });
   const okCount = results.filter(r => r.status === 'fulfilled').length;
   console.log(`[ALERT] Twilio: ${okCount}/${TWILIO_TO.length} call(s) placed`);
-  return okCount > 0;
+  return detailed ? { placed: okCount, total: TWILIO_TO.length, failed } : okCount > 0;
 }
 
 // ── Free phone calls via CallMeBot (Telegram voice call) ────────────
@@ -705,13 +763,14 @@ async function sendTestCalls() {
 }
 
 function start() {
-  if (!siteAlertingConfigured() && !phoneCallConfigured() && !callMeBotConfigured()) {
+  // callServiceReady(): the numbers may be typed in the app later
+  if (!siteAlertingConfigured() && !phoneCallConfigured() && !callServiceReady() && !callMeBotConfigured()) {
     console.log('[ALERT] No alert channel is configured — Telegram (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID), Twilio (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_FROM_NUMBER/TWILIO_ALERT_NUMBERS) or CallMeBot (CALLMEBOT_USERS) — site offline-count alerts are disabled.');
     return;
   }
   const channels = [
     siteAlertingConfigured() && 'Telegram',
-    phoneCallConfigured()    && `Twilio call (${TWILIO_TO.length} number(s))`,
+    callServiceReady()       && 'Twilio call',
     callMeBotConfigured()    && `CallMeBot call (${CALLMEBOT_USERS.join(', ')})`,
   ].filter(Boolean).join(' + ');
   loadAlarmSetting().finally(() =>
@@ -719,14 +778,17 @@ function start() {
   // Say plainly when a call channel is off, so a missing or misspelt
   // variable shows up in the startup log instead of as a silent no-call
   // during a real outage (which is how the Twilio mix-up went unnoticed).
-  if (phoneCallConfigured()) {
+  if (callServiceReady()) {
+    loadCallNumbers().finally(() => console.log(callNumbers().length
+      ? `[ALERT] Calls go to ${callNumbers().length} number(s) — ${savedCallNumbers.length ? 'typed in the app (Settings › Site Alarm)' : 'from TWILIO_ALERT_NUMBERS'}: ${callNumbers().join(', ')}`
+      : '[ALERT] Twilio calls OFF — no phone number yet: add one in Settings › Site Alarm (or set TWILIO_ALERT_NUMBERS)'));
     const base = publicBaseUrl();
     console.log(base
       ? `[ALERT] Twilio will fetch each call's message from ${base}/api/alerts/twiml/…`
       : '[ALERT] Twilio: no public address known — set PUBLIC_BASE_URL (e.g. https://your-backend.up.railway.app), trial accounts need it');
   }
-  if (!phoneCallConfigured()) {
-    const missing =['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM_NUMBER', 'TWILIO_ALERT_NUMBERS'].filter(k => !process.env[k]);
+  if (!callServiceReady()) {
+    const missing =['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM_NUMBER'].filter(k => !process.env[k]);
     console.log(`[ALERT] Twilio calls OFF${missing.length ? ' — not set: ' + missing.join(', ') : ''}`);
   }
   if (!callMeBotConfigured()) console.log('[ALERT] CallMeBot calls OFF — CALLMEBOT_USERS not set');
@@ -737,4 +799,5 @@ function start() {
 }
 
 module.exports = { sendTelegramMarkdown, esc, sendTelegramDocument, raiseAlert, sendSlackAlert, sendTelegramAlert, checkWorkerThresholds, start, checkSiteOfflineCounts, twimlHandler,
-                   getAlarmSettings, setAlarmAt, loadAlarmSetting, countPhysicalMachines };
+                   getAlarmSettings, setAlarmAt, loadAlarmSetting, countPhysicalMachines,
+                   getCallNumbers, setCallNumbers, loadCallNumbers, sendTestCallNow, cleanPhone };
