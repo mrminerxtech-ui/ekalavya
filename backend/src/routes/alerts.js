@@ -32,6 +32,28 @@ router.post('/settings', authMiddleware, requireRole('admin', 'manager'), async 
   res.json(r);
 });
 
+// ── Phone numbers the site alarm calls ─────────────────────────────
+// GET /api/alerts/call-numbers → { ok, numbers:[…], from_server_setting:[…], calling:[…], service_ready, max }
+router.get('/call-numbers', authMiddleware, staffOnly, async (req, res) => {
+  await alerts.loadCallNumbers();
+  res.json({ ok: true, ...alerts.getCallNumbers() });
+});
+
+// POST /api/alerts/call-numbers  { numbers: ['+971501234567', …] }
+router.post('/call-numbers', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+  const who = (req.user && (req.user.name || req.user.id)) || 'unknown';
+  const r = await alerts.setCallNumbers((req.body || {}).numbers, who);
+  res.status(r.ok ? 200 : 400).json(r);
+});
+
+// POST /api/alerts/call-numbers/test → rings every number on the list once
+router.post('/call-numbers/test', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+  const who = (req.user && (req.user.name || req.user.id)) || 'unknown';
+  let r;
+  try { r = await alerts.sendTestCallNow(who); } catch (e) { r = { ok: false, error: e.message }; }
+  res.status(r.ok ? 200 : 400).json(r);
+});
+
 // ── Auto-restart (machines at 0 hashrate) ──────────────────────────
 const autorestart = require('../services/autorestart');
 
