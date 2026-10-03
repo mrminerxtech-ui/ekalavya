@@ -259,6 +259,21 @@ router.use('/:farmId/:ip', async (req, res) => {
     return res.status(502).send(tunnelErrorPage(`Farm agent "${farmId}" is not connected right now.`));
   }
 
+  // Files that never change while a miner runs (scripts, styles, pictures,
+  // fonts, language files) are answered from memory when this miner was
+  // asked for them in the last hour — no trip to the farm and back.
+  const staticKey = (req.method === 'GET' && !req.headers.range) ? staticCacheKey(farmId, ip, minerPath) : null;
+  if (staticKey) {
+    const hit = staticCacheGet(staticKey);
+    if (hit) {
+      res.status(200);
+      res.set('Content-Type', hit.contentType);
+      res.set('Cache-Control', STATIC_BROWSER_CACHE);
+      res.set('X-Tunnel-Cache', 'hit');
+      return res.send(hit.body);
+    }
+  }
+
   // Body — only forward for methods that carry one. Must re-serialize
   // back into whatever format it originally came in as (Express already
   // parsed it into an object) — a miner's login form expects urlencoded
@@ -613,6 +628,18 @@ router.use('/:farmId/:ip', async (req, res) => {
     res.status(result.status || 200);
     res.set('Content-Type', contentType);
 
+    // Unchanging files: let the browser keep them for an hour, and keep a
+    // copy here for the next person (or device) opening this miner. Never
+    // a page handed back in place of the file (a login page or the app's
+    // index.html answering for a missing script would otherwise stick).
+    if (staticKey && (result.status || 200) === 200 && bodyBuf.length && !isHtml
+        && !/text\/html/i.test(declaredType) && !/^\s*<(!doctype|html)/i.test(bodyBuf.slice(0, 64).toString('latin1'))
+        && !(result.headers && result.headers['set-cookie'])) {
+      res.set('Cache-Control', STATIC_BROWSER_CACHE);
+      res.set('X-Tunnel-Cache', 'miss');
+      staticCachePut(staticKey, contentType, bodyBuf);
+    }
+
     // Cookies the miner sets (its login session) are handed to the
     // browser scoped to THIS miner's tunnel folder: the miner's own
     // Domain is dropped (it names the miner's IP, which the browser would
@@ -658,6 +685,47 @@ router.use('/:farmId/:ip', async (req, res) => {
     res.status(504).send(tunnelErrorPage(e.message));
   }
 });
+
+// ── Memory of unchanging miner files ────────────────────────────────
+// Opening an Antminer's page asks for dozens of small files, and each
+// one travels browser → this server → farm PC → miner and all the way
+// back, a few at a time; that trip, repeated, is what makes the page
+// slow. Scripts, styles, pictures, fonts and language files only change
+// with a firmware update, so they are kept here per miner for an hour
+// (and the browser is told to keep them for an hour too). Live readings
+// (.cgi, API calls, the page itself) are never kept.
+const STATIC_EXT = /\.(js|mjs|css|png|jpe?g|gif|ico|svg|webp|woff2?|ttf|otf|eot|properties|map)$/i;
+const STATIC_TTL_MS = 60 * 60 * 1000;
+const STATIC_MAX_BYTES = 64 * 1024 * 1024, STATIC_MAX_ENTRY = 4 * 1024 * 1024;
+const STATIC_BROWSER_CACHE = 'private, max-age=3600';
+const staticCache = new Map();   // key -> { contentType, body, at }  (oldest first)
+let staticBytes = 0;
+
+function staticCacheKey(farmId, ip, minerPath) {
+  const q = String(minerPath || '').indexOf('?');
+  const pathOnly = q === -1 ? String(minerPath || '') : minerPath.slice(0, q);
+  if (!STATIC_EXT.test(pathOnly)) return null;
+  // "?_=1759…" is a page's own "don't cache" stamp — the file is the same
+  const query = q === -1 ? '' : minerPath.slice(q + 1).split('&').filter(x => x && !/^_=\d+$/.test(x)).join('&');
+  return farmId + '|' + ip + '|' + pathOnly + (query ? '?' + query : '');
+}
+function staticCacheGet(key) {
+  const e = staticCache.get(key);
+  if (!e) return null;
+  if (Date.now() - e.at > STATIC_TTL_MS) { staticCache.delete(key); staticBytes -= e.body.length; return null; }
+  return e;
+}
+function staticCachePut(key, contentType, body) {
+  if (!body || body.length > STATIC_MAX_ENTRY) return;
+  const old = staticCache.get(key);
+  if (old) { staticCache.delete(key); staticBytes -= old.body.length; }
+  staticCache.set(key, { contentType, body, at: Date.now() });
+  staticBytes += body.length;
+  for (const [k, e] of staticCache) {            // over the limit: drop the oldest
+    if (staticBytes <= STATIC_MAX_BYTES) break;
+    staticCache.delete(k); staticBytes -= e.body.length;
+  }
+}
 
 // ── gRPC-web replies must end with a "trailer" frame ────────────────
 // A gRPC-web reply is a run of frames: 1 flag byte + 4 length bytes +
