@@ -551,7 +551,7 @@ router.use('/:farmId/:ip', async (req, res) => {
         'if((name==="src"||name==="href")&&typeof value==="string") value=fix(value);' +
         'return oSA.call(this,name,value);};' +
         'function fixCss(s){' +
-        'return s.replace(/([^a-zA-Z0-9_]|^)url\\((["\']?)\\/(?!\\/)/g, "$1url($2");' +
+        'return s.replace(/([^a-zA-Z0-9_]|^)url\\((["\']?)\\/(?!\\/)/g, "$1url($2"+B);' +
         '}' +
         'var oCTN=document.createTextNode.bind(document);' +
         'document.createTextNode=function(data){' +
@@ -572,8 +572,21 @@ router.use('/:farmId/:ip', async (req, res) => {
         ? ''
         : '<meta name="viewport" content="width=1024, initial-scale=0.35, user-scalable=yes">';
 
+      // A page in a subfolder of the miner (WhatsMiner / LuCI lives under
+      // /cgi-bin/luci/…): "relative" would resolve inside that subfolder
+      // (/cgi-bin/luci-static/…, a 404), so its root paths are pointed at
+      // this miner's tunnel folder in full. Top-level pages keep the
+      // simple relative form they have always had.
+      const pageIsNested = minerPath.split('?')[0].replace(/^\/+/, '').indexOf('/') !== -1;
+      const attrRoot = pageIsNested ? tunnelBase : '';
+      // "Go to /cgi-bin/luci" written into the page itself (WhatsMiner's
+      // first page is only this) sent the browser to our own domain's
+      // root: "Page not found. Open the miner again".
+      html = html.replace(/<meta\b[^>]*>/gi, tag => /http-equiv\s*=\s*["']?refresh/i.test(tag)
+        ? tag.replace(/(url\s*=\s*['"]?)\/(?!\/)/i, '$1' + tunnelBase)
+        : tag);
       html = html
-        .replace(/(href|src|action)=(["'])\/(?!\/)/gi, '$1=$2')
+        .replace(/(href|src|action)=(["'])\/(?!\/)/gi, '$1=$2' + attrRoot)
         // The meta tag repeats the Referrer-Policy header above inside the
         // page itself, so it still applies if a proxy or cache in between
         // ever drops or rewrites the header.
@@ -592,7 +605,7 @@ router.use('/:farmId/:ip', async (req, res) => {
     // unrelated code (regex literals, division, normal text).
     if (isJs) {
       let js = bodyBuf.toString('utf8');
-      js = js.replace(/(?<![a-zA-Z0-9_])url\((["']?)\/(?!\/)/g, 'url($1');
+      js = js.replace(/(?<![a-zA-Z0-9_])url\((["']?)\/(?!\/)/g, 'url($1' + '/api/webui/' + encodeURIComponent(farmId) + '/' + ip + '/');
       bodyBuf = Buffer.from(js, 'utf8');
     }
 
@@ -694,7 +707,11 @@ router.use('/:farmId/:ip', async (req, res) => {
         const rest = own[2] || '/';
         loc = '/api/webui/' + encodeURIComponent(farmId) + '/' + ip + (rest.startsWith('/') ? rest : '/' + rest);
       } else
-      if (loc.startsWith('/') && !loc.startsWith('//')) loc = loc.slice(1);
+      // A path from the miner's root goes to this miner's tunnel folder in
+      // full: made merely relative, a redirect answered from a subfolder
+      // (WhatsMiner's login posts to /cgi-bin/luci) landed in
+      // /cgi-bin/cgi-bin/….
+      if (loc.startsWith('/') && !loc.startsWith('//')) loc = '/api/webui/' + encodeURIComponent(farmId) + '/' + ip + loc;
       res.set('Location', loc);
     }
 
@@ -876,6 +893,14 @@ function reloadFallback(req, res, next) {
   if (dest && dest !== 'document') return next();
   if (!/text\/html/i.test(req.headers.accept || '')) return next();   // API clients, health checks
   res.set('Cache-Control', 'no-store');
+  // The page that sent the browser here says which miner it belongs to:
+  // a miner page that jumps to "/cgi-bin/luci" by script lands on our own
+  // root, and is sent back into that miner's tunnel folder.
+  try {
+    const ref = req.headers.referer ? new URL(req.headers.referer) : null;
+    const rm = ref && ref.host === req.headers.host && ref.pathname.match(/^\/api\/webui\/[^/]+\/\d{1,3}(?:\.\d{1,3}){3}\//);
+    if (rm) return res.redirect(302, rm[0] + req.originalUrl.replace(/^\/+/, ''));
+  } catch (e) {}
   res.status(200).send('<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>' +
     '<script>(function(){var b=null;try{b=sessionStorage.getItem("ekl_tunnel_base");}catch(e){}' +
     'if(b&&/^\\/api\\/webui\\/[^/]+\\/\\d{1,3}(\\.\\d{1,3}){3}\\/$/.test(b)){' +
