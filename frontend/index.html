@@ -786,6 +786,14 @@ details.setup[open] summary .chev{transform:rotate(90deg);}
 .srow+.srow{margin-top:10px;}
 .slb{font:500 12.5px/1.3 var(--font);color:var(--mute);letter-spacing:0;text-transform:none;}
 .num{width:72px;text-align:center;}
+.callnum-box{margin-top:14px;padding-top:12px;border-top:1px solid var(--line,rgba(255,255,255,.08));}
+.callnum-title{font:600 12px/1.4 var(--font);margin-bottom:8px;}
+.callnum-list{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;}
+.callnum-chip{display:inline-flex;align-items:center;gap:8px;padding:5px 6px 5px 12px;border-radius:999px;border:1px solid var(--line,rgba(255,255,255,.14));font:600 12.5px/1.4 var(--mono,monospace);}
+.callnum-chip.env{opacity:.75;border-style:dashed;padding-right:12px;}
+.callnum-chip button{all:unset;cursor:pointer;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;color:var(--mute);font-size:15px;line-height:1;}
+.callnum-chip button:hover,.callnum-chip button:focus-visible{background:rgba(255,45,85,.18);color:var(--red);}
+.callnum-empty{font:500 12px/1.5 var(--font);color:var(--mute);}
 .shint{margin-top:10px;font:500 11.5px/1.5 var(--font);color:var(--mute);}
 .swrow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:2px 0;}
 .swrow .lbl{font:600 13px/1.3 var(--font);color:var(--txt);display:flex;align-items:center;}
@@ -1343,6 +1351,17 @@ details.setup[open] summary .chev{transform:rotate(90deg);}
             <button class="btn btn-sm" id="siteAlarmSave" onclick="saveSiteAlarmSetting()">Save</button>
           </div>
           <div id="siteAlarmStatus" class="shint">Loading…</div>
+          <div class="callnum-box">
+            <div class="callnum-title">Phone numbers to call</div>
+            <div id="callNumList" class="callnum-list"></div>
+            <div class="srow">
+              <input class="si" id="callNumInput" type="tel" inputmode="tel" autocomplete="off" placeholder="+971501234567" aria-label="Phone number with country code" style="width:190px"
+                     onkeydown="if(event.key==='Enter'){event.preventDefault();addCallNumber();}">
+              <button class="btn btn-sm" id="callNumAdd" onclick="addCallNumber()">Add</button>
+              <button class="btn btn-sm" id="callNumTest" onclick="testCallNumbers()"><svg class="ic sm"><use href="#i-bell"/></svg>Test call</button>
+            </div>
+            <div id="callNumStatus" class="shint"></div>
+          </div>
         </div>
       </div>
 
