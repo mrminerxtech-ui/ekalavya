@@ -1,8 +1,9 @@
 {
-  "version": "1.1.53",
-  "released_at": "2026-10-03T09:30:28Z",
+  "version": "1.1.54",
+  "released_at": "2026-10-03T17:10:52Z",
   "min_node_version": "16.0.0",
   "changelog": [
+    "Web UI tunnel, WhatsMiner: 'This site can't be reached — 192.168.x.x took too long to respond'. WhatsMiner answers every http request with a redirect to https://<its own address>/…; that address went to the browser, which left the tunnel and tried to reach the miner directly. When a miner redirects to https on its own address the agent now remembers it, asks again over HTTPS (port 443, self-signed certificate accepted) at once, and uses HTTPS for that miner from then on. Needs the server update of the same day, which keeps the miner's own redirects inside the tunnel.",
     "Braiins OS machines showed brand and model as Unknown / Unknown with no serial number. Their cgminer-style API has no model in `stats`; it is now read from `devdetails` (and from the miner's own API, /api/v1/miner/details, when devdetails has none), shown as e.g. 'Antminer T21 (Braiins OS 25.03)', brand Bitmain. The serial number is read from the miner's own API, which needs its login: root/root or root with an empty password are tried; with any other password the model is still found and the serial stays empty. Asked only for machines whose model is otherwise unknown, and remembered per machine for 6 hours (30 minutes when nothing is found).",
     "Web UI tunnel, Braiins OS dashboard: empty Hashboards and 'Tunnel Error — Miner did not respond in time' on GetHashboards / Subscribe / SubscribeMetrics / SubscribeTemperatures / graphql. Braiins OS keeps some of its page's gRPC calls open for as long as the page is; the agent waited for them to finish (they never do), and each waiting call held one of the three places in that miner's queue, so the page's ordinary calls timed out behind them. gRPC calls are now answered piece by piece (webui_stream_head / _data / _end) on a connection of their own, the queue place is given back as soon as the answer starts, the call is closed when the browser closes the page (webui_stream_cancel) or the server connection drops, after 5 minutes without data, and at most 60 are open per farm PC. Needs the server update of the same day; with an older server nothing changes.",
     "Web UI tunnel, faster pages: text replies (scripts, styles, pages, readings) over 1 KB are packed with gzip before they travel to the server, when the server says it can unpack them (accept_gzip) — about a quarter of the size on the farm's uplink. Pictures and fonts are sent as before. With an older server nothing changes.",
@@ -37,8 +38,8 @@
   "files": [
     {
       "name": "agent.js",
-      "sha256": "e51ce368e47de7c463a104d5ca85e0b1abd2e138f54b7d7576ebeb520df56929",
-      "size": 137635
+      "sha256": "a3a82556189015529ced8d7c740bccd43dc3649ed1df0b2e199365d914f04bc0",
+      "size": 138637
     },
     {
       "name": "agent-guard.js",
