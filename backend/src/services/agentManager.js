@@ -191,6 +191,7 @@ function unregisterAgent(farmId, ws) {
     console.log(`[AGENT] Disconnected: ${agent.farm_name}`);
     connectedAgents.delete(farmId);
     try { require('./webuiSockets').closeFarm(farmId); } catch(e) {}
+    try { endWebuiStreamsFor(farmId); } catch(e) {}
     try {
       const { broadcast } = require('../websocket');
       broadcast({ type: 'agent_disconnected', farm_id: farmId });
@@ -261,6 +262,10 @@ function handleAgentMessage(farmId, msg) {
     if (msg.type === 'webui_proxy_response') {
       resolveWebuiResponse(msg);
       return; // nothing else needs this message
+    }
+    if (msg.type && msg.type.startsWith('webui_stream_')) {
+      handleWebuiStreamMessage(farmId, msg);
+      return;
     }
 
     // Live sockets through the web UI tunnel (services/webuiSockets.js)
@@ -362,7 +367,7 @@ function sendWebuiRequest(farmId, ip, method, path, headers, body, opts) {
       reject(new Error('Miner did not respond in time (is it powered on and reachable?)'));
     }, TTL_MS);
 
-    pendingWebuiRequests.set(request_id, { resolve, reject, timer });
+    pendingWebuiRequests.set(request_id, { resolve, reject, timer, farmId, wantStream: !!(opts && opts.stream) });
 
     try {
       agent.ws.send(JSON.stringify({
@@ -377,6 +382,9 @@ function sendWebuiRequest(farmId, ip, method, path, headers, body, opts) {
         // text replies may come back gzip-packed (agent v1.1.51+) — a
         // script travels the farm's uplink at about a quarter of its size
         accept_gzip: true,
+        // reply piece by piece as the miner sends it (gRPC-web calls that
+        // stay open; agent v1.1.52+). Older agents answer in one piece.
+        stream: (opts && opts.stream) ? true : undefined,
       }));
     } catch(e) {
       clearTimeout(timer);
@@ -384,6 +392,60 @@ function sendWebuiRequest(farmId, ip, method, path, headers, body, opts) {
       reject(e);
     }
   });
+}
+
+// ── Replies that arrive piece by piece ──────────────────────────────
+// Braiins OS keeps some of its page's calls open for as long as the page
+// is (Subscribe, SubscribeMetrics, SubscribeTemperatures): the miner
+// never finishes the reply, it keeps adding to it. Waiting for the whole
+// reply meant waiting forever — a 504 after 30 s — and each waiting call
+// held one of the few places in the agent's queue for that miner, so the
+// page's ordinary calls timed out behind them too.
+const WEBUI_STREAM_MAX_MS = 30 * 60 * 1000;
+const webuiStreams = new Map();   // request_id -> { farmId, emitter, timer }
+
+function endWebuiStream(id, info) {
+  const st = webuiStreams.get(id);
+  if (!st) return;
+  webuiStreams.delete(id);
+  clearTimeout(st.timer);
+  try { st.emitter.emit('end', info || {}); } catch (e) {}
+}
+function cancelWebuiStream(id, why) {
+  const st = webuiStreams.get(id);
+  if (!st) return;
+  const agent = connectedAgents.get(st.farmId);
+  try { if (agent && agent.ws.readyState === 1) agent.ws.send(JSON.stringify({ type: 'webui_stream_cancel', request_id: id })); } catch (e) {}
+  endWebuiStream(id, { cancelled: true, error: why || null });
+}
+function endWebuiStreamsFor(farmId) {
+  for (const [id, st] of webuiStreams) if (st.farmId === farmId) endWebuiStream(id, { error: 'farm agent disconnected' });
+}
+function handleWebuiStreamMessage(farmId, msg) {
+  const id = msg.request_id;
+  if (msg.type === 'webui_stream_head') {
+    const pending = pendingWebuiRequests.get(id);
+    if (!pending) {   // the caller gave up before the miner answered
+      const agent = connectedAgents.get(farmId);
+      try { agent && agent.ws.send(JSON.stringify({ type: 'webui_stream_cancel', request_id: id })); } catch (e) {}
+      return;
+    }
+    clearTimeout(pending.timer);
+    pendingWebuiRequests.delete(id);
+    const emitter = new (require('events').EventEmitter)();
+    emitter.on('error', () => {});
+    const timer = setTimeout(() => cancelWebuiStream(id, 'open for 30 minutes'), WEBUI_STREAM_MAX_MS);
+    webuiStreams.set(id, { farmId, emitter, timer });
+    pending.resolve({ status: msg.status, headers: msg.headers || {}, stream: emitter, cancel: () => cancelWebuiStream(id) });
+    return;
+  }
+  const st = webuiStreams.get(id);
+  if (!st) return;
+  if (msg.type === 'webui_stream_data') {
+    if (msg.data) { try { st.emitter.emit('data', Buffer.from(msg.data, 'base64')); } catch (e) {} }
+  } else if (msg.type === 'webui_stream_end') {
+    endWebuiStream(id, { trailers: msg.trailers || null, error: msg.error || null });
+  }
 }
 
 function resolveWebuiResponse(msg) {
