@@ -1,8 +1,10 @@
 {
-  "version": "1.1.49",
-  "released_at": "2026-10-02T21:27:49Z",
+  "version": "1.1.51",
+  "released_at": "2026-10-03T07:54:15Z",
   "min_node_version": "16.0.0",
   "changelog": [
+    "Web UI tunnel, faster pages: text replies (scripts, styles, pages, readings) over 1 KB are packed with gzip before they travel to the server, when the server says it can unpack them (accept_gzip) — about a quarter of the size on the farm's uplink. Pictures and fonts are sent as before. With an older server nothing changes.",
+    "Web UI tunnel: 'Miner did not respond in time'. When a miner gave no answer within 8 s on a connection the agent had kept open (the miner had rebooted or dropped it), the page failed at once. The agent now asks once more on a new connection first, logs which miner and file got no answer, and no longer handles the same timeout twice.",
     "Web UI tunnel, Braiins OS: the dashboard showed 'Miner info: missing trailer' and an empty Hashboards list. Braiins OS pages talk to the miner with gRPC-web; when the miner puts the call's end-of-reply status (grpc-status / grpc-message) in HTTP trailers instead of in the reply body, the agent used to drop it. Those trailers are now passed on to the server, and gRPC requests are sent with 'TE: trailers' so the miner is allowed to send them. Other miners are unchanged.",
     "Web UI tunnel: open miners whose web server resets our request (seen on AvalonMiner: 'Cannot reach miner (ECONNRESET): read ECONNRESET' on every try). Every request now carries a browser User-Agent; if a miner still resets the connection after the usual fresh-connection retries, the request is repeated the way a browser sends it (without the agent's own root/root login header) and then over HTTPS on port 443 (self-signed certificates accepted). The style that works is remembered per miner so later files go straight there, and the agent log says what it learnt. When nothing answers, the error lists what was tried. Antminer / Braiins behaviour is unchanged.",
     "Polling gap is confirmed and self-healing. The agent now reports the gap it is using in every heartbeat (and at once when it changes), so the server can see a farm that missed the setting and send it again; and it polls once immediately after the gap changes, so the farm card shows the new gap straight away instead of after the first (possibly long) gap has passed.",
@@ -33,8 +35,8 @@
   "files": [
     {
       "name": "agent.js",
-      "sha256": "b6dc769fe72e583f54666aa40239d1a2d5c11b46b526da36a39f7082964d6072",
-      "size": 127920
+      "sha256": "e395d7769c3a6e2fd2b32593ea662e04b4e2a94fae1e41578112c75910d1443b",
+      "size": 129132
     },
     {
       "name": "agent-guard.js",
