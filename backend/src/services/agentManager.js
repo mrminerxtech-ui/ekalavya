@@ -374,6 +374,9 @@ function sendWebuiRequest(farmId, ip, method, path, headers, body, opts) {
         type: 'webui_proxy_request', request_id, ip, method, path, headers, body, ttl_ms: TTL_MS,
         // 'base64' when body is raw bytes (gRPC-web) rather than text
         body_encoding: (opts && opts.body_encoding) || undefined,
+        // text replies may come back gzip-packed (agent v1.1.51+) — a
+        // script travels the farm's uplink at about a quarter of its size
+        accept_gzip: true,
       }));
     } catch(e) {
       clearTimeout(timer);
@@ -388,6 +391,16 @@ function resolveWebuiResponse(msg) {
   if (!pending) return; // timed out already, or unknown ID — ignore
   clearTimeout(pending.timer);
   pendingWebuiRequests.delete(msg.request_id);
+  if (msg.gzip && typeof msg.body === 'string') {
+    try {
+      const raw = require('zlib').gunzipSync(Buffer.from(msg.body, 'base64'));
+      msg.body = msg.encoding === 'base64' ? raw.toString('base64') : raw.toString('utf8');
+      msg.gzip = false;
+    } catch (e) {
+      console.warn('[WEBUI] could not unpack a gzip reply from the agent: ' + e.message);
+      return pending.resolve({ status: 502, headers: { 'content-type': 'text/plain' }, body: 'The farm agent sent a reply that could not be unpacked', encoding: 'utf8' });
+    }
+  }
   pending.resolve(msg);
 }
 
