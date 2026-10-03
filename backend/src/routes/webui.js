@@ -682,7 +682,18 @@ router.use('/:farmId/:ip', async (req, res) => {
     // back into our tunnel folder instead of escaping to our own
     // domain's root.
     if (result.headers && result.headers.location) {
-      let loc = result.headers.location;
+      let loc = String(result.headers.location);
+      // A redirect that names the miner's own address in full
+      // ("https://192.168.70.114/…" — WhatsMiner sends every http request
+      // to https this way) took the browser out of the tunnel, straight
+      // to an address it cannot reach from outside the farm ("This site
+      // can't be reached"). It is pointed back into this miner's tunnel
+      // folder; the agent talks https to the miner from then on.
+      const own = loc.match(/^(?:https?:)?\/\/([^\/?#]+)(.*)$/i);
+      if (own && own[1].replace(/:\d+$/, '') === ip) {
+        const rest = own[2] || '/';
+        loc = '/api/webui/' + encodeURIComponent(farmId) + '/' + ip + (rest.startsWith('/') ? rest : '/' + rest);
+      } else
       if (loc.startsWith('/') && !loc.startsWith('//')) loc = loc.slice(1);
       res.set('Location', loc);
     }
