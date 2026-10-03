@@ -1,8 +1,9 @@
 {
-  "version": "1.1.52",
-  "released_at": "2026-10-03T08:30:27Z",
+  "version": "1.1.53",
+  "released_at": "2026-10-03T09:30:28Z",
   "min_node_version": "16.0.0",
   "changelog": [
+    "Braiins OS machines showed brand and model as Unknown / Unknown with no serial number. Their cgminer-style API has no model in `stats`; it is now read from `devdetails` (and from the miner's own API, /api/v1/miner/details, when devdetails has none), shown as e.g. 'Antminer T21 (Braiins OS 25.03)', brand Bitmain. The serial number is read from the miner's own API, which needs its login: root/root or root with an empty password are tried; with any other password the model is still found and the serial stays empty. Asked only for machines whose model is otherwise unknown, and remembered per machine for 6 hours (30 minutes when nothing is found).",
     "Web UI tunnel, Braiins OS dashboard: empty Hashboards and 'Tunnel Error — Miner did not respond in time' on GetHashboards / Subscribe / SubscribeMetrics / SubscribeTemperatures / graphql. Braiins OS keeps some of its page's gRPC calls open for as long as the page is; the agent waited for them to finish (they never do), and each waiting call held one of the three places in that miner's queue, so the page's ordinary calls timed out behind them. gRPC calls are now answered piece by piece (webui_stream_head / _data / _end) on a connection of their own, the queue place is given back as soon as the answer starts, the call is closed when the browser closes the page (webui_stream_cancel) or the server connection drops, after 5 minutes without data, and at most 60 are open per farm PC. Needs the server update of the same day; with an older server nothing changes.",
     "Web UI tunnel, faster pages: text replies (scripts, styles, pages, readings) over 1 KB are packed with gzip before they travel to the server, when the server says it can unpack them (accept_gzip) — about a quarter of the size on the farm's uplink. Pictures and fonts are sent as before. With an older server nothing changes.",
     "Web UI tunnel: 'Miner did not respond in time'. When a miner gave no answer within 8 s on a connection the agent had kept open (the miner had rebooted or dropped it), the page failed at once. The agent now asks once more on a new connection first, logs which miner and file got no answer, and no longer handles the same timeout twice.",
@@ -36,8 +37,8 @@
   "files": [
     {
       "name": "agent.js",
-      "sha256": "e9dccf8e3e84393e68d2bd797718f0516e398d618512dca37607505b9e9eb863",
-      "size": 132191
+      "sha256": "e51ce368e47de7c463a104d5ca85e0b1abd2e138f54b7d7576ebeb520df56929",
+      "size": 137635
     },
     {
       "name": "agent-guard.js",
