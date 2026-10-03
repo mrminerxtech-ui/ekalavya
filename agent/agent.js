@@ -1904,6 +1904,12 @@ function agentFor(ip) {
 // browser User-Agent), then over HTTPS ('https'). Whatever works is
 // remembered per miner, so later files go straight there.
 const webuiStyle = new Map();   // ip -> 'plain' | 'https'
+// Live gRPC calls open right now (request_id -> { stop }).
+const webuiStreams = new Map();
+const MAX_WEBUI_STREAMS = 60;
+const WEBUI_STREAM_QUIET_MS = 5 * 60 * 1000;
+function handleWebuiStreamCancel(msg) { const st = webuiStreams.get(msg.request_id); if (st) st.stop(); }
+function closeAllWebuiStreams() { webuiStreams.forEach(st => { try { st.stop(); } catch (e) {} }); webuiStreams.clear(); }
 const WEBUI_STYLES = ['auth', 'plain', 'https'];
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
 const insecureHttps = new https.Agent({ rejectUnauthorized: false, keepAlive: false, maxSockets: 2 });
@@ -1963,6 +1969,38 @@ function handleWebuiProxyRequestNow(msg) {
     resolveQueue();
   }
 
+  // Reply piece by piece (gRPC-web calls the miner keeps open — Braiins
+  // OS: Subscribe, SubscribeMetrics, SubscribeTemperatures). The answer's
+  // start is sent at once, every piece as it arrives, and the place in
+  // this miner's queue is given back straight away: an open stream no
+  // longer makes the page's other calls wait until they time out.
+  let streamStarted = false;
+  function streamResponse(req, res) {
+    streamStarted = true;
+    if (webuiStreams.size >= MAX_WEBUI_STREAMS) {
+      req.destroy();
+      return sendError(503, 'Too many open live calls on this farm PC');
+    }
+    let ended = false;
+    const finish = (error) => {
+      if (ended) return; ended = true;
+      webuiStreams.delete(request_id);
+      const trailers = {};
+      Object.keys(res.trailers || {}).forEach(h => { if (/^grpc-/i.test(h)) trailers[h] = res.trailers[h]; });
+      send({ type: 'webui_stream_end', request_id, trailers, error: error || undefined });
+    };
+    webuiStreams.set(request_id, { stop: () => { ended = true; webuiStreams.delete(request_id); try { req.destroy(); } catch (e) {} } });
+    const h = { 'content-type': res.headers['content-type'] || '', 'set-cookie': res.headers['set-cookie'] || null };
+    Object.keys(res.headers).forEach(k => { if (/^grpc-/i.test(k)) h[k] = res.headers[k]; });
+    send({ type: 'webui_stream_head', request_id, status: res.statusCode, headers: h });
+    resolveQueue();                         // free this miner's queue place now
+    req.setTimeout(WEBUI_STREAM_QUIET_MS, () => { finish('no data from the miner for ' + Math.round(WEBUI_STREAM_QUIET_MS / 60000) + ' min'); try { req.destroy(); } catch (e) {} });
+    res.on('data', c => { if (!ended) send({ type: 'webui_stream_data', request_id, data: c.toString('base64') }); });
+    res.on('end', () => finish());
+    res.on('error', e => finish(e.code || e.message));
+    res.on('close', () => finish(res.complete ? undefined : 'connection to the miner closed'));
+  }
+
   function sendError(status, text) {
     send({ type: 'webui_proxy_response', request_id, status,
       headers: { 'content-type': 'text/plain' }, body: text, encoding: 'utf8' });
@@ -2008,7 +2046,13 @@ function handleWebuiProxyRequestNow(msg) {
     // header there is an invalid token, so it's left off gRPC calls.
     if (!authHeader) delete options.headers['Authorization'];
 
+    // A gRPC call may stay open for as long as the page does. It gets a
+    // connection of its own, so it never ties up the two kept-open
+    // connections the page's ordinary files and calls share.
+    const streaming = isGrpc && msg.stream === true;
+    if (streaming && !overTls) options.agent = new http.Agent({ keepAlive: false });
     const req = (overTls ? https : http).request(options, res => {
+      if (streaming) return streamResponse(req, res);
       if (style !== 'auth' && webuiStyle.get(ip) !== style) {
         webuiStyle.set(ip, style);
         console.log(`[WEBUI] ${ip} answers ${style === 'https' ? 'over HTTPS (port 443)' : 'only when asked like a browser (no root/root header)'} — remembered for this miner`);
@@ -2036,6 +2080,7 @@ function handleWebuiProxyRequestNow(msg) {
     let timedOut = false;
     req.on('error', e => {
       if (timedOut) return;   // already handled by the timeout below
+      if (streamStarted) return;   // the stream's own handlers report its end
       // A miner whose web server is momentarily busy refuses or resets
       // the connection instead of queuing it. That is transient, but it
       // used to surface immediately as a 502 — which is what the
@@ -2070,6 +2115,7 @@ function handleWebuiProxyRequestNow(msg) {
         + (tried.length > 1 ? '\nTried: ' + tried.join(' · ') + '\nThe miner\'s web page did not answer on port 80 or 443 from the farm PC.' : ''));
     });
     req.on('timeout', () => {
+      if (streamStarted) return;   // an open stream has its own, longer, quiet limit
       timedOut = true; req.destroy();
       // A kept-open connection that the miner has silently dropped (it
       // rebooted, or was idle too long) swallows the request and nothing
@@ -2178,6 +2224,7 @@ function handleWebuiWsClose(msg) {
 function closeAllMinerSockets() {
   minerSockets.forEach(sock => { try { sock.terminate(); } catch (e) {} });
   minerSockets.clear();
+  closeAllWebuiStreams();
 }
 
 async function pollLanli() {
@@ -2340,6 +2387,8 @@ function connect() {
         th16.startLivePolling(th16.getDiscovered().length > 0 ? th16.getDiscovered() : parseTHEnv(), 30000, onSensorReading);
       } else if (msg.type === 'webui_proxy_request') {
         handleWebuiProxyRequest(msg);
+      } else if (msg.type === 'webui_stream_cancel') {
+        handleWebuiStreamCancel(msg);
       } else if (msg.type === 'webui_ws_open') {
         handleWebuiWsOpen(msg);
       } else if (msg.type === 'webui_ws_data') {
