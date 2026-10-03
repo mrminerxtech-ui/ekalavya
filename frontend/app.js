@@ -3054,7 +3054,7 @@ function showPage(n){
   // Render the page's content when it opens
   try {
     if(n==='dashboard')     { renderDash(); }
-    if(n==='settings')      { loadSiteAlarmSetting(); loadAutoRestart(); loadTgRules(); loadLogRules(); }
+    if(n==='settings')      { loadSiteAlarmSetting(); loadCallNumbers(); loadAutoRestart(); loadTgRules(); loadLogRules(); }
     if(n==='workers')       { renderWorkers(); attachSortHandlers(); }
     if(n==='agents')        { renderAgents(); populateDropdowns(); loadFarms(); }
     if(n==='customers')     { renderCustomers(); }
@@ -4570,6 +4570,97 @@ function saveSiteAlarmSetting() {
     toast('✓ Site alarm: ' + d.alarm_at + '+ machines offline for ' + d.delay_min + '+ min', 'var(--green)');
   })
   .catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); });
+}
+
+// ── Phone numbers the site alarm calls (Settings › Site Alarm) ─────
+// Typed here instead of in the server's variables. While the list is
+// empty the server's own setting (if any) keeps being used.
+var _callNums = { numbers: [], from_server_setting: [], service_ready: true, max: 10 };
+function cleanPhoneInput(v) {
+  var t = String(v || '').trim().replace(/[\s\-().]/g, '');
+  if (t.indexOf('00') === 0) t = '+' + t.slice(2);
+  if (/^[1-9]\d{7,14}$/.test(t)) t = '+' + t;
+  return /^\+[1-9]\d{7,14}$/.test(t) ? t : null;
+}
+function renderCallNumbers(d, note, color) {
+  if (d) _callNums = { numbers: d.numbers || [], from_server_setting: d.from_server_setting || [], service_ready: d.service_ready !== false, max: d.max || 10 };
+  var box = document.getElementById('callNumList'), st = document.getElementById('callNumStatus');
+  if (!box) return;
+  box.innerHTML = '';
+  _callNums.numbers.forEach(function(n){
+    var chip = document.createElement('span'); chip.className = 'callnum-chip'; chip.textContent = n;
+    var x = document.createElement('button'); x.type = 'button'; x.textContent = '×';
+    x.setAttribute('aria-label', 'Remove ' + n); x.title = 'Remove';
+    x.onclick = function(){ removeCallNumber(n); };
+    chip.appendChild(x); box.appendChild(chip);
+  });
+  if (!_callNums.numbers.length) {
+    if (_callNums.from_server_setting.length) {
+      _callNums.from_server_setting.forEach(function(n){
+        var chip = document.createElement('span'); chip.className = 'callnum-chip env'; chip.textContent = n; chip.title = 'From the server setting';
+        box.appendChild(chip);
+      });
+    } else {
+      var e = document.createElement('span'); e.className = 'callnum-empty'; e.textContent = 'No number yet — nobody is called.'; box.appendChild(e);
+    }
+  }
+  if (st) {
+    var txt = note;
+    if (!txt) {
+      if (!_callNums.service_ready) txt = 'Phone calls are not set up on the server yet, so these numbers will not ring. Telegram alerts still go out.';
+      else if (_callNums.numbers.length) txt = 'These ' + (_callNums.numbers.length === 1 ? 'number is' : _callNums.numbers.length + ' numbers are') + ' called for a site alarm: machines offline, or the farm PC unreachable. On a trial calling account only verified numbers ring.';
+      else if (_callNums.from_server_setting.length) txt = 'Using the number' + (_callNums.from_server_setting.length === 1 ? '' : 's') + ' from the server setting. Add a number here to replace ' + (_callNums.from_server_setting.length === 1 ? 'it' : 'them') + '.';
+      else txt = 'Write the number with its country code, e.g. +971501234567.';
+    }
+    st.style.color = color || 'var(--mute)'; st.textContent = txt;
+  }
+}
+function loadCallNumbers() {
+  authFetch('/api/alerts/call-numbers').then(function(d){
+    if (!d || !d.ok) { renderCallNumbers(null, 'Could not load the phone numbers.', 'var(--warn)'); return; }
+    renderCallNumbers(d);
+  });
+}
+function postCallNumbers(path, body) {
+  var token = localStorage.getItem('ekl_token') || '';
+  return fetch(API_BASE + path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token }, body: JSON.stringify(body || {}) })
+    .then(function(r){ return r.json().catch(function(){ return { ok: false, error: 'HTTP ' + r.status }; })
+      .then(function(d){ if (r.status === 403) d = { ok: false, error: 'Only an admin or manager can change this' }; return d; }); });
+}
+function saveCallNumbers(list, okMsg) {
+  return postCallNumbers('/api/alerts/call-numbers', { numbers: list }).then(function(d){
+    if (!d || !d.ok) { toast('✗ ' + ((d && d.error) || 'Could not save'), 'var(--red)'); renderCallNumbers(null, '✗ ' + ((d && d.error) || 'Could not save'), 'var(--red)'); return false; }
+    renderCallNumbers(d); toast(okMsg, 'var(--green)'); return true;
+  }).catch(function(e){ toast('✗ ' + e.message, 'var(--red)'); return false; });
+}
+function addCallNumber() {
+  var inp = document.getElementById('callNumInput'); if (!inp) return;
+  var n = cleanPhoneInput(inp.value);
+  if (!n) { toast('Write the number with its country code, e.g. +971501234567', 'var(--warn)'); inp.focus(); return; }
+  if (_callNums.numbers.indexOf(n) !== -1) { toast(n + ' is already on the list', 'var(--warn)'); return; }
+  if (_callNums.numbers.length >= _callNums.max) { toast('At most ' + _callNums.max + ' numbers', 'var(--warn)'); return; }
+  saveCallNumbers(_callNums.numbers.concat([n]), '✓ ' + n + ' will be called').then(function(ok){ if (ok) inp.value = ''; });
+}
+function removeCallNumber(n) {
+  if (!confirm('Stop calling ' + n + '?')) return;
+  saveCallNumbers(_callNums.numbers.filter(function(x){ return x !== n; }), '✓ ' + n + ' removed');
+}
+function testCallNumbers() {
+  var list = _callNums.numbers.length ? _callNums.numbers : _callNums.from_server_setting;
+  if (!list.length) { toast('Add a phone number first', 'var(--warn)'); return; }
+  if (!confirm('Ring ' + list.join(', ') + ' now with a test message?')) return;
+  var btn = document.getElementById('callNumTest'); if (btn) btn.disabled = true;
+  renderCallNumbers(null, 'Calling…');
+  postCallNumbers('/api/alerts/call-numbers/test').then(function(d){
+    if (btn) btn.disabled = false;
+    var bad = (d && d.failed) || [];
+    if (d && d.ok) {
+      var msg = '✓ ' + d.placed + ' of ' + d.total + ' call' + (d.total === 1 ? '' : 's') + ' placed' + (bad.length ? ' — not placed: ' + bad.map(function(f){ return f.number + ' (' + f.error + ')'; }).join('; ') : '. The phone should ring within a few seconds.');
+      renderCallNumbers(null, msg, bad.length ? 'var(--warn)' : 'var(--green)');
+    } else {
+      renderCallNumbers(null, '✗ ' + (bad.length ? bad.map(function(f){ return f.number + ': ' + f.error; }).join('; ') : ((d && d.error) || 'No call could be placed')), 'var(--red)');
+    }
+  }).catch(function(e){ if (btn) btn.disabled = false; renderCallNumbers(null, '✗ ' + e.message, 'var(--red)'); });
 }
 
 // ── Auto-restart (Settings page) ────────────────────────────────────
