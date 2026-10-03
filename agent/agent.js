@@ -720,6 +720,107 @@ function getBrand(model) {
   return 'Unknown';
 }
 
+// ── Braiins OS: model, firmware version, serial ─────────────
+// Asked only for machines whose model the usual ways didn't find, and
+// remembered per machine (6 h; 30 min when nothing was found) so a poll
+// doesn't repeat the questions — or the login — every cycle.
+const braiinsCache = new Map();   // ip -> { mac, model, serial, at, found }
+const BOS_KEEP_MS = 6 * 60 * 60 * 1000, BOS_RETRY_MS = 30 * 60 * 1000;
+
+function bosHttp(ip, method, path, body, token) {
+  return new Promise(resolve => {
+    const data = body ? JSON.stringify(body) : null;
+    const headers = { 'Accept': 'application/json' };
+    if (data) { headers['Content-Type'] = 'application/json'; headers['Content-Length'] = Buffer.byteLength(data); }
+    if (token) headers['Authorization'] = token;
+    let done = false; const fin = v => { if (!done) { done = true; resolve(v); } };
+    try {
+      const req = http.request({ hostname: ip, port: 80, path, method, headers, timeout: 4000, agent: false }, res => {
+        const chunks = []; let n = 0;
+        res.on('data', c => { n += c.length; if (n <= 256 * 1024) chunks.push(c); });
+        res.on('end', () => { let j = null; try { j = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (e) {} fin({ status: res.statusCode, json: j }); });
+        res.on('error', () => fin(null));
+      });
+      req.on('error', () => fin(null));
+      req.on('timeout', () => { req.destroy(); fin(null); });
+      if (data) req.write(data);
+      req.end();
+    } catch (e) { fin(null); }
+  });
+}
+
+// "Bitmain Antminer T21" / "Antminer T21" / "T21" → "Antminer T21"
+function bosModelName(raw) {
+  let m = String(raw || '').replace(/\s+/g, ' ').trim();
+  if (!m || /^unknown$/i.test(m)) return null;
+  m = m.replace(/^bitmain\s+/i, '');
+  if (!/antminer|whatsminer|avalon/i.test(m) && /^[STLKDE]\d{1,2}[A-Za-z0-9+ ]{0,14}$/.test(m)) m = 'Antminer ' + m;
+  return m.length >= 3 && m.length <= 40 ? m : null;
+}
+
+async function braiinsIdentity(ip, mac) {
+  const c = braiinsCache.get(ip);
+  if (c && (c.mac || null) === (mac || null) && Date.now() - c.at < (c.found ? BOS_KEEP_MS : BOS_RETRY_MS)) return c.found ? c : null;
+
+  let model = null, serial = null, fwVer = null, isBos = false;
+
+  // 1. cgminer-style API: is it Braiins OS, and which version
+  const ver = await cgCmd(ip, 'version');
+  const v0 = ver && ver.VERSION && ver.VERSION[0];
+  if (v0 && typeof v0 === 'object') {
+    const k = Object.keys(v0).find(x => /^bos/i.test(x));     // "BOSer", "BOSminer", "BOSminer+"
+    if (k) {
+      isBos = true;
+      const mv = String(v0[k] || '').match(/(\d{2}\.\d{1,2}(?:\.\d+)?)/);
+      if (mv) fwVer = mv[1];
+    }
+  }
+
+  // 2. model per hashboard chain
+  if (isBos) {
+    const dd = await cgCmd(ip, 'devdetails');
+    const rows = (dd && dd.DEVDETAILS) || [];
+    for (const r of rows) { const m = bosModelName(r && (r.Model || r.model)); if (m) { model = m; break; } }
+  }
+
+  // 3. the miner's own REST API (needs its login) — model if still
+  //    missing, and the serial number
+  let triedRest = false;
+  if (isBos || !v0) {
+    for (const pass of ['root', '']) {
+      const login = await bosHttp(ip, 'POST', '/api/v1/auth/login', { username: 'root', password: pass });
+      triedRest = true;
+      if (!login) break;                                        // no web API at all — not Braiins OS
+      if (login.status === 404) break;
+      const token = login.json && login.json.token;
+      if (!token) continue;                                     // wrong password — try the next
+      const det = await bosHttp(ip, 'GET', '/api/v1/miner/details', null, token);
+      const d = det && det.json;
+      if (d && typeof d === 'object') {
+        isBos = true;
+        const idn = d.miner_identity || d.minerIdentity || {};
+        if (!model) model = bosModelName(idn.name || idn.miner_model || idn.minerModel || (typeof idn.model === 'string' ? idn.model : null));
+        serial = d.serial_number || d.serialNumber || null;
+        const bv = d.bos_version || d.bosVersion;
+        if (!fwVer && bv && bv.current) { const mv = String(bv.current).match(/(\d{2}\.\d{1,2}(?:\.\d+)?)/); if (mv) fwVer = mv[1]; }
+      }
+      break;
+    }
+  }
+
+  if (model) {
+    const full = model + ' (Braiins OS' + (fwVer ? ' ' + fwVer : '') + ')';
+    const was = c && c.found ? c.model : null;
+    const out = { mac: mac || null, model: full, serial: serial || null, at: Date.now(), found: true };
+    braiinsCache.set(ip, out);
+    if (was !== full) console.log(`[MODEL] ${ip} → ${full}${serial ? ' | serial ' + serial : (triedRest ? ' | serial not readable (the miner\'s login is not root/root)' : '')}`);
+    return out;
+  }
+  if (isBos && !(c && !c.found)) console.log(`[MODEL] ${ip} runs Braiins OS but its model could not be read (devdetails had no Model${triedRest ? ', and the miner\'s own API did not accept root/root' : ''})`);
+  braiinsCache.set(ip, { mac: mac || null, at: Date.now(), found: false });
+  return null;
+}
+
 // ── Model from CGMiner stats ───────────────────────────────
 function extractModel(stats, summary) {
   if (!stats?.STATS) return null;
@@ -940,6 +1041,17 @@ async function getMinerInfo(ip, opts) {
   if (!isValidModel(model) && infoBlock?.type) {
     const infoCandidate = 'ElphaPEX ' + infoBlock.type;
     if (isValidModel(infoCandidate)) model = infoCandidate;
+  }
+
+  // Braiins OS: its cgminer-style API has no "Type" in stats, so the
+  // machine showed as Unknown / Unknown. The model is in `devdetails`,
+  // and model + serial number are in the miner's own REST API.
+  if (!isValidModel(model)) {
+    const bos = await braiinsIdentity(ip, hwIds && hwIds.mac);
+    if (bos && isValidModel(bos.model)) {
+      model = bos.model;
+      if (!hwIds.serial && bos.serial) hwIds.serial = bos.serial;
+    }
   }
 
   // Fallback: try Antminer HTTP for model
