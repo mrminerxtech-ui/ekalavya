@@ -321,9 +321,17 @@ router.use('/:farmId/:ip', async (req, res) => {
   ['x-grpc-web', 'x-user-agent', 'grpc-timeout'].forEach(h => { if (req.headers[h]) fwdHeaders[h] = req.headers[h]; });
 
   try {
+    const grpcCall = /^application\/grpc/i.test(reqContentType);
     const result = await agentMgr.sendWebuiRequest(
-      farmId, ip, req.method, minerPath, fwdHeaders, bodyToSend, bodyEncoding ? { body_encoding: bodyEncoding } : undefined
+      farmId, ip, req.method, minerPath, fwdHeaders, bodyToSend,
+      (bodyEncoding || grpcCall) ? { body_encoding: bodyEncoding || undefined, stream: grpcCall } : undefined
     );
+
+    // A gRPC-web call answered piece by piece (agent v1.1.52+): pass each
+    // piece to the browser as it arrives. Calls the miner keeps open
+    // (Braiins OS: Subscribe…) then work like they do on the miner's own
+    // address, instead of ending in a 504.
+    if (result && result.stream) return relayGrpcStream(req, res, result, { reqContentType, minerPath, ip, farmId });
 
     // result: { status, headers, body, encoding }
     // Embedded miner web servers are notoriously inconsistent about
@@ -725,6 +733,73 @@ function staticCachePut(key, contentType, body) {
     if (staticBytes <= STATIC_MAX_BYTES) break;
     staticCache.delete(k); staticBytes -= e.body.length;
   }
+}
+
+// ── gRPC-web replies passed on piece by piece ───────────────────────
+function relayGrpcStream(req, res, result, ctx) {
+  const headers = result.headers || {};
+  const declared = String(headers['content-type'] || '');
+  const contentType = /grpc/i.test(declared) ? declared : ctx.reqContentType.split(';')[0];
+  const isText = /grpc-web-text/i.test(contentType);
+  res.status(result.status || 200);
+  res.set('Content-Type', contentType);
+  // no-transform: the compression layer must not hold pieces back
+  res.set('Cache-Control', 'no-cache, no-transform');
+  res.set('X-Accel-Buffering', 'no');
+  Object.keys(headers).forEach(h => { if (/^grpc-/i.test(h) && headers[h] != null) res.set(h, String(headers[h])); });
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+  // Follow the frames (1 flag byte + 4 length bytes + data) as they pass,
+  // to know at the end whether the miner sent its closing "trailer" frame.
+  let need = 5, inHead = true, head = Buffer.alloc(0), messages = 0, sawTrailer = false, broken = false, bytes = 0, done = false;
+  const track = buf => {
+    let off = 0;
+    while (off < buf.length) {
+      if (inHead) {
+        const take = Math.min(need, buf.length - off);
+        head = Buffer.concat([head, buf.slice(off, off + take)]); off += take; need -= take;
+        if (need === 0) {
+          if (head[0] & 0x80) sawTrailer = true; else messages++;
+          need = head.readUInt32BE(1); head = Buffer.alloc(0); inHead = need === 0 ? true : false;
+          if (need === 0) need = 5;
+        }
+      } else {
+        const take = Math.min(need, buf.length - off);
+        off += take; need -= take;
+        if (need === 0) { inHead = true; need = 5; }
+      }
+    }
+  };
+  const finish = info => {
+    if (done) return; done = true;
+    info = info || {};
+    const atBoundary = inHead && need === 5;
+    if (!info.cancelled && !isText && !sawTrailer && atBoundary && !res.writableEnded) {
+      const tr = info.trailers || {};
+      const pick = k => { const v = tr[k] != null ? tr[k] : headers[k]; return v == null ? null : String(Array.isArray(v) ? v[0] : v); };
+      let status = pick('grpc-status');
+      if (status == null && messages > 0 && !info.error) status = '0';
+      if (status == null && info.error) status = '14';   // UNAVAILABLE — the page's own client then retries
+      if (status != null) {
+        const m = pick('grpc-message') || (status === '14' && info.error ? encodeURIComponent(String(info.error)) : null);
+        const text = Buffer.from('grpc-status:' + status + '\r\n' + (m ? 'grpc-message:' + m + '\r\n' : ''), 'utf8');
+        const h = Buffer.alloc(5); h[0] = 0x80; h.writeUInt32BE(text.length, 1);
+        try { res.write(Buffer.concat([h, text])); } catch (e) {}
+      }
+    }
+    if (info.error && !info.cancelled) console.warn(`[WEBUI] grpc ${ctx.minerPath} (farm=${ctx.farmId} ip=${ctx.ip}) ended early after ${messages} message(s): ${info.error}`);
+    try { res.end(); } catch (e) {}
+  };
+  result.stream.on('data', buf => {
+    if (done || res.writableEnded) return;
+    bytes += buf.length;
+    if (!isText && !broken) { try { track(buf); } catch (e) { broken = true; } }
+    try { res.write(buf); if (typeof res.flush === 'function') res.flush(); } catch (e) {}
+  });
+  result.stream.on('end', finish);
+  // the browser closed the page or dropped the call: tell the farm to stop
+  const gone = () => { if (!done) { done = true; try { result.cancel(); } catch (e) {} } };
+  if (typeof res.on === 'function') res.on('close', gone);
 }
 
 // ── gRPC-web replies must end with a "trailer" frame ────────────────
