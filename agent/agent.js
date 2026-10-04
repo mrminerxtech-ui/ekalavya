@@ -720,6 +720,76 @@ function getBrand(model) {
   return 'Unknown';
 }
 
+// A cgminer-API request with the key the firmware expects: "command"
+// (cgminer, Antminer, Avalon, Braiins) or "cmd" (WhatsMiner).
+function cgCmdForm(ip, cmd, key) {
+  return cgText(ip, JSON.stringify({ [key || 'command']: cmd }), 4000).then(raw => {
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (e) {}
+    // WhatsMiner sometimes ends a reply with stray characters after the JSON
+    const end = raw.lastIndexOf('}');
+    if (end > 0) { try { return JSON.parse(raw.slice(0, end + 1)); } catch (e) {} }
+    return null;
+  });
+}
+
+// ── WhatsMiner (MicroBT): model, MAC, serial ────────────────
+// Remembered per machine like the Braiins lookup (6 h; 30 min when
+// nothing was found).
+const whatsminerCache = new Map();   // ip -> { model, mac, serial, at, found }
+function wmModelName(raw) {
+  let m = String(raw || '').replace(/\s+/g, ' ').trim();
+  if (!m) return null;
+  m = m.replace(/^whatsminer[ _-]*/i, '');
+  if (!/^M\d{2}[A-Za-z0-9+_ -]{0,16}$/.test(m)) return null;      // M20S, M30S+_VE40, M50VH50 …
+  return 'WhatsMiner ' + m;
+}
+async function whatsminerIdentity(ip) {
+  const c = whatsminerCache.get(ip);
+  if (c && Date.now() - c.at < (c.found ? BOS_KEEP_MS : BOS_RETRY_MS)) return c.found ? c : null;
+  let model = null, mac = null, serial = null;
+  for (const key of ['cmd', 'command']) {
+    const dd = await cgCmdForm(ip, 'devdetails', key);
+    for (const r of ((dd && dd.DEVDETAILS) || [])) { const m = wmModelName(r && (r.Model || r.model)); if (m) { model = m; break; } }
+    if (!model) continue;
+    const info = await cgCmdForm(ip, 'get_miner_info', key);
+    const im = info && (info.Msg || info.msg);
+    if (im && typeof im === 'object') { mac = im.mac || null; serial = im.minersn || im.miner_sn || null; }
+    break;
+  }
+  if (model) {
+    const out = { model, mac, serial, at: Date.now(), found: true };
+    if (!(c && c.found && c.model === model)) console.log(`[MODEL] ${ip} → ${model}${serial ? ' | serial ' + serial : ''}`);
+    whatsminerCache.set(ip, out);
+    return out;
+  }
+  whatsminerCache.set(ip, { at: Date.now(), found: false });
+  return null;
+}
+
+// What a machine really answers — for a machine whose model or hashrate
+// the app cannot read. Returned by "Download logs" when the miner has no
+// log to give, so the raw replies can be looked at without a site visit.
+async function apiDump(ip) {
+  const lines = ['Raw API replies from ' + ip + ' — ' + new Date().toISOString(), ''];
+  const ports = [4028, 80, 443, 4433, 8889];
+  const open = await Promise.all(ports.map(pt => checkPort(ip, pt, 2000)));
+  lines.push('Ports: ' + ports.map((pt, i) => pt + ' ' + (open[i] ? 'open' : 'closed')).join(' · '), '');
+  if (open[0]) {
+    for (const cmd of ['version', 'summary', 'devs', 'devdetails', 'pools', 'stats', 'get_version', 'get_miner_info']) {
+      for (const key of ['command', 'cmd']) {
+        const raw = await cgText(ip, JSON.stringify({ [key]: cmd }), 4000);
+        lines.push('── {"' + key + '":"' + cmd + '"}', raw === null ? '(no connection)' : raw === '' ? '(connected, empty reply)' : raw.slice(0, 3000) + (raw.length > 3000 ? '\n… (' + raw.length + ' characters in all)' : ''), '');
+        if (raw && /"STATUS"\s*:\s*"S"|"SUMMARY"|"DEVS"|"POOLS"|"DEVDETAILS"|"Msg"\s*:\s*\{/.test(raw)) break;   // answered — no need for the other form
+      }
+    }
+  } else {
+    lines.push('Port 4028 (the miner API) is closed, so hashrate, model and pool cannot be read from this machine.',
+               'On a WhatsMiner the API is switched on with WhatsMinerTool (Remote Ctrl Function → API).', '');
+  }
+  return lines.join('\n');
+}
+
 // ── Braiins OS: model, firmware version, serial ─────────────
 // Asked only for machines whose model the usual ways didn't find, and
 // remembered per machine (6 h; 30 min when nothing was found) so a poll
@@ -978,7 +1048,7 @@ async function httpOnlyReads(ip) {
 async function getMinerInfo(ip, opts) {
   // Parallel API calls via CGMiner TCP + hardware IDs via HTTP — or, for
   // an HTTP-only unit, the one-request-at-a-time sequence above.
-  const [summary, stats, devs, pools, hwIds, httpPools, httpSummary, httpStats] = (opts && opts.httpOnly)
+  let [summary, stats, devs, pools, hwIds, httpPools, httpSummary, httpStats] = (opts && opts.httpOnly)
     ? await httpOnlyReads(ip)
     : await Promise.all([
     cgCmd(ip, 'summary'),
@@ -1018,6 +1088,19 @@ async function getMinerInfo(ip, opts) {
     httpGet(ip, '/cgi-bin/stats.cgi'),
   ]);
 
+  // WhatsMiner (MicroBT) writes its API requests as {"cmd":"summary"};
+  // some firmware answers nothing useful to the {"command":…} form the
+  // other brands use, which left hashrate, pool and temperature empty.
+  // Asked again that way only when the usual form gave no summary.
+  if (!(opts && opts.httpOnly) && !(summary && summary.SUMMARY && summary.SUMMARY.length)) {
+    const alt = await cgCmdForm(ip, 'summary', 'cmd');
+    if (alt && alt.SUMMARY && alt.SUMMARY.length) {
+      summary = alt;
+      if (!(pools && pools.POOLS && pools.POOLS.length)) { const p2 = await cgCmdForm(ip, 'pools', 'cmd'); if (p2 && p2.POOLS) pools = p2; }
+      if (!(devs && devs.DEVS && devs.DEVS.length))   { const d2 = await cgCmdForm(ip, 'devs', 'cmd');   if (d2 && d2.DEVS) devs = d2; }
+    }
+  }
+
   let model = extractModel(stats, summary);
 
   // A valid model name is short plaintext — reject HTML error pages,
@@ -1051,6 +1134,18 @@ async function getMinerInfo(ip, opts) {
     if (bos && isValidModel(bos.model)) {
       model = bos.model;
       if (!hwIds.serial && bos.serial) hwIds.serial = bos.serial;
+    }
+  }
+
+  // WhatsMiner: model in `devdetails`, MAC + serial in `get_miner_info`.
+  // (Its web pages are https-only LuCI behind a login, so the page and
+  // boot-log lookups below find nothing on it.)
+  if (!isValidModel(model)) {
+    const wm = await whatsminerIdentity(ip);
+    if (wm) {
+      if (isValidModel(wm.model)) model = wm.model;
+      if (!hwIds.mac && wm.mac) hwIds.mac = wm.mac;
+      if (!hwIds.serial && wm.serial) hwIds.serial = wm.serial;
     }
   }
 
@@ -1113,7 +1208,13 @@ async function getMinerInfo(ip, opts) {
 
   // Hashrate from summary
   const s      = summary?.SUMMARY?.[0] || {};
-  let   rawMhs = parseFloat(s['MHS 5s'] || s['MHS av'] || (s['GHS 5s']||0)*1000 || (s['THS 5s']||0)*1e6 || 0);
+  let   rawMhs = parseFloat(s['MHS 5s'] || s['MHS av'] || (s['GHS 5s']||0)*1000 || (s['THS 5s']||0)*1e6
+                            || s['MHS 1m'] || s['HS RT'] || s['MHS 5m'] || s['MHS 15m'] || 0);   // WhatsMiner: MHS 1m / HS RT
+  // …or the boards added up, when the summary carries no rate at all
+  if (!(rawMhs > 0)) {
+    const sum = (devs?.DEVS || []).reduce((t, d) => t + (parseFloat(d['MHS 5s'] || d['MHS av'] || d['MHS 1m'] || 0) || 0), 0);
+    if (sum > 0) rawMhs = sum;
+  }
 
   // ElphaPEX (and any other firmware that doesn't run the cgminer TCP
   // service) — confirmed against this exact unit's own /cgi-bin/summary.cgi:
@@ -1187,7 +1288,7 @@ async function getMinerInfo(ip, opts) {
   // Fan speed
   const st0 = stats?.STATS?.[0] || {};
   const fanValues = ['fan1','fan2','fan3','fan4','Fan Speed In','Fan Speed Out','fan_num']
-    .map(k => parseInt(st0[k]||devs?.DEVS?.[0]?.[k]||0)).filter(v=>v>0);
+    .map(k => parseInt(st0[k]||devs?.DEVS?.[0]?.[k]||s[k]||0)).filter(v=>v>0);   // s[…]: WhatsMiner has its fans in the summary
   // Same HTTP fallback for fan — this unit's own stats.cgi confirmed one
   // slot can report a clearly bogus value (577440 RPM), so anything
   // outside a plausible fan-RPM range is dropped rather than trusted.
@@ -1902,7 +2003,15 @@ async function handleActionRequest(msg) {
         let snapshot = null;
         if (logText && params && params.with_snapshot) { try { snapshot = await healthSnapshot(ip); } catch (e) {} }
         if (logText) await reply(true, { logs: logText, snapshot });
-        else await reply(false, { error: 'Could not retrieve logs from this miner' });
+        else {
+          // no log on this firmware (WhatsMiner, Braiins OS …): hand back
+          // what its API answers instead, which is what a look at a
+          // machine with a missing model or hashrate needs
+          let dump = null;
+          try { dump = await apiDump(ip); } catch (e) {}
+          if (dump) await reply(true, { logs: dump, snapshot: null, kind: 'api-dump' });
+          else await reply(false, { error: 'Could not retrieve logs from this miner' });
+        }
         break;
       }
       default:
