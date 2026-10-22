@@ -644,8 +644,10 @@ const lastCallAt      = new Map();   // "farm|down" / "farm|gone" -> when this s
 const calmSince       = new Map();   // farm_id -> since when it has been back at/below the re-arm level
 
 // ── The actual per-site check, run on a timer by start() below ─────
+function regName(farmId) { try { return require('./farms').nameOf(farmId); } catch (e) { return null; } }
 async function checkSiteOfflineCounts() {
-  await loadAlarmSetting();   // picks up a change made on the Settings page
+  await loadAlarmSetting();
+  try { await require('./farms').load(); } catch (e) {}   // picks up a change made on the Settings page
   const workers = await db.loadWorkers();
   const agents  = agentMgr.getAgents();
   const now = Date.now();
@@ -666,7 +668,10 @@ async function checkSiteOfflineCounts() {
 
   for (const [farmId, counts] of Object.entries(byFarm)) {
     const agent = agents.find(a => a.farm_id === farmId);
-    const farmName = (agent && agent.farm_name) || farmNames[farmId] || farmId;
+    // The name set in the app comes first: the name stored on machine
+    // records can be an older farm's (machines moved from Ghummadh to a new
+    // farm read "Ghummadh", so Farm 5 going offline was reported as Ghummadh).
+    const farmName = regName(farmId) || (agent && agent.farm_name) || farmNames[farmId] || farmId;
     if (farmId === 'unassigned') continue;   // not a real site
     const prev = await db.getSiteAlertState(farmId);
 
