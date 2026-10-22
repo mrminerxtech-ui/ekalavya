@@ -501,6 +501,21 @@ function scrubCollidingIds(farmId, miners) {
 // DON'T mark the machines it missed as offline. Used for a suspiciously
 // short poll (e.g. the first one after an agent reconnect) — see
 // decideOfflinePass() in agentManager.js.
+// The farm's name as set in the app (Remote Access › Farms), or null.
+function registryFarmName(farmId) {
+  try { const n = require('./farms').farmName(farmId); return n && n !== farmId ? n : null; } catch (e) { return null; }
+}
+// Name stored on a machine record. A machine that turned up at another
+// farm (moved, or a farm re-assigned) used to keep its OLD farm's name —
+// polls carry no name — so 47 machines at Farm 5 still read "Ghummadh",
+// and that name was used in the site alarm ("Site unreachable — Ghummadh"
+// while Ghummadh was fine).
+function farmTextFor(m, old, farmId, moved) {
+  if (!moved) return old.farm;
+  if (old.farm_id !== farmId) return m.farm || registryFarmName(farmId) || old.farm;
+  return m.farm || old.farm;
+}
+
 async function upsertWorkersByIp(farmId, minersFoundNow, opts) {
   minersFoundNow = minersFoundNow || [];
   const skipMarkOffline = !!(opts && opts.skipMarkOffline);
@@ -650,7 +665,7 @@ async function upsertWorkersByIp(farmId, minersFoundNow, opts) {
                    disabled_reason: old.disabled_reason, disabled_at: old.disabled_at,
                    // If it moved, adopt the NEW farm/ip — that's genuinely
                    // where it is now. Otherwise keep exactly as before.
-                   farm: moved ? (m.farm || old.farm) : old.farm,
+                   farm: farmTextFor(m, old, farmId, moved),
                    farm_id: moved ? farmId : old.farm_id,
                    name: newName,
                    model:     keepIfBetter(m.model,     old.model,     ['Unknown']),
@@ -701,7 +716,7 @@ async function upsertWorkersByIp(farmId, minersFoundNow, opts) {
         let newId = stableWorkerId(m);
         const taken = await client.query(`SELECT 1 FROM workers WHERE id = $1`, [newId]);
         if (taken.rows.length > 0) newId = newId + '-' + Date.now().toString(36);
-        const fresh = { ...m, id: newId, farm_id: farmId, cid: '',
+        const fresh = { ...m, id: newId, farm_id: farmId, farm: m.farm || registryFarmName(farmId) || undefined, cid: '',
                    disabled: false, status: 'online', source: 'auto-poll',
                    name: defaultName,
                    added_at: new Date().toISOString() };
@@ -805,7 +820,7 @@ function upsertWorkersFallback(farmId, minersFoundNow, collisions, skipMarkOffli
       touched.add(old.id);
       byId.set(old.id, { ...old, ...m, id: old.id, cid: old.cid, disabled: old.disabled,
         disabled_reason: old.disabled_reason, disabled_at: old.disabled_at,
-        farm: moved ? (m.farm || old.farm) : old.farm,
+        farm: farmTextFor(m, old, farmId, moved),
         farm_id: moved ? farmId : old.farm_id,
         name: newName,
         status: m.status || 'online' });
@@ -815,7 +830,7 @@ function upsertWorkersFallback(farmId, minersFoundNow, collisions, skipMarkOffli
       // Same missing-name fix as upsertWorkersByIp above.
       const defaultName = m.name || (m.worker && m.worker !== '—' ? m.worker : null) || (m.ip ? m.ip.replace(/\./g, '-') : id);
       touched.add(id);
-      byId.set(id, { ...m, id, farm_id: farmId, cid: '',
+      byId.set(id, { ...m, id, farm_id: farmId, farm: m.farm || registryFarmName(farmId) || undefined, cid: '',
         disabled: false, status: 'online', source: 'auto-poll', name: defaultName, added_at: new Date().toISOString() });
       // Rediscovered after deletion — see the matching comment in
       // upsertWorkersByIp above.
