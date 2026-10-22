@@ -69,6 +69,18 @@ async function seedFromExisting() {
     names.forEach((name, id) => {
       if (!reg.farms[id]) { reg.farms[id] = { name: String(name || id), created_at: new Date().toISOString() }; changed = true; }
     });
+    // Machine records whose stored farm name is not their farm's name
+    // (machines that moved farm kept the old one) are corrected, once per
+    // farm, so lists and alerts show where the machine really is.
+    const wrong = new Map();
+    workers.forEach(w => {
+      if (!w || !w.farm_id || !reg.farms[w.farm_id]) return;
+      const want = reg.farms[w.farm_id].name;
+      if (want && w.farm !== want) wrong.set(w.farm_id, (wrong.get(w.farm_id) || 0) + 1);
+    });
+    for (const [fid, n] of wrong) {
+      try { await db.setFarmNameOnWorkers(fid, reg.farms[fid].name); console.log(`[FARMS] ${n} machine record(s) at "${reg.farms[fid].name}" (${fid}) carried another farm's name — corrected`); } catch (e) {}
+    }
   } catch (e) { console.error('[FARMS] seed error:', e.message); }
   if (changed) await persist();
 }
@@ -88,6 +100,8 @@ function newFarmId(name) {
 }
 function cleanName(name) { return String(name || '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 60); }
 function farmName(id) { return (reg && reg.farms[id] && reg.farms[id].name) || id; }
+// The name set in the app, or null when the registry doesn't know the farm.
+function nameOf(id) { return (reg && reg.farms[id] && reg.farms[id].name) || null; }
 
 // ── Connection time ────────────────────────────────────────────────
 // → { farm_id, farm_name, linked:'known'|'legacy' } or { pending:true }
@@ -289,4 +303,4 @@ function noteKnownSent(fid, list) { lastKnownSent.set(fid, (list || []).join(','
 function snapshot() { return reg ? JSON.parse(JSON.stringify(reg)) : blank(); }
 
 module.exports = { load, resolveAgent, suggestFarm, addPending, removePending, listPending, assignAgent, renameFarm,
-                   mergeFarm, deleteFarm, forgetAgent, farmName, snapshot, pollSec, pollSecSet, setPollSec, POLL_DEFAULT_SEC, setSubnets, subnetsFor, knownSubnetsFor, startKnownSubnetSync, noteKnownSent, _pending: pending, _reset: () => { reg = null; pending.clear(); } };
+                   mergeFarm, deleteFarm, forgetAgent, farmName, nameOf, snapshot, pollSec, pollSecSet, setPollSec, POLL_DEFAULT_SEC, setSubnets, subnetsFor, knownSubnetsFor, startKnownSubnetSync, noteKnownSent, _pending: pending, _reset: () => { reg = null; pending.clear(); } };
