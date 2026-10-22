@@ -152,6 +152,8 @@ function farmNameMap(workers, agents) {
   const m = {};
   workers.forEach(w => { const f = w.farm_id; if (f && w.farm && !m[f]) m[f] = w.farm; });
   (agents || []).forEach(a => { if (a.farm_id && a.farm_name) m[a.farm_id] = a.farm_name; });
+  // the name set in the app wins over what machine records carry
+  try { const farms = require('./farms'); new Set([...Object.keys(m), ...workers.map(w => w && w.farm_id).filter(Boolean)]).forEach(f => { const n = farms.nameOf(f); if (n) m[f] = n; }); } catch (e) {}
   return m;
 }
 function dubaiNow(now) {
