@@ -473,7 +473,7 @@ async function tick() {
   for (const [farmId, list] of bySite) {
     const agent = agents.get(farmId);
     if (!agent) continue;                                   // agent disconnected — can't reach anything
-    const siteName = agent.farm_name || farmId;
+    const siteName = (() => { try { return require('./farms').nameOf(farmId); } catch (e) { return null; } })() || agent.farm_name || farmId;
 
     // Site-wide problem?
     const site = seenAt.get(farmId) || new Map();
